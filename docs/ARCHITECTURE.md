@@ -1,6 +1,6 @@
 # RepoLume Architecture
 
-**Status:** Milestone 5 private embeddings, Qdrant vector persistence, and PostgreSQL-authoritative atomic searchable index versions are implemented and locally verified with PostgreSQL 18, Redis 8.8, Qdrant 1.18.2, the exact pinned ONNX model, mocked GitHub responses, and controlled Git fixtures. Live GitHub and hosted deployment verification remain outstanding.
+**Status:** Milestone 6 plain grounded RAG is implemented and locally verified with PostgreSQL 18, Redis 8.8, Qdrant 1.18.2, the exact pinned private ONNX embedding model, a controlled indexed fixture, and a deterministic synthesis provider. Live GitHub, hosted OpenAI-model acceptance, hosted CI, and deployment remain outstanding.
 
 ## Goals
 
@@ -34,25 +34,25 @@ Only the frontend, API, webhook route, and safe health routes are public. The wo
 | Component | Responsibility | Must not do |
 | --- | --- | --- |
 | Frontend | Authentication states, repository management, progress, repository-scoped chat, sanitized evidence rendering | Store access tokens persistently; render untrusted HTML |
-| API | **Through Milestone 5:** foundation, GitHub OAuth/sessions, installation/repository authorization, signed webhooks, selection/status, and PostgreSQL/Redis/Qdrant readiness | Perform ingestion in request handlers; trust a client repository ID; expose source, vectors, or infrastructure details |
+| API | **Through Milestone 6:** foundation, GitHub OAuth/sessions, authorization, signed webhooks, selection/status, readiness, and bounded single-pass grounded questions | Perform ingestion in request handlers; trust client scope/filters; persist questions/prompts/answers; expose vectors, prompts, or infrastructure details |
 | Worker | **Through Milestone 5:** claim/recover/heartbeat, reauthorize, clone/discover/parse/chunk, call embeddings, write/validate scoped vectors, atomically activate, clean up | Expose a public endpoint; execute/import connected code; activate incomplete data; perform unscoped vector operations |
 | Embedding service | Load and warm one immutable ONNX model, authenticate and bound batches, enforce token/output contracts, return deterministic normalized vectors | Receive GitHub/Redis/database credentials; log raw chunks/vectors; accept public traffic; load remote code |
 | PostgreSQL | Identity/access, webhook/job truth, processing summaries, versioned symbols, index-build/count/activation/cleanup truth | Act as a vector engine; persist raw tokens, source bodies, or vector arrays |
 | Redis | **Implemented:** at-least-once Stream delivery of opaque job UUIDs; later ephemeral cache/rate-limit support | Be the only record of a job or access decision; carry repository data or credentials |
 | Qdrant | Complete citation-ready chunk payloads and normalized vectors under installation/repository/version scope | Decide active versions; store credentials; run unfiltered reads/counts/deletes/searches |
-| LLM adapter | Provider-independent tool selection and grounded synthesis | Choose tenant scope or network destinations |
+| LLM adapter | Provider-independent, structured, one-shot grounded synthesis | Choose tenant scope, retrieve data, call tools, or select network destinations |
 
 ## Monorepo boundaries
 
 ```text
 backend/             FastAPI API, domain services, persistence, jobs, ingestion, tests
 embedding_service/   Private FastAPI/FastEmbed ONNX service, independent locks/image/tests
-frontend/            Reserved for a later React/Vite application; not created through Milestone 5
+frontend/            Reserved for a later React/Vite application; not created through Milestone 6
 docs/                Product, architecture, security, decisions, evaluation, status, operations
 .github/              CI/CD and dependency automation
 ```
 
-Within the backend, versioned routes delegate to auth, installation, repository, webhook, and health services. GitHub, Redis, embeddings, and Qdrant sit behind typed protocols. The private worker composes short PostgreSQL transitions, token minting, clone/discovery, a typed isolated analyzer, authenticated embedding batches, and scoped Qdrant writes; no ORM session remains open across Git/network/filesystem/parser/model work. Call resolution, public retrieval, LLM, agent, and frontend integrations do not exist.
+Within the backend, versioned routes delegate to auth, installation, repository, question, webhook, and health services. GitHub, Redis, embeddings, Qdrant, and hosted synthesis sit behind typed protocols. The private worker retains the Milestone 5 indexing boundary. The API question service holds no ORM session across embedding, Qdrant, or LLM I/O and reauthorizes/rechecks the active build after synthesis. Agent orchestration, history, caller resolution, chat persistence, and frontend integrations do not exist.
 
 ## Implemented request paths
 
@@ -92,9 +92,18 @@ Worker:
   -> inactive scoped Qdrant upsert/count/metadata validation
   -> PostgreSQL atomic activation -> superseded-version cleanup
   -> terminal/retry transition -> guaranteed clone cleanup -> Redis ACK
+
+Repository question:
+  bearer validation -> active installation/repository authorization
+  -> PostgreSQL-authoritative complete active build
+  -> normalized bounded query -> private query embedding
+  -> mandatory installation/repository/version/commit/model/preprocess Qdrant search
+  -> deterministic bounded evidence selection -> versioned untrusted-evidence prompt
+  -> one strict structured synthesis response -> server-owned citation resolution
+  -> authorization/version recheck -> explicit answer or non-answer response
 ```
 
-Configuration is validated before either app is constructed. Production additionally requires JSON logging, disabled API docs, explicit trusted hosts, HTTPS CORS/callback/embedding/Qdrant URLs, credentialed non-local PostgreSQL, authenticated TLS Redis and Qdrant, an absolute Git executable, PEM-shaped GitHub App material, and authentication/service secrets of at least 32 characters. Clone, discovery, parser, embedding document/batch/timeout, Qdrant batch/timeout, heartbeat, stream, and retry bounds are validated. Secrets are excluded from settings representations and allowlisted startup summaries.
+Configuration is validated before either app is constructed. Production additionally requires JSON logging, disabled API docs, explicit trusted hosts, HTTPS CORS/callback/embedding/Qdrant/LLM URLs, credentialed non-local PostgreSQL, authenticated TLS Redis and Qdrant, an absolute Git executable, PEM-shaped GitHub App material, and authentication/service/provider secrets of at least 32 characters. Clone, discovery, parser, embedding, Qdrant, question, evidence, LLM, heartbeat, stream, concurrency, timeout, and retry bounds are validated. Secrets are excluded from settings representations and allowlisted startup summaries.
 
 ## Identity and authorization model
 
@@ -145,14 +154,18 @@ Incremental indexing will be introduced only in Milestone 9. Until then, re-inde
 
 ## Grounded question flow
 
-1. API authenticates the user, authorizes the session, verifies repository access is current, and derives repository ID plus active index version.
-2. Server-controlled orchestration may call only `search_code`, `get_history`, and `find_callers`, with strict schemas, timeouts, and a four-call maximum.
-3. Every vector operation includes mandatory repository and active-version filters.
-4. Retrieved content is escaped and wrapped in structured untrusted-data delimiters.
-5. The synthesis provider returns an evidence-backed result with status, confidence class, citations, and safe tool trace.
-6. Unsupported, stale, partial, failed, or evidence-free questions return explicit non-success answer states instead of guesses.
+1. API authenticates the user and performs the full active installation/repository authorization join. Cross-tenant selectors receive the same non-enumerating not-found response.
+2. PostgreSQL must show repository indexing `complete`, a nonzero active vector count, and exactly one matching `active` build with the current commit, version, model, dimension, preprocessing fingerprint, and count.
+3. Central preprocessing NFC-normalizes and folds whitespace while preserving identifiers, rejects controls and questions shorter than 3 characters or over 4,096 UTF-8 bytes/512 estimated tokens, and produces a prompt-version-bound SHA-256 fingerprint. Raw questions and query vectors are neither logged nor persisted.
+4. The API calls the existing private service in query mode and validates exact model, immutable revision, one 768-dimensional finite L2-normalized result, and preprocessing compatibility.
+5. Qdrant search has no unfiltered route: the server supplies installation, repository, active version, commit, model fingerprint, and preprocessing fingerprint. It over-fetches at most 12 results at score 0.25 and never accepts user filters.
+6. Evidence is sorted by score then stable metadata, deduplicated by content hash, de-overlapped by file/range, capped at 6 items, 3 per file, 12,288 bytes per item, and 32,768 bytes total. Malformed payloads fail closed.
+7. Prompt `repolume-grounded-v1` keeps fixed instructions separate from canonical JSON containing the untrusted question/evidence. Repository text cannot modify instructions. The provider receives no credentials except its own API bearer, no tools, and no infrastructure details.
+8. The provider returns only a strict answer/evidence-sufficiency/uncertainty/evidence-ID object. The server rejects unknown or inline-fabricated IDs and creates citations only from retrieved path, lines, symbol, commit, and bounded excerpt metadata.
+9. The service repeats authorization and active-build validation after network work. A changed or revoked scope fails closed. Requests are bounded to 30 seconds.
+10. The response is one of `answered`, `insufficient_evidence`, `unsupported_question`, or `temporarily_unavailable`. It includes the indexed SHA/version and safe evidence count, but no embedding, point ID, prompt, provider body, or vector topology.
 
-The LLM never receives a shell, repository write capability, secret access, arbitrary networking, or authority to select tenant scope.
+The LLM never receives a shell, repository write capability, secret access, arbitrary networking, or authority to select tenant scope. There is no agent loop, tool call, history lookup, caller lookup, repository chat, or persistence in this milestone.
 
 ## Index consistency
 
@@ -177,6 +190,7 @@ Exact retention decisions will be finalized before deletion functionality is aut
 
 - Implemented liveness proves only that the API process can serve requests.
 - API readiness performs bounded PostgreSQL, Redis, and Qdrant configuration/readiness probes, returns `200` only when all succeed, and otherwise returns a topology-minimizing `503` response.
+- Readiness deliberately does not call the hosted LLM; provider failure is isolated to the question route and returns `temporarily_unavailable`.
 - Worker startup requires authenticated embedding-model readiness, exact Qdrant collection compatibility, Redis group setup, and PostgreSQL reconciliation before consumption.
 - Embedding liveness is dependency-free; authenticated readiness reports only fixed model identity/revision/dimension/normalization/token ceiling and load state.
 - GitHub dependency failures return safe `503` responses without response bodies, credentials, or provider error text.
@@ -204,10 +218,12 @@ The API and worker use one hashed-dependency, non-root Python 3.13.14/Git image 
 
 - No real GitHub App or hosted frontend is connected; GitHub adapter behavior is automatically verified with mocked responses only.
 - Membership is synchronized at login and accepted for a configurable bounded freshness interval. Signed installation suspension/deletion and repository-removal webhooks override it immediately.
-- Initial selected-repository jobs can now complete a searchable vector version, but webhook-triggered reindex scheduling is not connected and no user-facing retrieval path exists.
+- Initial selected-repository jobs can complete a searchable vector version and authorized users can ask one-shot grounded questions. Webhook-triggered reindex scheduling is not connected.
 - Static Python analysis cannot prove dynamic dispatch, reflection, monkey patching, metaclass, decorator-generated, dependency-injection, or runtime-assignment behavior.
 - Python is the only initially supported structured language.
 - Repository evidence cannot establish actual runtime state or undocumented historical intent.
+- The deterministic local provider verifies protocol, refusal, citation, and isolation behavior, not hosted answer quality. No real OpenAI credential was available for local acceptance.
+- The plain retrieval path cannot analyze Git history, call graphs, multi-hop tool flows, or live/external state; those questions are explicitly unsupported.
 - Cross-service index activation requires idempotency and reconciliation because PostgreSQL and Qdrant do not share a transaction.
 - Qdrant now persists complete chunk text for later retrieval/citation; it must be treated as a private sensitive-content store with backups, deletion, encryption, and authorization controls equivalent to repository data.
 - A version-scoped container-scan exception exists for CPython 3.13.14 `CVE-2026-15308`; the vulnerable `html.parser` path is outside these services' execution path and the exception must be removed when a fixed 3.13 maintenance release exists.

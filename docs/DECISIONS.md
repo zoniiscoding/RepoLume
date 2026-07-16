@@ -297,3 +297,35 @@ Decisions are append-only. If a decision changes, add a superseding entry instea
 - **Decision:** Pin both runtime Dockerfiles to `python:3.13.14-slim-trixie` because Debian 12 left standard support. Keep the container gate at fixed High/Critical findings. Temporarily suppress only `CVE-2026-15308` for the exact `python` binary version `3.13.14`; RepoLume does not import or execute the affected `html.parser` path, and the rule stops matching on any version change.
 - **Rationale:** The first real archive scan correctly exposed the unsupported base and a CPython advisory published after the latest 3.13 maintenance release. A version-scoped, documented non-reachability decision is more honest than weakening the severity gate or pretending a fixed 3.13 release exists.
 - **Consequence:** Remove the rule immediately when a patched Python 3.13 release is available and re-run both image scans. This exception is not a general CVE allowlist and does not make the undeployed system production-ready.
+
+## D-038 — Keep Milestone 6 retrieval single-pass and non-agentic
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 6
+- **Decision:** Implement exactly one authenticated authorization/build lookup, private query embedding, mandatory scoped Qdrant search, deterministic evidence-selection pass, and structured synthesis call. Do not expose retrieval controls, tools, loops, history, callers, chat state, or persistence of questions/prompts/answers/evidence.
+- **Rationale:** A small deterministic path makes tenant scope, latency, evidence provenance, refusals, and cost inspectable before autonomous orchestration exists.
+- **Consequence:** History, external/runtime state, call graphs, and multi-step questions return explicit unsupported or insufficient states. Milestone 7 or later must not bypass this grounding boundary when it adds tools.
+
+## D-039 — Use one pinned OpenAI Responses snapshot behind a provider protocol
+
+- **Date:** 2026-07-16
+- **Status:** Accepted with hosted acceptance pending
+- **Decision:** Configure production for OpenAI Responses using `gpt-5.4-mini-2026-03-17`, strict JSON Schema structured output, `store=false`, no tools, direct bounded asynchronous HTTP, and an API-owned provider-neutral protocol. Keep the credential-free deterministic implementation test/development-only.
+- **Rationale:** The selected snapshot supports Responses and structured output while offering a lower-latency/cost profile than the flagship model; pinning prevents silent behavior changes. Direct HTTP avoids an otherwise unnecessary SDK dependency and lock change.
+- **Consequence:** The API alone receives `LLM_API_KEY`. Model upgrades require prompt/evaluation/security review. No real credential was available locally, so adapter behavior is mock-verified and controlled end-to-end acceptance uses deterministic synthesis; real hosted answer behavior remains a launch blocker.
+
+## D-040 — Make retrieval scope and citation metadata exclusively server-owned
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 6
+- **Decision:** Read the active build from PostgreSQL, require installation/repository/version/commit/model/preprocessing Qdrant filters, reject malformed results, and let the model reference only ephemeral `E1` identifiers. Resolve path, line range, symbol, commit, and bounded excerpt from validated evidence after reauthorization and active-version recheck.
+- **Rationale:** A model or client-supplied file path, filter, repository ID, line range, or commit is not authorization or provenance.
+- **Consequence:** Unknown, missing, inline-fabricated, and altered citations fail closed to `insufficient_evidence`. Cross-tenant and stale-version vectors cannot become user-facing evidence through this API.
+
+## D-041 — Treat repository text as untrusted user evidence and retain no RAG artifacts
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 6
+- **Decision:** Keep fixed versioned system instructions free of repository bytes; serialize the normalized question and bounded evidence as canonical untrusted user JSON; never log or persist questions, query vectors, prompts, evidence context, answers, or raw provider responses.
+- **Rationale:** Source and documentation can contain prompt-injection instructions and private data. Their only legitimate role is evidence for a scoped answer.
+- **Consequence:** There is no chat history, response replay, RAG analytics corpus, or durable audit transcript yet. Operational evidence is limited to opaque IDs, safe states/counts/timing, and content-free evaluation observations.

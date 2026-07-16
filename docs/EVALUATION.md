@@ -1,86 +1,67 @@
 # RepoLume Evaluation
 
-**Status:** Static-ingestion plus embedding/vector-index integrity methodology and fixtures exist through Milestone 5. There is still no public retrieval implementation, labelled question corpus, RAG answer system, or product-quality score. Deterministic embedding, vector isolation, and activation evidence must not be presented as retrieval relevance or answer accuracy.
+**Status:** Milestone 6 has a versioned 20-case retrieval/grounding corpus, a content-free metric aggregator, automated regressions, and one controlled two-pass local baseline. The baseline used the real PostgreSQL/Redis/Qdrant/private embedding/API path and deterministic test synthesis. It is not hosted-LLM answer-quality evidence and must not be presented as such.
 
-## Milestone 5 ingestion/index fixtures
+## Controlled corpus
 
-A generated, operator-controlled local Git repository is used for end-to-end ingestion-boundary testing. It contains supported Python/Markdown files, prompt-injection-shaped text, and Python that would create an external marker if executed. The API durably queued it; the worker cloned, discovered, statically parsed, symbolized, chunked, called the real private pinned model in authenticated bounded batches, wrote/validated a real inactive Qdrant version, atomically activated PostgreSQL state, and deleted the clone. The marker remained absent, Redis contained only `job_id`, repeated upserts were deterministic/idempotent, and the repository became searchable only after exact count/metadata validation.
+`backend/evaluation/milestone6_cases.json` contains 20 cases over the committed Milestone 4 synthetic fixture and a separately scoped confusing repository. Each case records category, question, expected answerability, relevant paths/symbols/ranges where stable, forbidden evidence, and an unsupported category where applicable.
 
-A committed rich fixture covers sync/async functions, classes/methods, nested/duplicate names, decorators, multiline positional-only/keyword-only signatures, annotations, docstrings, imports/aliases/relative imports, Unicode, malformed recovery, Markdown hierarchy/fences/prompt-shaped text, and plain documentation. Tests verify exact ranges, stable hashes, canonical preprocessing fingerprints, deterministic 768-dimensional L2-normalized embeddings for identical input/model state, UUIDv5 point identity, complete citation payload metadata, cross-repository/version filters, and repeated identical output.
+Coverage includes exact/similar/nested symbols, semantic implementation, signatures/decorators, behavior answerable from code, Markdown/plain documentation, Unicode, malformed-file recovery, prompt-injection-shaped documentation, missing symbols, runtime/external state, Git history reserved for Milestone 7, caller analysis reserved for Milestone 8, static-analysis limits, and a cross-repository distractor. The controlled search index contains four active fixture chunks; separate scopes contain a confusing other-repository chunk and an inactive-version distractor.
 
-Replacement scenarios establish integrity rather than relevance: a deliberately failed replacement leaves the old active version/count queryable and cleans only the failed inactive scope; a successful replacement activates the complete version before scoped superseded cleanup. Collection mismatch, wrong dimensions, non-finite/non-normalized/missing/extra embeddings, count/metadata mismatch, stale activation, duplicate delivery, authorization revocation, and scope mismatch all fail closed.
+This corpus is synthetic, redistributable with this repository, and deliberately small. Whole-file controlled chunks mean some expected ranges are source truth for citation inspection rather than independent vector points. It is suitable for boundary/regression acceptance, not broad production relevance claims.
 
-These are ingestion, model-contract, vector-isolation, and activation results—not a retrieval benchmark. The fixtures have no relevance labels and no search ranking exists, so no MRR, recall, citation, faithfulness, latency-at-scale, or answer-quality score has been measured.
+## Harness and metrics
 
-## Objectives
+`app.rag.evaluation` validates case/observation schemas and computes structural metrics without exact answer-text matching. Observation artifacts contain case IDs, paths, counts, answer states, content-free response fingerprints, leakage flags, claim counts, and latency only; they contain no question text, source, evidence excerpts, prompts, answers, embeddings, or credentials.
 
-Evaluation must answer four questions:
-
-1. Does retrieval find the relevant repository evidence?
-2. Do answers make only supported claims and cite that evidence correctly?
-3. Does orchestration select the right bounded tools and refuse unsupported questions?
-4. Do authorization and index-version controls prevent any cross-repository leakage?
-
-## Planned fixture corpus
-
-Milestone 6 will select one or more redistributable retrieval fixtures and pin exact commit SHAs. Fixtures must include:
-
-- Multiple Python modules with same-file, directly imported, module-qualified, probable-method, and deliberately unresolved calls.
-- Markdown documentation that is both accurate and intentionally stale relative to code.
-- Similar symbol names and cross-file flows.
-- Git history and pull requests with documented motivation, plus changes where motivation is absent.
-- Malicious instructions in comments, README text, commits, and pull-request content.
-- A second isolated repository containing confusingly similar text to test tenant leakage.
-
-Fixture provenance, license, commit SHA, supported file set, and any synthetic modifications will be recorded before use.
-
-## Question set
-
-Create at least 20 versioned questions with expected evidence and acceptable answer behavior across:
-
-- Exact symbol location.
-- Semantic implementation search.
-- Cross-file flow.
-- Similar names.
-- Documentation lookup.
-- Code/documentation conflict.
-- Same-file and imported callers.
-- Dynamic/unresolved calls.
-- Commit history and pull-request reasoning.
-- Missing historical intent.
-- No-answer and runtime-only questions.
-- Prompt-injection content.
-
-Each case will define the repository/version, question, expected tool(s), relevant source IDs/ranges, allowed claims, required limitations, and expected answer status.
-
-## Metrics
-
-| Metric | Planned calculation |
+| Metric | Calculation |
 | --- | --- |
-| Recall@k | Proportion of cases where at least one expected evidence item appears in the top `k` retrieved items |
-| Mean reciprocal rank | Mean inverse rank of the first relevant item for cases with a defined relevant set |
-| Citation correctness | Supported cited claims divided by evaluated cited claims |
-| Citation completeness | Material supported claims with a citation divided by material supported claims |
-| Tool-selection correctness | Cases using the expected minimal tool set without prohibited/unnecessary tools |
-| Unsupported-answer refusal | Unsupported cases returning an explicit non-answer without invented repository facts |
-| Cross-repository leakage | Retrieved items from any repository/version outside the authorized filter; target is exactly zero |
-| Stale-index detection | Stale cases correctly labelled with indexed SHA context |
-| Average tool calls | Mean tool calls per question, with a hard maximum of four |
-| End-to-end latency | Median and tail latency under a documented environment and corpus size |
+| Recall@k | Observations with at least one expected path among the selected top-k evidence; no-relevant-evidence cases are handled by the refusal metric |
+| Citation precision | Supported citations divided by citations; controlled deterministic observations use independently valid server citations as the support label |
+| Citation validity | Citations resolving exactly to retrieved server-owned evidence divided by citations |
+| No-answer accuracy | Non-answered cases returning their exact expected `insufficient_evidence` or `unsupported_question` state |
+| Cross-repository leakage | Explicit leakage flags or retrieved paths intersecting the case's forbidden paths; target exactly zero |
+| Unsupported-claim rate | Independently labelled unsupported material claims divided by material claims |
+| Deterministic consistency | Repeated observations for each case with one identical content-free response fingerprint |
+| Latency | Mean and maximum end-to-end API time in the documented local run |
 
-Numeric thresholds will be established after the first honest baseline; they will not be reverse-engineered to make a weak system pass.
+The evaluator fails on duplicate case IDs, observations for unknown cases, or an empty run. Retrieval/citation/security tests separately cover score/range ordering, threshold/scope filters, malformed payloads, overlaps, unknown citations, altered inline citations, authorization, stale builds, and provider failures.
 
-## Evaluation procedure
+Run the aggregator from the repository root:
 
-1. Build fixture indexes from pinned commits using the same production code paths.
-2. Record configuration, model identities, dimensions, chunking version, index version, hardware/service environment, and run timestamp.
-3. Run deterministic retrieval checks separately from LLM synthesis checks.
-4. Mock providers for orchestration unit tests and use configured real providers only for explicitly labelled end-to-end evaluation.
-5. Inspect citations against source line ranges and historical records.
-6. Run cross-user, cross-repository, inactive-version, and deleted-version isolation cases.
-7. Preserve raw metric artifacts without private repository content and summarize results here.
-8. Record failures and regressions; do not omit failed cases.
+```sh
+PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
+  --cases backend/evaluation/milestone6_cases.json \
+  --observations /path/to/content-free-observations.json
+```
 
-## Result history
+## Milestone 6 controlled baseline
 
-Milestone 5 executed deterministic model and index-integrity tests only: the real-model service suite passed 15/15 with 92.24% coverage and the backend suite passed 166/166 with 90.76% coverage, including real Qdrant isolation and controlled indexing. No retrieval or answer evaluation has been executed, and there are no valid product-quality scores to report.
+Date: 2026-07-16. Runtime: Python 3.13.14 on local Apple Silicon. Services: PostgreSQL 18 on `127.0.0.1:55432`, Redis 8.8 on `127.0.0.1:56379`, official checksum-verified Qdrant 1.18.2 on `127.0.0.1:56333`, the real private `jinaai/jina-embeddings-v2-base-code` immutable-revision service on `127.0.0.1:18100`, and the actual FastAPI app on `127.0.0.1:18006`. Synthesis: deterministic test provider because no hosted credential was available. Configuration: top-k 6, over-fetch 12, score threshold 0.25, prompt `repolume-grounded-v1`.
+
+Each of 20 cases ran twice (40 observations):
+
+| Result | Actual value |
+| --- | ---: |
+| Recall@k | 1.0000 |
+| Citation precision | 1.0000 |
+| Citation validity | 1.0000 |
+| No-answer accuracy | 1.0000 |
+| Cross-repository leakage | 0 |
+| Unsupported-claim rate | 0.0000 |
+| Deterministic consistency | 1.0000 |
+| Mean latency | 17.85 ms |
+| Maximum latency | 24.51 ms |
+
+The API also returned HTTP 200 for liveness/readiness, an authenticated answer with a server-resolved citation, and HTTP 404 for a cross-user request. Qdrant contained four authorized active points and isolated distractors outside the trusted filter. Operational-log sentinel inspection passed.
+
+The first baseline exposed weak deterministic refusal behavior: no-answer accuracy was 0.5714 because lexical distractors were treated as answerable. The general deterministic test provider now requires meaningful question/evidence token overlap, while the centralized unsupported policy rejects runtime/current-production/history/caller/external-state classes before retrieval. Focused regressions passed and the unchanged 20-case/two-pass baseline reached 1.0000. This fixes local acceptance behavior; it says nothing about real hosted-model refusal quality.
+
+## Limits and next evaluation work
+
+- No real OpenAI request ran, so hosted answer faithfulness, refusal quality, token/cost behavior, provider latency, and rate-limit behavior remain pending.
+- Repeatable local container verification is blocked by contradictory Podman VM/socket state; hosted CI remains pending. This does not affect the host-run service baseline above.
+- The fixture is four active whole-file vectors plus isolated distractors, not a representative repository population or load test.
+- Citation precision and unsupported-claim labels are deterministic structural labels in this baseline; independent human/provider evaluation remains necessary before launch.
+- No MRR, p95/p99 latency, multilingual breadth, long-context capacity, freshness, history, caller/tool selection, or end-user usefulness score is claimed.
+- Milestone 7 must add history/tool cases without changing or retroactively relabelling this Milestone 6 baseline.

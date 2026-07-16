@@ -124,6 +124,37 @@ def test_real_qdrant_is_scoped_idempotent_and_deletes_only_one_scope() -> None:
                 ),
             )
 
+        query = [0.0] * settings.embedding_dimension
+        query[0] = 1.0
+        retrieved = await store.search(
+            scope_a_v1,
+            query_vector=tuple(query),
+            commit_sha="a" * 40,
+            model_fingerprint=embedding_model_fingerprint(
+                settings, preprocessor.policy_fingerprint
+            ),
+            preprocessing_fingerprint=preprocessor.policy_fingerprint,
+            limit=10,
+            score_threshold=0.1,
+        )
+        assert len(retrieved) == 1
+        assert retrieved[0].content == "def service():\n    return 'a-v1'"
+        assert retrieved[0].file_path == "app/service.py"
+        assert retrieved[0].score == pytest.approx(1.0)
+
+        wrong_version = await store.search(
+            VectorScope(installation, repository_a, 99),
+            query_vector=tuple(query),
+            commit_sha="a" * 40,
+            model_fingerprint=embedding_model_fingerprint(
+                settings, preprocessor.policy_fingerprint
+            ),
+            preprocessing_fingerprint=preprocessor.policy_fingerprint,
+            limit=10,
+            score_threshold=0.1,
+        )
+        assert wrong_version == ()
+
         raw = AsyncQdrantClient(url=qdrant_url(), check_compatibility=False)
         points, _ = await raw.scroll(
             collection_name=_COLLECTION,
@@ -177,6 +208,57 @@ def test_real_qdrant_rejects_collection_and_record_scope_mismatch() -> None:
         with pytest.raises(IndexingError) as scope_error:
             await store.upsert(scope, [wrong])
         assert scope_error.value.code == "vector_scope_mismatch"
+        await store.close()
+        await raw.close()
+
+    asyncio.run(exercise())
+
+
+def test_real_qdrant_rejects_malformed_scoped_search_payload() -> None:
+    settings = make_settings(qdrant_url=qdrant_url(), qdrant_collection_name=_COLLECTION)
+    preprocessor = EmbeddingPreprocessor(settings)
+    scope = VectorScope(uuid.uuid4(), uuid.uuid4(), 1)
+
+    async def exercise() -> None:
+        store = QdrantVectorStore(settings)
+        await store.ensure_collection()
+        raw = AsyncQdrantClient(url=qdrant_url(), check_compatibility=False)
+        vector = [0.0] * settings.embedding_dimension
+        vector[0] = 1.0
+        await raw.upsert(
+            collection_name=_COLLECTION,
+            wait=True,
+            points=[
+                models.PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=vector,
+                    payload={
+                        "installation_id": str(scope.installation_id),
+                        "repository_id": str(scope.repository_id),
+                        "index_version": 1,
+                        "commit_sha": "a" * 40,
+                        "embedding_model_fingerprint": embedding_model_fingerprint(
+                            settings, preprocessor.policy_fingerprint
+                        ),
+                        "preprocessing_policy_fingerprint": preprocessor.policy_fingerprint,
+                        "file_path": "malformed.py",
+                    },
+                )
+            ],
+        )
+        with pytest.raises(IndexingError) as captured:
+            await store.search(
+                scope,
+                query_vector=tuple(vector),
+                commit_sha="a" * 40,
+                model_fingerprint=embedding_model_fingerprint(
+                    settings, preprocessor.policy_fingerprint
+                ),
+                preprocessing_fingerprint=preprocessor.policy_fingerprint,
+                limit=1,
+                score_threshold=0.1,
+            )
+        assert captured.value.code == "qdrant_malformed_search_result"
         await store.close()
         await raw.close()
 

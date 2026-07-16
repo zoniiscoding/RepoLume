@@ -21,6 +21,13 @@ class AppEnvironment(StrEnum):
     PRODUCTION = "production"
 
 
+class LLMProvider(StrEnum):
+    """Supported answer-synthesis providers."""
+
+    OPENAI = "openai"
+    DETERMINISTIC = "deterministic"
+
+
 class Settings(BaseSettings):
     """Application settings loaded exclusively from environment or local `.env`."""
 
@@ -119,6 +126,33 @@ class Settings(BaseSettings):
     qdrant_upsert_batch_size: int = Field(default=128, ge=1, le=1_000)
     qdrant_max_attempts: int = Field(default=3, ge=1, le=10)
     qdrant_retry_base_seconds: float = Field(default=0.25, gt=0, le=10)
+
+    rag_question_min_characters: int = Field(default=3, ge=1, le=64)
+    rag_question_max_bytes: int = Field(default=4096, ge=64, le=16_384)
+    rag_question_max_tokens: int = Field(default=512, ge=16, le=2_048)
+    rag_retrieval_top_k: int = Field(default=6, ge=1, le=20)
+    rag_retrieval_overfetch: int = Field(default=12, ge=1, le=50)
+    rag_retrieval_score_threshold: float = Field(default=0.25, ge=-1, le=1)
+    rag_max_evidence_per_file: int = Field(default=3, ge=1, le=10)
+    rag_max_evidence_bytes: int = Field(default=32 * 1024, ge=1024, le=256 * 1024)
+    rag_max_evidence_item_bytes: int = Field(default=12 * 1024, ge=512, le=64 * 1024)
+    rag_total_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+
+    llm_provider: LLMProvider = LLMProvider.OPENAI
+    llm_api_url: AnyHttpUrl = AnyHttpUrl("https://api.openai.com/v1")
+    llm_api_key: SecretStr = SecretStr("")
+    llm_model: str = Field(
+        default="gpt-5.4-mini-2026-03-17",
+        pattern=r"^[A-Za-z0-9._-]+$",
+    )
+    llm_prompt_version: str = Field(default="repolume-grounded-v1", pattern=r"^[a-z0-9._-]+$")
+    llm_max_output_tokens: int = Field(default=1200, ge=128, le=8192)
+    llm_max_answer_characters: int = Field(default=8000, ge=256, le=32_000)
+    llm_connect_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
+    llm_read_timeout_seconds: float = Field(default=20.0, gt=0, le=90)
+    llm_max_attempts: int = Field(default=2, ge=1, le=4)
+    llm_retry_base_seconds: float = Field(default=0.25, gt=0, le=5)
+    llm_max_concurrent_requests: int = Field(default=8, ge=1, le=100)
 
     cors_origins: list[AnyHttpUrl] = Field(default_factory=list)
     trusted_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
@@ -240,6 +274,10 @@ class Settings(BaseSettings):
             raise ValueError("QDRANT_URL must use HTTPS in production")
         if len(self.qdrant_api_key.get_secret_value()) < MINIMUM_SECRET_LENGTH:
             raise ValueError("QDRANT_API_KEY must contain a production credential")
+        if self.llm_provider is not LLMProvider.OPENAI:
+            raise ValueError("LLM_PROVIDER must be openai in production")
+        if self.llm_api_url.scheme != "https":
+            raise ValueError("LLM_API_URL must use HTTPS in production")
 
     @model_validator(mode="after")
     def validate_parser_limits(self) -> Self:
@@ -258,6 +296,17 @@ class Settings(BaseSettings):
             raise ValueError(
                 "EMBEDDING_MAX_DOCUMENT_BYTES cannot be smaller than PARSER_MAX_CHUNK_BYTES"
             )
+        if self.rag_retrieval_overfetch < self.rag_retrieval_top_k:
+            raise ValueError("RAG_RETRIEVAL_OVERFETCH cannot be smaller than RAG_RETRIEVAL_TOP_K")
+        if self.rag_max_evidence_item_bytes > self.rag_max_evidence_bytes:
+            raise ValueError("RAG_MAX_EVIDENCE_ITEM_BYTES cannot exceed RAG_MAX_EVIDENCE_BYTES")
+        if self.llm_read_timeout_seconds >= self.rag_total_timeout_seconds:
+            raise ValueError("LLM_READ_TIMEOUT_SECONDS must be below RAG_TOTAL_TIMEOUT_SECONDS")
+        if (
+            self.llm_provider is LLMProvider.DETERMINISTIC
+            and self.app_env is not AppEnvironment.TEST
+        ):
+            raise ValueError("The deterministic LLM provider is allowed only in test")
         return self
 
     @property
@@ -287,6 +336,11 @@ class Settings(BaseSettings):
             "embedding_dimension": self.embedding_dimension,
             "embedding_batch_size": self.embedding_batch_size,
             "qdrant_collection_name": self.qdrant_collection_name,
+            "rag_retrieval_top_k": self.rag_retrieval_top_k,
+            "rag_total_timeout_seconds": self.rag_total_timeout_seconds,
+            "llm_provider": self.llm_provider.value,
+            "llm_model": self.llm_model,
+            "llm_prompt_version": self.llm_prompt_version,
         }
 
 

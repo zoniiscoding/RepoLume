@@ -1,6 +1,6 @@
 # RepoLume Security
 
-**Status:** Milestone 5 identity/access controls, durable delivery, private worker, credential-isolated static ingestion, authenticated private embedding, mandatory scoped Qdrant operations, atomic index activation, and cleanup are implemented and locally verified. Live GitHub and hosted production controls remain unverified.
+**Status:** Milestone 6 adds authorized active-index retrieval, untrusted-evidence prompt construction, strict structured synthesis, independent citation resolution, and explicit no-answer behavior to the verified Milestone 5 data plane. Live GitHub, real hosted-LLM behavior, and hosted production controls remain unverified.
 
 ## Security invariants
 
@@ -12,7 +12,7 @@
 6. Revocation blocks use immediately; deletion is a verified asynchronous purge.
 7. Production readiness cannot be claimed until controls have implementation and executed evidence.
 
-Milestone 5 statically parses bounded supported bytes as inert syntax inside a killable child, embeds complete bounded chunks with one fixed private ONNX model, persists vectors/citation payloads under an inactive scoped Qdrant version, validates them, and only then atomically activates PostgreSQL state. It does not execute/import connected code, expose retrieval publicly, resolve calls, invoke an LLM, or provide a frontend.
+Milestone 6 exposes only an authenticated repository question route. It derives every scope from authorization and PostgreSQL active state, embeds one bounded query privately, retrieves one mandatory scoped Qdrant result set, treats all question/repository text as untrusted user evidence, and accepts only server-resolved citations. It does not execute/import connected code, expose user filters, resolve history/callers, give a model tools, persist question artifacts, or provide a frontend.
 
 ## Primary assets
 
@@ -37,7 +37,7 @@ The implemented public surface is health, GitHub OAuth start/callback, refresh/l
 
 ## Control checklist
 
-Legend: **Verified M5** means the implemented subset passed local automated/manual checks with real PostgreSQL/Redis/Qdrant/private model service, mocked GitHub responses, and controlled Git fixtures; it does not imply live provider or production-deployment verification.
+Legend: **Verified M6** means the implemented subset passed local automated/manual checks with real PostgreSQL/Redis/Qdrant/private embedding service, mocked GitHub responses, a controlled indexed fixture, and deterministic local synthesis; it does not imply real hosted-LLM, live GitHub, or production-deployment verification.
 
 | Area | Required control | Status | Evidence or remaining milestone |
 | --- | --- | --- | --- |
@@ -51,21 +51,22 @@ Legend: **Verified M5** means the implemented subset passed local automated/manu
 | Filesystem | Fresh mode-0700 root, containment/symlink protection, non-following traversal, directory/type/binary/file/count/byte limits | Verified M4 inherited | Discovery and parser-path security tests plus controlled Git worker run |
 | Parser isolation | Spawned killable child, bounded UTF-8 reads, symbols/chunks/warnings/time/CPU/Linux-memory limits, safe result protocol | Verified M4 | Timeout, malformed, oversized, unsafe-path, parser-failure, cleanup, and live pipeline tests |
 | Code execution | No import, eval, exec, install, build, test, service, plugin, hook, filter, or repository config evaluation | Verified M4 parse boundary | Deliberate execution-marker code remained absent after clone/discovery/parse/chunk processing |
-| Prompt injection | Repository text remains inert through parse/preprocessing/model input; future structured retrieval/tool boundary | Verified M5 ingestion subset | Injection-shaped source test; user retrieval/tools remain Milestones 6–8 |
-| Vector isolation | Typed installation + repository + index-version filters on every Qdrant count/scroll/delete and future search | Verified M5 | Real Qdrant cross-repository/version, scope mismatch, deterministic-ID, and scoped-delete tests |
+| Prompt injection | Repository text is user evidence only; fixed system instructions, no tools, strict output, independent citations | Verified M6 | Prompt-shape prompt tests and controlled answer/no-answer pipeline; hosted-model acceptance pending |
+| Vector isolation | Typed installation + repository + active-version + commit + model + preprocessing filters on every search | Verified M6 | Real Qdrant cross-repository/version/model searches and malformed-payload rejection |
+| Grounding | Bounded deterministic evidence, structured answer states, unknown-citation rejection, server-owned metadata | Verified M6 local provider | Grounding/citation tests plus 20-case two-pass evaluation |
 | Index integrity | Inactive build, exact count/metadata validation, PostgreSQL transaction, one-active constraint, rollback/cleanup | Verified M5 | Success/replacement/failure/stale/duplicate/revocation/activation-order integration tests |
 | Database | Async parameterized ORM, FKs, unique/check/composite constraints, Alembic | Verified foundation | PostgreSQL migration/model/integration tests; production least privilege later |
 | API abuse | Webhook 1 MiB/body and bounded header/schema validation; mutation idempotency where implemented | Partial | Rate/usage controls remain Milestone 13 |
 | Error safety | Stable envelope, sanitized validation issues, hidden internal messages, request correlation | Verified foundation | `test_http_foundation.py` |
 | Output safety | Sanitized Markdown and safe links/attributes | Planned | Milestone 10 |
 | Secrets | Secret-valued config, digest-only auth state, ephemeral GitHub tokens, askpass token outside argv/storage/logs | Verified M3 | Config/token/log/persistence/clone-argv tests; final log scan recorded in build report |
-| Observability | Structured IDs/timing/stage/counts without tokens, provider bodies, paths/content, vectors, parser/model internals, or secrets | Verified M5 | Backend/service logging tests plus actual API/worker/model log inspection |
+| Observability | Structured IDs/timing/stage/counts without questions, prompts, answers, provider bodies, paths/content, vectors, or secrets | Verified M6 | Backend/service logging tests plus actual API/model log inspection and sentinel scan |
 | Containers | Hashed install, supported Debian 13/Python 3.13.14, non-root API/worker/model runtime, fixed High/Critical scan | Verified M5 subset | Local Podman builds/inspection and socket-free Grype archive scans; hosted hardening later |
 | Headers | API CSP, production HSTS, nosniff, frame, referrer, permissions policy | Verified foundation | `test_http_foundation.py`, live curl headers |
 | Deletion | Durable retryable purge across all stores | Planned | Milestone 9 |
 | Supply chain | Locked dependencies, Dependabot, audit, minimal workflow permissions | Verified foundation | Hashed locks, `pip-audit`, CI inspection; hosted CI run pending |
 
-## Implemented controls through Milestone 5
+## Implemented controls through Milestone 6
 
 - `DATABASE_URL` is a Pydantic `SecretStr`; safe configuration summaries never contain it.
 - Configuration accepts only `postgresql+asyncpg` plus Redis/Redis-TLS URLs and applies stricter production validation: non-local credentialed database, authenticated `rediss://`, JSON logs, disabled interactive docs, explicit trusted hosts, HTTPS CORS/callback origins, minimum authentication-secret lengths, absolute Git path, and PEM-shaped GitHub App key material.
@@ -103,6 +104,14 @@ Legend: **Verified M5** means the implemented subset passed local automated/manu
 - Point identities are UUIDv5 values over installation, repository, index version, relative path, stable chunk hash, chunk type, and ordinal. Retry upserts are idempotent and cross-repository/version collisions are prevented by identity inputs and explicit filters.
 - PostgreSQL build constraints require nonnegative counts and exact expected/embedded/vector equality with zero failures/skips before `ready` or `active`. A partial unique index permits one active build. Row locks and ordered flushes prevent stale/concurrent activation.
 - Pre-activation failures cannot change the repository active version. Cleanup deletes only a trusted inactive installation/repository/version scope; successful replacement activates before deleting the superseded scope.
+- Question preprocessing is centralized, Unicode-safe, fingerprinted, and bounded to 3 minimum characters/4,096 bytes/512 estimated tokens. It rejects empty/control/out-of-bound input and never logs or persists raw questions or query vectors.
+- Repository questions repeat the full server-side authorization and matching-active-build check after external I/O, so revocation or version replacement during synthesis fails closed.
+- Qdrant search can only be called through a typed scope and exact commit/model/preprocessing filters. Results must contain finite scores, safe relative paths, valid ranges/hashes, and nonempty citation content/metadata before use.
+- Evidence selection has deterministic tie-breaking, duplicate/overlap removal, per-file/item/total context bounds, and stable `E1` identifiers. The client cannot choose `k`, thresholds, context size, or filters.
+- Prompt `repolume-grounded-v1` places no repository content in system instructions. Canonical JSON identifies the question and all repository material as untrusted; the synthesis request contains no GitHub, database, Redis, Qdrant, or embedding credentials.
+- The OpenAI Responses adapter pins `gpt-5.4-mini-2026-03-17`, disables provider storage, redirects, and tools, uses strict JSON Schema, bounded timeouts/retries/concurrency/output, propagates cancellation, and never logs prompts or provider bodies. Its API key exists only in the API process.
+- Model output can name evidence IDs only. Unknown, missing, duplicated, or inline-fabricated IDs fail closed; path, exact range, symbol, commit, and supporting excerpt always come from trusted retrieved evidence.
+- Runtime/external/history/caller questions are explicitly unsupported; absent/low-quality evidence returns `insufficient_evidence`; dependency failure returns `temporarily_unavailable`. No-answer responses contain no citations.
 - Both production images use Python 3.13.14 on supported Debian 13 and non-root users. Fixed High/Critical archive scanning is in CI. The exact, version-scoped `CVE-2026-15308` rule documents that the affected standard-library HTML parser is outside RepoLume's execution path and must be removed on the first patched Python 3.13 release.
 
 ## Connected-repository sandbox rules
@@ -115,11 +124,11 @@ Git clone credentials use a short-lived askpass helper. Credentials do not appea
 
 ## Prompt-injection boundary
 
-Source and documentation are already serialized as inert chunk data inside deterministic delimiters for embedding; prompt-shaped text receives no authority and the embedding service has no tool interface. Future retrieval/LLM input will additionally be escaped inside explicit evidence delimiters. The future model will be offered only `search_code`, `get_history`, and `find_callers`; none of those tools or any generative model integration exists yet.
+Source and documentation remain inert through parsing, embedding, retrieval, and synthesis. Fixed system instructions contain no repository bytes. The user question and bounded evidence are canonical JSON in the untrusted user input and are explicitly labelled as data even when they say “ignore previous instructions,” request secrets/external calls, or demand a false answer. The one-shot model has no tool schema, shell, network selector, secret access, repository selector, or citation metadata authority. History, callers, agents, and tools are not implemented.
 
 ## Data classification and logging
 
-Private repository text, chat content, prompts, full model responses, cookies, tokens, and secrets are sensitive and must not be logged. Structured logs may include opaque actor, installation, repository, session, job, and request IDs; route; status; duration; stage; tool name; result count; and safe error code.
+Private repository text, complete questions/answers, chat content, prompts, full model responses, embeddings, cookies, tokens, and secrets are sensitive and must not be logged. Structured logs may include opaque actor, installation, repository, session, job, and request IDs; route; status; duration; stage; safe evidence counts; and safe error code.
 
 Tests place OAuth-code, GitHub-token, installation-token, refresh-token, access-token, embedding-service token, Qdrant-key, repository execution-marker/source/prompt-injection, vector, and Redis-error sentinels through the flows and assert safe behavior. Worker/model logs contain opaque IDs, attempts, stages, kinds, counts, durations, model identity, and safe codes only—never repository identities, paths, content, embeddings, credentials, provider bodies, parser/model internals, or exception messages.
 
@@ -129,4 +138,4 @@ Every milestone updates this file with implementation and executed evidence. Mil
 
 ## Current security posture
 
-The verified Milestone 5 subset provides a strong authentication, authorization, durable delivery, safe static ingestion, private embedding, scoped vector, atomic activation, cleanup, configuration, log, database, dependency, CI, and container boundary. It is not a complete public SaaS boundary: live GitHub App cloning, hosted browser/deployment/private networking, retrieval/LLM prompt handling, rate/usage limits, backup/restore, alerting, deletion, and later data-plane controls remain absent or unverified. Production GitHub credentials and private repository traffic must wait for those launch gates.
+The verified Milestone 6 subset provides authentication, authorization, durable ingestion, private embeddings, scoped active-version retrieval, prompt separation, structured grounding, citation integrity, refusal behavior, and content-minimizing logs. It is not a complete public SaaS boundary: real hosted-LLM behavior, live GitHub App cloning, hosted browser/deployment/private networking, plan/rate/usage limits, backup/restore, alerting, deletion, and later agent/data-plane controls remain absent or unverified. Production GitHub credentials and private repository traffic must wait for those launch gates.

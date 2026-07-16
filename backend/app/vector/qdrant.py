@@ -19,6 +19,7 @@ from app.embeddings.preprocessing import PreparedEmbedding
 from app.indexing.failures import IndexingError
 
 POINT_NAMESPACE = uuid.UUID("cedab252-9197-54f6-9603-b2f936a85e78")
+SHA256_HEX_LENGTH = 64
 _T = TypeVar("_T")
 PayloadValue: TypeAlias = str | int | None
 
@@ -43,6 +44,22 @@ class VectorRecord:
     payload: dict[str, PayloadValue]
 
 
+@dataclass(frozen=True, slots=True)
+class RetrievalHit:
+    """Validated private evidence returned from one trusted active scope."""
+
+    score: float
+    file_path: str
+    language: str
+    chunk_type: str
+    symbol_name: str | None
+    qualified_symbol_name: str | None
+    start_line: int
+    end_line: int
+    content: str
+    stable_chunk_hash: str
+
+
 class VectorStoreProtocol(Protocol):
     async def is_ready(self) -> bool: ...
 
@@ -51,6 +68,18 @@ class VectorStoreProtocol(Protocol):
     async def upsert(self, scope: VectorScope, records: Sequence[VectorRecord]) -> None: ...
 
     async def count_scope(self, scope: VectorScope) -> int: ...
+
+    async def search(
+        self,
+        scope: VectorScope,
+        *,
+        query_vector: tuple[float, ...],
+        commit_sha: str,
+        model_fingerprint: str,
+        preprocessing_fingerprint: str,
+        limit: int,
+        score_threshold: float,
+    ) -> tuple[RetrievalHit, ...]: ...
 
     async def validate_scope(
         self,
@@ -160,6 +189,34 @@ def scope_filter(scope: VectorScope) -> models.Filter:
             models.FieldCondition(
                 key="index_version",
                 match=models.MatchValue(value=scope.index_version),
+            ),
+        ]
+    )
+
+
+def retrieval_filter(
+    scope: VectorScope,
+    *,
+    commit_sha: str,
+    model_fingerprint: str,
+    preprocessing_fingerprint: str,
+) -> models.Filter:
+    """Add immutable index/model identity to the mandatory tenant scope."""
+    base = scope_filter(scope)
+    return models.Filter(
+        must=[
+            *(base.must or []),
+            models.FieldCondition(
+                key="commit_sha",
+                match=models.MatchValue(value=commit_sha),
+            ),
+            models.FieldCondition(
+                key="embedding_model_fingerprint",
+                match=models.MatchValue(value=model_fingerprint),
+            ),
+            models.FieldCondition(
+                key="preprocessing_policy_fingerprint",
+                match=models.MatchValue(value=preprocessing_fingerprint),
             ),
         ]
     )
@@ -317,6 +374,61 @@ class QdrantVectorStore:
         )
         return result.count
 
+    async def search(
+        self,
+        scope: VectorScope,
+        *,
+        query_vector: tuple[float, ...],
+        commit_sha: str,
+        model_fingerprint: str,
+        preprocessing_fingerprint: str,
+        limit: int,
+        score_threshold: float,
+    ) -> tuple[RetrievalHit, ...]:
+        if len(query_vector) != self._dimension or any(
+            not math.isfinite(value) for value in query_vector
+        ):
+            raise IndexingError(
+                code="invalid_query_vector",
+                message="The query embedding failed validation",
+                retryable=False,
+            )
+        norm = math.sqrt(sum(value * value for value in query_vector))
+        if not math.isclose(norm, 1.0, rel_tol=1e-4, abs_tol=1e-4):
+            raise IndexingError(
+                code="invalid_query_vector",
+                message="The query embedding failed validation",
+                retryable=False,
+            )
+        result = await self._run(
+            lambda: self._client.query_points(
+                collection_name=self._collection,
+                query=list(query_vector),
+                query_filter=retrieval_filter(
+                    scope,
+                    commit_sha=commit_sha,
+                    model_fingerprint=model_fingerprint,
+                    preprocessing_fingerprint=preprocessing_fingerprint,
+                ),
+                limit=limit,
+                score_threshold=score_threshold,
+                with_payload=True,
+                with_vectors=False,
+                timeout=self._timeout,
+            ),
+            code="qdrant_search_failed",
+        )
+        return tuple(
+            self._parse_retrieval_hit(
+                scope,
+                point,
+                commit_sha=commit_sha,
+                model_fingerprint=model_fingerprint,
+                preprocessing_fingerprint=preprocessing_fingerprint,
+            )
+            for point in result.points
+        )
+
     async def validate_scope(
         self,
         scope: VectorScope,
@@ -429,6 +541,78 @@ class QdrantVectorStore:
                 message="A vector record did not match its trusted repository scope",
                 retryable=False,
             )
+
+    @staticmethod
+    def _parse_retrieval_hit(
+        scope: VectorScope,
+        point: models.ScoredPoint,
+        *,
+        commit_sha: str,
+        model_fingerprint: str,
+        preprocessing_fingerprint: str,
+    ) -> RetrievalHit:
+        payload = point.payload or {}
+        score = point.score
+        required_strings = (
+            "file_path",
+            "language",
+            "chunk_type",
+            "content",
+            "stable_chunk_hash",
+        )
+        if (
+            not math.isfinite(score)
+            or payload.get("installation_id") != str(scope.installation_id)
+            or payload.get("repository_id") != str(scope.repository_id)
+            or payload.get("index_version") != scope.index_version
+            or payload.get("commit_sha") != commit_sha
+            or payload.get("embedding_model_fingerprint") != model_fingerprint
+            or payload.get("preprocessing_policy_fingerprint") != preprocessing_fingerprint
+            or any(not isinstance(payload.get(key), str) for key in required_strings)
+            or not isinstance(payload.get("start_line"), int)
+            or not isinstance(payload.get("end_line"), int)
+        ):
+            raise IndexingError(
+                code="qdrant_malformed_search_result",
+                message="The vector store returned malformed evidence",
+                retryable=False,
+            )
+        start_line = payload["start_line"]
+        end_line = payload["end_line"]
+        file_path = payload["file_path"]
+        stable_hash = payload["stable_chunk_hash"]
+        symbol_name = payload.get("symbol_name")
+        qualified_name = payload.get("qualified_symbol_name")
+        if (
+            start_line < 1
+            or end_line < start_line
+            or not file_path
+            or not payload["content"]
+            or not payload["language"]
+            or not payload["chunk_type"]
+            or file_path.startswith("/")
+            or ".." in file_path.split("/")
+            or len(stable_hash) != SHA256_HEX_LENGTH
+            or (symbol_name is not None and not isinstance(symbol_name, str))
+            or (qualified_name is not None and not isinstance(qualified_name, str))
+        ):
+            raise IndexingError(
+                code="qdrant_malformed_search_result",
+                message="The vector store returned malformed evidence",
+                retryable=False,
+            )
+        return RetrievalHit(
+            score=score,
+            file_path=file_path,
+            language=payload["language"],
+            chunk_type=payload["chunk_type"],
+            symbol_name=symbol_name,
+            qualified_symbol_name=qualified_name,
+            start_line=start_line,
+            end_line=end_line,
+            content=payload["content"],
+            stable_chunk_hash=stable_hash,
+        )
 
     @staticmethod
     def _configuration_mismatch() -> IndexingError:

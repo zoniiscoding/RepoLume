@@ -2,7 +2,7 @@
 
 RepoLume is a multi-tenant, read-only developer SaaS for understanding authorized GitHub repositories through evidence-backed answers.
 
-This repository is at **Milestone 5: private embeddings and atomic vector indexing**. It implements the FastAPI/PostgreSQL foundation, GitHub App authentication and access controls, Redis Stream delivery, a separate indexing worker, safe shallow cloning, isolated Tree-sitter parsing/chunking, an authenticated private ONNX embedding service, repository/version-scoped Qdrant storage, and PostgreSQL-authoritative atomic index activation. There is no user-facing semantic search, call graph, LLM, agent, chat, or frontend functionality yet.
+This repository is at **Milestone 6: plain grounded RAG**. It implements the FastAPI/PostgreSQL foundation, GitHub App authentication and access controls, durable indexing, private ONNX embeddings, atomically activated Qdrant indexes, and an authenticated single-pass question endpoint with repository/version-scoped retrieval, structured hosted-LLM synthesis, server-resolved citations, explicit non-answer states, and a deterministic evaluation harness. There is no tool-calling agent, history retrieval, call graph, chat persistence, or frontend functionality yet.
 
 Read [the product specification](docs/PRODUCT_SPEC.md), [current build status](docs/BUILD_STATUS.md), [security posture](docs/SECURITY.md), and [engineering rules](AGENTS.md) before changing code.
 
@@ -16,6 +16,7 @@ Read [the product specification](docs/PRODUCT_SPEC.md), [current build status](d
 - The reviewed `jinaai/jina-embeddings-v2-base-code` model at immutable revision `516f4baf13dec4ddddda8631e019b5737c8bc250` (Apache-2.0, 768 dimensions, 8,192-token model limit).
 - Git available at the absolute path configured by `CLONE_GIT_EXECUTABLE` (the container uses `/usr/bin/git`).
 - A GitHub App is required only for live OAuth, installation, and webhook verification; automated tests use mocked GitHub responses.
+- An OpenAI API credential is required for production answer synthesis. Automated and local acceptance tests use a deterministic provider and never require or fabricate a hosted-model result.
 - Docker Compose or Podman/Docker is optional for containerized local startup.
 
 ## Local setup
@@ -30,6 +31,8 @@ cp .env.example .env
 ```
 
 Fill the untracked `.env` with disposable/local PostgreSQL, Redis, Qdrant, and private embedding-service settings plus local-only authentication values. Secret fields must be independent values of at least 32 characters. Never commit `.env`.
+
+For the question API, set `LLM_PROVIDER=openai`, place `LLM_API_KEY` only in the API secret store, and keep the pinned `LLM_MODEL=gpt-5.4-mini-2026-03-17` plus `LLM_PROMPT_VERSION=repolume-grounded-v1` unless an intentional compatibility review changes them. `LLM_PROVIDER=deterministic` is accepted only in development/test and is not a production model substitute.
 
 ## GitHub App configuration
 
@@ -86,6 +89,18 @@ Or run the complete local service set with `docker compose up --build`. The API 
 
 Start live OAuth at `GET /api/v1/auth/github/start`. Access tokens are returned in authenticated API responses and belong in frontend memory only. Refresh tokens are handled through the scoped HTTP-only cookie; refresh/logout requests must include an allowed `Origin` header.
 
+Ask a question with the short-lived bearer token after the repository reports a complete active searchable index:
+
+```sh
+curl --fail-with-body --request POST \
+  --header 'Authorization: Bearer <access-token>' \
+  --header 'Content-Type: application/json' \
+  --data '{"question":"Where is repository access validated?"}' \
+  http://127.0.0.1:8000/api/v1/repositories/<repository-id>/questions
+```
+
+The API controls every retrieval limit and filter. It returns `answered`, `insufficient_evidence`, `unsupported_question`, or `temporarily_unavailable`, and citations use server-owned path, line, symbol, commit, and bounded excerpt data. Questions, prompts, answers, evidence, and query vectors are not persisted.
+
 ## Quality checks
 
 Run from the repository root with the test URLs pointing only to disposable real PostgreSQL, Redis, and Qdrant services and with a real authenticated private embedding service running:
@@ -106,10 +121,13 @@ cd ..
 .venv/bin/pytest embedding_service
 .venv/bin/pip-audit --requirement backend/requirements.lock --disable-pip
 .venv/bin/pip-audit --requirement embedding_service/requirements.lock --disable-pip
+PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
+  --cases backend/evaluation/milestone6_cases.json \
+  --observations /path/to/content-free-observations.json
 ```
 
 Integration tests truncate PostgreSQL, flush Redis, and delete the configured Qdrant test collection; they fail rather than silently using SQLite, an in-process queue, or an in-memory vector store. Never point a test URL at development, staging, or production data.
 
 ## Security boundary
 
-Connected repository code is untrusted data. RepoLume never executes, imports, installs, builds, tests, or invokes it. The worker clones only a validated `github.com/<owner>/<repository>.git` identity with fixed arguments, disabled hooks/submodules/config, an askpass credential outside argv, process/filesystem limits, and guaranteed temporary cleanup. Tree-sitter consumes bounded UTF-8 bytes as inert syntax in an isolated, killable process. The embedding service receives only bounded preprocessed text over authenticated private HTTP, has no GitHub/Redis/database credentials, loads a fixed ONNX model without remote code, and never logs source or vectors. Qdrant operations always include server-derived installation, repository, and index-version scope.
+Connected repository code is untrusted data. RepoLume never executes, imports, installs, builds, tests, or invokes it. The worker clones only a validated `github.com/<owner>/<repository>.git` identity with fixed arguments, disabled hooks/submodules/config, an askpass credential outside argv, process/filesystem limits, and guaranteed temporary cleanup. Tree-sitter consumes bounded UTF-8 bytes as inert syntax in an isolated, killable process. The embedding service receives only bounded preprocessed text over authenticated private HTTP, has no GitHub/Redis/database credentials, loads a fixed ONNX model without remote code, and never logs source or vectors. Qdrant reads include server-derived installation, repository, active-version, commit, model, and preprocessing scope. Retrieved text remains untrusted user evidence, is never placed in system instructions, and cannot select filters, tools, network destinations, or citation metadata. Milestone 6 performs one bounded embedding request, search, and structured synthesis request; the model has no tools or agent loop.

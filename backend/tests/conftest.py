@@ -78,13 +78,19 @@ def make_settings(**overrides: object) -> Settings:
         "access_token_secret": "access-token-secret-for-tests-only-0000000",
         "token_hash_secret": "token-hash-secret-for-tests-only-000000000",
         "embedding_service_token": "embedding-service-secret-for-tests-000000",
+        "llm_provider": "deterministic",
+        "llm_api_key": "llm-api-key-for-tests-only-00000000000",
     }
     requested_environment = overrides.get("app_env")
+    if requested_environment in {AppEnvironment.DEVELOPMENT, "development"}:
+        values["llm_provider"] = "openai"
     if requested_environment in {AppEnvironment.PRODUCTION, "production"}:
         values["redis_url"] = "rediss://service:secret@redis.example.com/0"
         values["embedding_service_url"] = "https://embeddings.example.com"
         values["qdrant_url"] = "https://qdrant.example.com"
         values["qdrant_api_key"] = "qdrant-api-key-for-tests-only-000000000"
+        values["llm_provider"] = "openai"
+        values["llm_api_url"] = "https://api.openai.com/v1"
     values.update(overrides)
     return Settings.model_validate(values)
 

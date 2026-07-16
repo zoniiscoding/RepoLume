@@ -63,6 +63,8 @@ services:
       - .env
     ports:
       - "127.0.0.1:8100:8100"
+    environment:
+      LLM_API_KEY: ""
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -122,6 +124,7 @@ services:
     environment:
       QDRANT_URL: http://qdrant:6333
       EMBEDDING_SERVICE_URL: http://embedding-service:8100
+      LLM_API_KEY: ""
     read_only: true
     tmpfs:
       - /tmp:size=600m,mode=1777

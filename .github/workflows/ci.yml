@@ -70,6 +70,7 @@ jobs:
       GITHUB_OAUTH_CALLBACK_URL: http://127.0.0.1/api/v1/auth/github/callback
       ACCESS_TOKEN_SECRET: ci-only-access-token-secret-000000000000
       TOKEN_HASH_SECRET: ci-only-token-hash-secret-00000000000000
+      LLM_PROVIDER: deterministic
       CORS_ORIGINS: '["http://testserver"]'
     steps:
       - name: Check out source

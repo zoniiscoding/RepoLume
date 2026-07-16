@@ -4,7 +4,12 @@ import uuid
 
 from app.embeddings.preprocessing import EmbeddingPreprocessor, PreparedEmbedding
 from app.indexing.models import ChunkType, ContentChunk
-from app.vector.qdrant import VectorScope, deterministic_point_id, scope_filter
+from app.vector.qdrant import (
+    VectorScope,
+    deterministic_point_id,
+    retrieval_filter,
+    scope_filter,
+)
 from tests.conftest import make_settings
 
 
@@ -58,4 +63,23 @@ def test_scope_filter_always_contains_installation_repository_and_version() -> N
         "installation_id": str(scope.installation_id),
         "repository_id": str(scope.repository_id),
         "index_version": 7,
+    }
+
+
+def test_retrieval_filter_adds_commit_model_and_preprocessing_identity() -> None:
+    scope = VectorScope(uuid.uuid4(), uuid.uuid4(), 3)
+    built = retrieval_filter(
+        scope,
+        commit_sha="a" * 40,
+        model_fingerprint="b" * 64,
+        preprocessing_fingerprint="c" * 64,
+    ).model_dump(mode="json")
+    conditions = {item["key"]: item["match"]["value"] for item in built["must"]}
+    assert conditions == {
+        "installation_id": str(scope.installation_id),
+        "repository_id": str(scope.repository_id),
+        "index_version": 3,
+        "commit_sha": "a" * 40,
+        "embedding_model_fingerprint": "b" * 64,
+        "preprocessing_policy_fingerprint": "c" * 64,
     }
