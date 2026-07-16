@@ -1,6 +1,6 @@
 # RepoLume Evaluation
 
-**Status:** Methodology only. No retrieval system, fixture corpus, evaluation run, or result exists through Milestone 1. The backend foundation does not change the planned evaluation methodology.
+**Status:** Methodology only. No retrieval system, fixture corpus, evaluation run, or result exists through Milestone 2. Authentication/authorization security tests were executed, but they are not retrieval-quality evaluation and do not create product accuracy scores.
 
 ## Objectives
 

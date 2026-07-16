@@ -145,3 +145,51 @@ Decisions are append-only. If a decision changes, add a superseding entry instea
 - **Decision:** Give GitHub Actions read-only repository contents permission, disable persisted checkout credentials, install only hashed locks, verify migrations against PostgreSQL 18, audit production dependencies, and separately build/inspect a container configured as UID/GID `10001:10001`.
 - **Rationale:** Foundation CI should prove reproducibility and basic supply-chain/container posture before deployment automation exists.
 - **Consequence:** The workflow has no deployment permission or secrets. Local Podman verification reproduced the image build, non-root configuration, startup, and health checks; GitHub-hosted execution remains pending the first remote run.
+
+## D-019 — Split browser authentication across short access tokens and rotating refresh families
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 2
+- **Decision:** Issue 15-minute HS256 RepoLume access tokens with issuer/audience/type validation and random token IDs. Keep 30-day random refresh tokens only in scoped HTTP-only cookies, persist only keyed SHA-256 digests, rotate under row lock, and invalidate a complete family on replay or logout.
+- **Rationale:** Short bearer lifetime limits exposure while one-time refresh rotation provides durable revocation and replay evidence without storing raw browser credentials.
+- **Consequence:** Access tokens are returned only to authenticated API responses and must remain in frontend memory. Signing/hash key rotation currently invalidates affected sessions; key identifiers and overlapping rotation remain launch operations work.
+
+## D-020 — Bind GitHub OAuth to hashed one-time state and S256 PKCE
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 2
+- **Decision:** Generate independent high-entropy state and PKCE verifier values. Persist only keyed digests with expiry/use state, put the verifier in a short-lived HTTP-only Lax cookie, consume the row transactionally before exchange, and perform the code exchange only on the server.
+- **Rationale:** State prevents login CSRF, PKCE binds the callback to the initiating browser, and digest-only storage limits disclosure if the database is read.
+- **Consequence:** Missing, mismatched, expired, or reused state fails closed. A provider outage after consumption requires a new authorization start; codes and GitHub user tokens are never persisted or exposed to the frontend.
+
+## D-021 — Keep GitHub credentials ephemeral and destinations fixed
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 2
+- **Decision:** Use only fixed `github.com`/`api.github.com` endpoints with bounded timeouts, pagination, disabled redirects, and explicit headers. Mint GitHub App installation tokens server-side with read-only metadata/contents/pull-request permissions and discard both user and installation tokens after the request.
+- **Rationale:** RepoLume needs GitHub identity and selected-repository access, not a permanent general-purpose credential or arbitrary outbound URL capability.
+- **Consequence:** Membership is resynchronized during login rather than through stored GitHub user tokens. Live behavior still requires a correctly permissioned external GitHub App.
+
+## D-022 — Bound installation membership freshness and reauthorize around GitHub I/O
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 2
+- **Decision:** Persist a membership verification timestamp, require it to be within an eight-hour configurable maximum, join every installation/repository lookup through the authenticated actor and active installation, and repeat authorization after the repository-list network request before writing state.
+- **Rationale:** A selector cannot prove ownership, stale membership must eventually fail closed, and access can change while a slow provider call is in flight.
+- **Consequence:** Cross-user and stale access returns non-enumerating not-found/empty results. Signed installation/repository revocation webhooks block access immediately; users may need to sign in again after membership freshness expires.
+
+## D-023 — Persist webhook identity and access transitions, not payload bodies
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 2
+- **Decision:** Authenticate the exact bounded raw body with HMAC-SHA256 before JSON parsing, deduplicate through PostgreSQL insert-on-conflict using GitHub's delivery ID, persist only safe event/action/external IDs/status, and apply short access-state transitions synchronously. Mark later work `queued` without implementing a worker.
+- **Rationale:** Signature-before-parse prevents unauthenticated work, database uniqueness handles concurrent redelivery, and private payload retention is unnecessary for immediate authorization state.
+- **Consequence:** Duplicate deliveries are harmless. Suspension, deletion, and repository removal revoke immediately; push and non-deletion repository events remain durable but unprocessed until a later authorized milestone.
+
+## D-024 — Protect cross-origin refresh cookies with exact Origin validation
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 2
+- **Decision:** Use `Secure; HttpOnly; SameSite=None` for the production refresh cookie because the planned frontend/API are cross-origin, scope it to `/api/v1/auth`, and require refresh/logout `Origin` to exactly match an allowlisted CORS origin. Development/test uses Lax and omits Secure for local HTTP only.
+- **Rationale:** Cookie confidentiality alone does not prevent cross-site request forgery, and the deployment shape cannot rely on SameSite=Lax for legitimate cross-origin refresh.
+- **Consequence:** Production requires HTTPS and an exact frontend origin. Requests without an allowed Origin are rejected before the cookie is used.

@@ -1,70 +1,100 @@
 # RepoLume Build Status
 
 **Last updated:** 2026-07-16
-**Authorized milestone:** Milestone 1 — Monorepo and backend foundation
-**Overall status:** Milestone 1 implementation and local acceptance verification complete
-**Production readiness:** Not production-ready; the foundation is runnable, but authentication, authorization services, GitHub integration, indexing, retrieval, frontend, deployment, and production operations are intentionally absent
+**Authorized milestone:** Milestone 2 — Authentication and GitHub App
+**Overall status:** Milestone 2 implementation and local acceptance verification complete
+**Production readiness:** Not production-ready; authentication and GitHub authorization are implemented and tested with mocked GitHub responses, but a real GitHub App, hosted CI, frontend, deployment, and all Milestone 3+ product capabilities remain absent
 
-## Baseline and scope
+## Implemented through Milestone 2
 
-The workspace began as an empty, non-Git directory. Milestone 0 created the durable specification and engineering documents. Milestone 1 initialized Git and added the production-oriented backend foundation without implementing Milestone 2 behavior.
+- GitHub App user authorization start/callback with HMAC-hashed, expiring, one-time OAuth state and S256 PKCE binding.
+- Server-only authorization-code exchange, authenticated GitHub-user retrieval, and create/update synchronization of RepoLume users.
+- Fifteen-minute RepoLume HS256 access tokens with issuer, audience, type, subject, timestamps, and unique token IDs.
+- Thirty-day opaque refresh tokens held in scoped HTTP-only cookies; only keyed SHA-256 hashes are persisted.
+- Transactional refresh-token rotation, parent/family tracking, expiry, revocation, replay detection, family invalidation, logout, and cookie clearing.
+- Bearer authentication dependency that validates the token and reloads the user from PostgreSQL for every protected request.
+- Login-time GitHub App installation and membership synchronization, including organization/member and user/owner roles, suspension state, and bounded membership freshness.
+- Authorized installation listing and authorized repository synchronization through short-lived server-minted installation tokens.
+- Authorization-aware installation and repository services that join the actor through a fresh membership and active installation; cross-user selectors return a non-enumerating not-found response.
+- GitHub webhook raw-body HMAC-SHA256 verification, bounded headers/body, delivery-ID idempotency, safe acknowledgements, and durable content-free delivery state.
+- Immediate access-revocation states for installation suspension/deletion and repository removal/deletion; unsuspension and repository addition can restore eligible state.
+- Durable `queued` delivery state for push and non-deletion repository events without adding a Milestone 3 worker.
+- Fixed GitHub API destinations, bounded pagination/timeouts, read-only installation-token permissions, no redirects, and no GitHub credential persistence.
+- Versioned API endpoints required by Milestone 2; no frontend or Milestone 3 behavior was added.
 
-The following are deliberately out of scope and remain unimplemented: GitHub OAuth, GitHub App installation synchronization, repository access, webhook processing, Redis/ARQ workers, repository cloning, Tree-sitter parsing, embeddings, Qdrant, agent tools, chat/product endpoints, and frontend functionality.
+## API surface
 
-## Implemented in Milestone 1
+- `GET /api/v1/auth/github/start`
+- `GET /api/v1/auth/github/callback`
+- `POST /api/v1/auth/refresh`
+- `POST /api/v1/auth/logout`
+- `GET /api/v1/auth/me`
+- `GET /api/v1/installations`
+- `GET /api/v1/installations/{installation_id}/repositories`
+- `POST /api/v1/webhooks/github`
+- Existing liveness and readiness endpoints remain unchanged.
 
-- Monorepo root configuration, safe environment example, ignore rules, Docker Compose baseline, README, and Python 3.13 production baseline.
-- FastAPI application factory, versioned router, lifespan cleanup, liveness, and PostgreSQL readiness.
-- Pydantic Settings validation with secret-valued database configuration and strict production invariants.
-- Structured JSON/console logging, validated/generated request IDs, content-minimizing request completion logs, and disabled Uvicorn access logs.
-- Shared error envelope, sanitized validation failures, opaque internal errors, restricted CORS/trusted hosts, and API security headers.
-- SQLAlchemy 2 async engine/session lifecycle with `asyncpg` and PostgreSQL-only configuration.
-- Foundational relational models for users, installations/memberships, repositories, jobs, chat, usage, symbols, call edges, and webhook-delivery idempotency.
-- Generated Alembic revision `d2eea490eb59` with complete upgrade and downgrade operations.
-- Hashed production and development dependency lockfiles generated under Python 3.13.
-- Ruff formatting/linting, strict mypy, pytest/pytest-asyncio, branch coverage, migration consistency checks, and dependency audit configuration.
-- GitHub Actions jobs for Python 3.13/PostgreSQL 18 quality and test checks plus non-root backend image verification; Dependabot configuration for pip, Actions, and Docker.
-- Non-root Python 3.13 container using locked production dependencies.
+## Schema and migration
+
+Alembic revision `f8eba5464d8c` follows the Milestone 1 revision `d2eea490eb59`. It adds:
+
+- `oauth_states`: state hash, PKCE-verifier hash, expiry, use timestamp, unique state, and expiry/use index.
+- `refresh_tokens`: token hash, user, family, parent, expiry/use/revocation fields, unique token hash, cascading user ownership, and active-family/user indexes.
+- `installation_members.verified_at` for bounded fail-closed membership freshness.
+- Safe action, GitHub installation ID, and GitHub repository ID fields on `webhook_deliveries`; webhook bodies remain unpersisted.
+
+The full downgrade to base and upgrade from an empty PostgreSQL database succeeded. The database reported `f8eba5464d8c (head)`, and `alembic check` reported no new upgrade operations.
 
 ## Acceptance evidence
 
 | Gate | Actual result |
 | --- | --- |
-| Python production baseline | Python 3.13.14 used for lock generation, static checks, migration, tests, and host application startup |
-| PostgreSQL baseline | Disposable PostgreSQL 18.4 server used; no SQLite substitution |
-| Clean migration | `alembic upgrade head` succeeded from an empty database to `d2eea490eb59` |
-| Migration consistency | `alembic check` reported `No new upgrade operations detected.` |
-| Tests | 48 passed in 0.58 seconds: 43 unit and 5 PostgreSQL integration; 98.12% branch-aware coverage |
-| Formatting/lint/type checking | Ruff format, Ruff lint, and strict mypy passed |
-| Host application | Uvicorn started and shut down cleanly; live and ready returned HTTP 200 through actual curl requests |
+| Runtime baseline | Python 3.13.14 locally; Python 3.13 container built and started |
+| Database baseline | Disposable PostgreSQL 18.4; no SQLite substitution |
+| Migrations | Full `downgrade base` and clean `upgrade head` succeeded through both revisions |
+| Migration consistency | `f8eba5464d8c (head)` and `No new upgrade operations detected.` |
+| Tests | 73 passed, 0 failed, 0 skipped in 2.00 seconds; 96.59% branch-aware coverage |
+| Security regressions | OAuth replay/expiry/mismatch, refresh rotation/reuse/expiry, origin enforcement, cross-user/cross-installation denial, membership staleness, invalid/duplicate webhooks, suspension, deletion, and repository removal/addition passed |
+| Formatting/lint/type checking | Ruff format, Ruff lint, and strict mypy passed on 63 files / 62 typed source files before documentation finalization |
 | Dependency audit | `pip-audit` reported `No known vulnerabilities found` for the production lock |
-| Container | Podman 6.0.1 built the image; configured runtime user was `10001:10001`; container live and PostgreSQL ready returned HTTP 200 |
-| Log safety | Host/container startup and request logs were inspected; they contained no database URL, credential, cookie, token, prompt, or private content |
-| Secret scan | Repository pattern scan found no token/private-key signatures; `.env` and virtual environments are ignored |
-| CI | Workflow syntax and local equivalents are verified; GitHub-hosted Actions has not run because no remote repository/run exists |
+| Host HTTP | Uvicorn started and stopped cleanly; live and ready returned HTTP 200; unauthenticated `/auth/me` returned the safe 401 envelope |
+| Log safety | A callback containing an OAuth-code sentinel logged only the route path; host/test/container logs contained no code, token, cookie, credential, private key, webhook secret, or database URL |
+| Container | Podman 6.0.1 built the Python 3.13 image; UID/GID `10001:10001`; read-only/no-capability container live and ready returned HTTP 200 |
+| CI | Workflow updated for all required test-only configuration and locally reproduced; no hosted GitHub Actions run exists because no remote run is configured |
 
-The first unit run exposed an invalid non-ASCII HTTP-header test input that the HTTP client correctly rejected before the app; the test was changed to an ASCII value that reaches request-ID validation. The first full integration run exposed an Alembic test harness calling `asyncio.run()` from an active event loop; the migration test was made synchronous and the async inspection isolated. The final complete suite passed without skipped tests.
+## Failures encountered and fixed
 
-## Schema and tenancy groundwork
+1. The first focused unit run found that an injected GitHub HTTP client did not inherit required API headers. The GitHub adapter now applies its allowlisted headers on every request. An older production-settings test was also updated for the new mandatory HTTPS OAuth callback.
+2. The first PostgreSQL suite run found a test cookie-domain collision and migration tests missing the new required settings. Cookie setup was made unambiguous and the migration harness now supplies explicit test-only authentication configuration.
+3. The same run showed the test HTTP client's INFO log included the OAuth callback query string. `httpx`, `httpx2`, and `httpcore` INFO logging is now suppressed centrally; a regression test and a real callback sentinel check verify that codes are absent from logs.
+4. The unchanged 90% coverage gate initially failed because async service branches invoked through the test-client worker were incompletely traced. Direct PostgreSQL-backed service tests were added; the final suite reached 96.59% without excluding code or weakening the gate.
+5. Ruff surfaced a deprecated HTTP 413 alias during the expanded webhook tests. The endpoint now uses the current `HTTP_413_CONTENT_TOO_LARGE` constant.
 
-Application primary keys are UUIDv4. External GitHub IDs have uniqueness constraints. Foreign keys and deletion behavior are explicit. Status fields use string enums backed by database check constraints. Repository/index-version composite constraints prevent call edges from pointing across a repository or index version. Indexes cover installation membership, repository ownership, job lookup, chat ownership, usage aggregation, symbol lookup, call-edge traversal, and webhook delivery identity.
+## External configuration still required
 
-These relations are necessary groundwork, not an authorization implementation. No protected operation is exposed, and a client-supplied identifier is not treated as proof of access.
+No real GitHub App credentials were available, so live GitHub sign-in, installation synchronization, token minting, and webhook delivery were not claimed.
 
-## Current risks and limitations
+Before a live environment can use Milestone 2, an operator must:
 
-- There is no authentication or server-side authorization service yet, so the API exposes health only.
-- GitHub App credentials, callbacks, installation state, revocation, webhook verification, and repository selection do not exist.
-- No worker, queue, clone sandbox, parser, embedding model, vector store, LLM, retrieval, or frontend exists.
-- The container base tag is version-constrained but not digest-pinned; release-time image pinning and scanning remain Milestone 12 work.
-- CI exists but has not executed on GitHub-hosted runners; local commands reproduced both workflow jobs.
-- No staging/production service, managed database, backups, restore drill, monitoring, alerting, or deployment evidence exists.
-- The schema has not yet been exercised with production-scale data or concurrency.
+1. Create a GitHub App and configure its callback URL as the public API's `/api/v1/auth/github/callback` route.
+2. Configure the webhook URL as `/api/v1/webhooks/github` and supply a high-entropy webhook secret.
+3. Grant only read access to repository metadata, contents, and pull requests; subscribe to installation, installation repositories, push, and repository events; grant no repository write permission.
+4. Put the App ID, client ID/secret, private key, webhook secret, independent RepoLume signing/hash secrets, and database URL in platform secret stores.
+5. Configure the production frontend HTTPS origin, API trusted host, HTTPS callback, and exact CORS origin.
+6. Execute a real sign-in/install/list/revoke/redelivery acceptance pass in a non-production GitHub organization before public traffic.
+
+## Current limitations
+
+- GitHub behavior is covered with mocked HTTP responses and signed local payloads, not live credentials.
+- Membership is refreshed at login and accepted only within the configured freshness window; signed suspension/deletion/removal webhooks revoke access immediately.
+- Push and repository-change deliveries are durably marked `queued`, but no worker exists until Milestone 3.
+- No repository clone, connected-code execution, Redis, parser, embeddings, Qdrant, LLM, chat, product frontend, rate-limit service, hosted deployment, backup, alerting, or recovery drill exists.
+- The container base image is not digest-pinned; release hardening remains a later milestone.
 
 ## Production-readiness statement
 
-Milestone 1 meets its foundation acceptance gates and is suitable as the base for the next authorized milestone. RepoLume as a SaaS is not production-ready and must not receive GitHub credentials, private repository data, or public traffic.
+Milestone 2 meets its local implementation and automated acceptance gates and is a sound base for the next authorized milestone. RepoLume as a public SaaS is not production-ready and must not receive production GitHub credentials or private repository traffic until live GitHub configuration, hosted deployment controls, later repository-isolation functionality, and the remaining launch gates are implemented and verified.
 
 ## Next milestone
 
-Milestone 2 — Authentication and GitHub App installation access. It has not started and requires explicit authorization.
+Milestone 3 — Durable jobs and safe cloning. It has not started and requires explicit authorization.

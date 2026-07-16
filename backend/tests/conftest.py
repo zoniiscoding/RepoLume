@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 from app.application import create_app
 from app.core.config import AppEnvironment, Settings
 
+TEST_PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\ntest-only\n-----END PRIVATE KEY-----"
+
 
 class FakeDatabase:
     """Explicit in-process readiness dependency for HTTP unit tests."""
@@ -31,8 +33,16 @@ def make_settings(**overrides: object) -> Settings:
         "log_level": "INFO",
         "log_json": True,
         "docs_enabled": False,
-        "cors_origins": [],
+        "cors_origins": ["http://testserver"],
         "trusted_hosts": ["testserver", "localhost", "127.0.0.1"],
+        "github_app_id": 12345,
+        "github_client_id": "test-client-id",
+        "github_client_secret": "github-client-secret-for-tests-only-000000",
+        "github_app_private_key": TEST_PRIVATE_KEY,
+        "github_webhook_secret": "github-webhook-secret-for-tests-only-0000",
+        "github_oauth_callback_url": "http://testserver/api/v1/auth/github/callback",
+        "access_token_secret": "access-token-secret-for-tests-only-0000000",
+        "token_hash_secret": "token-hash-secret-for-tests-only-000000000",
     }
     values.update(overrides)
     return Settings.model_validate(values)

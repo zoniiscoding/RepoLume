@@ -17,6 +17,8 @@ EXPECTED_TABLES = {
     "github_installations",
     "indexing_jobs",
     "installation_members",
+    "oauth_states",
+    "refresh_tokens",
     "repositories",
     "symbol_definitions",
     "usage_records",

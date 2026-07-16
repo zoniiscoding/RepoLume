@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, UniqueConstraint, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -77,4 +77,9 @@ class InstallationMember(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     role: Mapped[InstallationMemberRole] = mapped_column(
         database_enum(InstallationMemberRole, name="installation_member_role"),
         nullable=False,
+    )
+    verified_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
     )

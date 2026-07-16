@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, String
+from sqlalchemy import BigInteger, DateTime, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -17,6 +17,9 @@ class WebhookDelivery(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     delivery_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     event_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str | None] = mapped_column(String(64))
+    github_installation_id: Mapped[int | None] = mapped_column(BigInteger)
+    github_repository_id: Mapped[int | None] = mapped_column(BigInteger)
     status: Mapped[WebhookDeliveryStatus] = mapped_column(
         database_enum(WebhookDeliveryStatus, name="webhook_delivery_status"),
         nullable=False,

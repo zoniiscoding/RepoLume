@@ -8,6 +8,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
+MINIMUM_SECRET_LENGTH = 32
+
 
 class AppEnvironment(StrEnum):
     """Supported runtime environments."""
@@ -40,6 +42,21 @@ class Settings(BaseSettings):
     database_pool_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
     database_ready_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
 
+    github_app_id: int = Field(gt=0)
+    github_client_id: str = Field(min_length=1, max_length=255)
+    github_client_secret: SecretStr
+    github_app_private_key: SecretStr
+    github_webhook_secret: SecretStr
+    github_oauth_callback_url: AnyHttpUrl
+
+    access_token_secret: SecretStr
+    token_hash_secret: SecretStr
+    access_token_ttl_seconds: int = Field(default=900, ge=300, le=1800)
+    refresh_token_ttl_seconds: int = Field(default=2_592_000, ge=3600, le=7_776_000)
+    oauth_state_ttl_seconds: int = Field(default=600, ge=120, le=900)
+    installation_membership_ttl_seconds: int = Field(default=28_800, ge=900, le=86_400)
+    refresh_cookie_name: str = Field(default="repolume_refresh_token", pattern=r"^[a-z0-9_]+$")
+
     cors_origins: list[AnyHttpUrl] = Field(default_factory=list)
     trusted_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
 
@@ -67,6 +84,30 @@ class Settings(BaseSettings):
             raise ValueError("LOG_LEVEL is not supported")
         return normalized
 
+    @field_validator(
+        "github_client_secret",
+        "github_webhook_secret",
+        "access_token_secret",
+        "token_hash_secret",
+    )
+    @classmethod
+    def validate_secret_length(cls, value: SecretStr) -> SecretStr:
+        """Reject secrets that do not provide a minimally useful entropy budget."""
+        if len(value.get_secret_value()) < MINIMUM_SECRET_LENGTH:
+            raise ValueError(
+                "Configured authentication secrets must contain at least 32 characters"
+            )
+        return value
+
+    @field_validator("github_app_private_key")
+    @classmethod
+    def validate_private_key(cls, value: SecretStr) -> SecretStr:
+        """Require a PEM-shaped private key without ever returning its content."""
+        raw_value = value.get_secret_value()
+        if "-----BEGIN" not in raw_value or "PRIVATE KEY-----" not in raw_value:
+            raise ValueError("GITHUB_APP_PRIVATE_KEY must be PEM encoded")
+        return value
+
     @field_validator("trusted_hosts")
     @classmethod
     def validate_trusted_hosts(cls, value: list[str]) -> list[str]:
@@ -89,6 +130,8 @@ class Settings(BaseSettings):
             raise ValueError("CORS_ORIGINS must be explicit in production")
         if any(origin.scheme != "https" for origin in self.cors_origins):
             raise ValueError("CORS_ORIGINS must use HTTPS in production")
+        if self.github_oauth_callback_url.scheme != "https":
+            raise ValueError("GITHUB_OAUTH_CALLBACK_URL must use HTTPS in production")
 
         forbidden_hosts = {"*", "localhost", "127.0.0.1", "0.0.0.0"}
         if any(host.lower() in forbidden_hosts for host in self.trusted_hosts):
@@ -115,6 +158,8 @@ class Settings(BaseSettings):
             "docs_enabled": self.docs_enabled,
             "cors_origin_count": len(self.cors_origins),
             "trusted_host_count": len(self.trusted_hosts),
+            "access_token_ttl_seconds": self.access_token_ttl_seconds,
+            "membership_ttl_seconds": self.installation_membership_ttl_seconds,
         }
 
 

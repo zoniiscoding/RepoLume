@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "repolume-backend"
-version = "0.1.0"
-description = "RepoLume FastAPI backend foundation"
+version = "0.2.0"
+description = "RepoLume FastAPI API"
 readme = "../README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
   "asyncpg==0.31.0",
   "fastapi==0.139.0",
   "httpx==0.28.1",
+  "pyjwt[crypto]==2.13.0",
   "pydantic==2.13.4",
   "pydantic-settings==2.14.2",
   "sqlalchemy[asyncio]==2.0.51",
@@ -75,6 +76,11 @@ ignore = [
 "tests/**/*.py" = ["PLR2004", "PT012", "S101", "S105", "TRY003"]
 "alembic/**/*.py" = ["ANN", "INP001"]
 "app/core/config.py" = ["S104", "TRY003"]
+"app/auth/tokens.py" = ["S105"]
+"app/github/client.py" = ["S105"]
+"app/github/schemas.py" = ["S105"]
+"app/schemas/auth.py" = ["S105"]
+"app/schemas/errors.py" = ["S105"]
 
 [tool.mypy]
 python_version = "3.11"

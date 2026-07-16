@@ -42,6 +42,8 @@ def configure_logging(*, level: str, render_json: bool) -> None:
         configured_logger.propagate = True
 
     logging.getLogger("uvicorn.access").disabled = True
+    for logger_name in ("httpcore", "httpx", "httpx2"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     structlog.configure(
         processors=[

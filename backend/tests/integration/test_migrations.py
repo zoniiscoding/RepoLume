@@ -10,6 +10,7 @@ from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import command
+from tests.conftest import TEST_PRIVATE_KEY
 from tests.unit.test_models import EXPECTED_TABLES
 
 pytestmark = pytest.mark.integration
@@ -26,6 +27,17 @@ def _alembic_config(monkeypatch: pytest.MonkeyPatch) -> Config:
     url = _test_database_url()
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.setenv("GITHUB_APP_ID", "12345")
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "test-client-id")
+    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "github-client-secret-for-tests-only-000000")
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY", TEST_PRIVATE_KEY)
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "github-webhook-secret-for-tests-only-0000")
+    monkeypatch.setenv(
+        "GITHUB_OAUTH_CALLBACK_URL",
+        "http://testserver/api/v1/auth/github/callback",
+    )
+    monkeypatch.setenv("ACCESS_TOKEN_SECRET", "access-token-secret-for-tests-only-0000000")
+    monkeypatch.setenv("TOKEN_HASH_SECRET", "token-hash-secret-for-tests-only-000000000")
     root = Path(__file__).resolve().parents[2]
     return Config(str(root / "alembic.ini"))
 

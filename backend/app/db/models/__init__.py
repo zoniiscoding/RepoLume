@@ -1,5 +1,6 @@
 """Foundational relational models exported for application and Alembic metadata."""
 
+from app.db.models.auth import OAuthState, RefreshToken
 from app.db.models.call_edge import CallEdge
 from app.db.models.chat import ChatMessage, ChatSession
 from app.db.models.github_installation import GitHubInstallation, InstallationMember
@@ -17,6 +18,8 @@ __all__ = [
     "GitHubInstallation",
     "IndexingJob",
     "InstallationMember",
+    "OAuthState",
+    "RefreshToken",
     "Repository",
     "SymbolDefinition",
     "UsageRecord",

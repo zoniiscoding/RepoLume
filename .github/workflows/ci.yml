@@ -35,6 +35,15 @@ jobs:
       APP_ENV: test
       DATABASE_URL: postgresql+asyncpg://repolume:ci-only-password@127.0.0.1:5432/repolume_test
       TEST_DATABASE_URL: postgresql+asyncpg://repolume:ci-only-password@127.0.0.1:5432/repolume_test
+      GITHUB_APP_ID: 1
+      GITHUB_CLIENT_ID: ci-test-client
+      GITHUB_CLIENT_SECRET: ci-only-client-secret-000000000000000
+      GITHUB_APP_PRIVATE_KEY: "-----BEGIN PRIVATE KEY----- ci-only -----END PRIVATE KEY-----"
+      GITHUB_WEBHOOK_SECRET: ci-only-webhook-secret-00000000000000
+      GITHUB_OAUTH_CALLBACK_URL: http://127.0.0.1/api/v1/auth/github/callback
+      ACCESS_TOKEN_SECRET: ci-only-access-token-secret-000000000000
+      TOKEN_HASH_SECRET: ci-only-token-hash-secret-00000000000000
+      CORS_ORIGINS: '["http://testserver"]'
     steps:
       - name: Check out source
         uses: actions/checkout@v6

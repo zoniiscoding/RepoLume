@@ -1,20 +1,20 @@
 # RepoLume Operations
 
-**Status:** Milestone 1 local operations are implemented and verified for the FastAPI/PostgreSQL foundation. No hosted environment, dashboard, alert, backup, or production runbook has been verified.
+**Status:** Milestone 2 local authentication/GitHub App operations are implemented and verified with mocked provider responses. No live GitHub App, hosted environment, dashboard, alert, backup, or production runbook has been verified.
 
 ## Service inventory
 
 | Service | Exposure | Planned owner responsibility | Current state |
 | --- | --- | --- | --- |
 | React frontend | Public via Vercel | User interface and safe rendering | Not created |
-| FastAPI API | Public via Railway | Authenticated API, webhooks, health | Foundation created; health only; not deployed |
+| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, health | Milestone 2 routes verified locally; not deployed |
 | Indexing worker | Railway private service | Durable job execution and cleanup | Not created |
 | Embedding service | Railway private service | Authenticated bounded embeddings | Not created |
-| PostgreSQL | Neon private credentials | Durable application and job state | Schema/migration verified on disposable PostgreSQL 18.4; managed production instance not provisioned |
+| PostgreSQL | Neon private credentials | Durable identity, access, delivery, application, and job state | Two-revision schema/migration verified on disposable PostgreSQL 18.4; managed production instance not provisioned |
 | Redis | Private managed service | Queue, ephemeral cache, rate-limit support | Not provisioned |
 | Qdrant | Qdrant Cloud authenticated | Scoped vectors | Not provisioned |
 | Hosted LLM | Server-side provider API | Tool selection and answer synthesis | Not configured |
-| GitHub App | GitHub | Authentication, installation tokens, webhooks | Not configured |
+| GitHub App | GitHub | Authentication, installation tokens, webhooks | Adapter and mocked tests complete; real App not configured or verified |
 
 ## Health contract
 
@@ -31,7 +31,7 @@ Structured logs currently include request IDs plus safe startup and HTTP metadat
 
 Logs must exclude tokens, cookies, secrets, clone credential material, full repository chunks, full prompts/responses, private file contents, and complete chat messages.
 
-Uvicorn access logging is disabled because its raw target can include unbounded query data. Host and container JSON logs were manually inspected during Milestone 1 and contained no database URL, credential, cookie, token, prompt, private content, or response body.
+Uvicorn access logging is disabled because its raw target can include OAuth codes and other unbounded query data. `httpx`, `httpx2`, and `httpcore` INFO logs are suppressed for the same reason. Host and container JSON logs were inspected during Milestone 2; a callback with an OAuth-code sentinel logged the route path only. No database URL, credential, cookie, token, private key, webhook secret, prompt, private content, or response body was observed.
 
 Metrics remain planned: request and tool latency/error rates, job queue age/duration, worker heartbeat/stuck jobs, embedding throughput, vector operations, model token/cost usage, indexing stages, webhook outcomes, and deletion backlog. Names, cardinality limits, alert thresholds, and retention require deployed telemetry.
 
@@ -67,7 +67,7 @@ Migration upgrade, current-revision, consistency, and downgrade commands are ava
 5. Revoke the old credential and monitor failures.
 6. Record rotation time and affected secret name, never the value.
 
-Refresh-token/JWT rotation will require explicit key identifiers or a documented invalidation event.
+`ACCESS_TOKEN_SECRET` rotation currently invalidates access tokens (maximum default lifetime 15 minutes). `TOKEN_HASH_SECRET` rotation invalidates all refresh tokens and outstanding OAuth state, requiring users to sign in again. GitHub client secret, private key, and webhook-secret rotation must follow GitHub's supported overlap/replacement sequence. Overlapping RepoLume key IDs are not implemented, so schedule and communicate the session invalidation.
 
 ### GitHub webhook troubleshooting
 
@@ -76,6 +76,16 @@ Refresh-token/JWT rotation will require explicit key identifiers or a documented
 3. Never bypass signature validation to replay production payloads.
 4. Redeliver through GitHub only after idempotency is confirmed.
 5. Verify revocation events have blocked access even if downstream purge is pending.
+
+The delivery table stores the safe delivery ID, event/action, optional external installation/repository IDs, status, safe error code, and processing time. It deliberately does not store webhook bodies. A `queued` push/repository delivery is expected to remain without a consumer until Milestone 3+; do not mark it processed manually.
+
+### Refresh-token replay response
+
+1. Correlate the safe request ID and `token_reuse_detected` response without collecting the cookie or bearer token.
+2. Treat the complete refresh family as revoked; do not restore individual rows.
+3. Require a fresh GitHub sign-in and investigate whether parallel tabs, a retried client, or token theft caused replay.
+4. Rotate `TOKEN_HASH_SECRET` only for a broad compromise because it invalidates all sessions and outstanding OAuth state.
+5. Verify that no raw token or cookie was copied into logs or incident notes.
 
 ### Qdrant outage
 
@@ -130,7 +140,7 @@ The API never runs Alembic during application startup. From the repository root,
 
 Review generated SQL and backup/restore compatibility before any future production migration. The initial migration downgrade was exercised by the integration suite against a disposable database; that does not make production downgrades universally safe.
 
-## Local foundation procedure
+## Local Milestone 2 procedure
 
 Use Python 3.13 for the reproducible baseline. Install the hashed development lock:
 
@@ -139,12 +149,21 @@ python3.13 -m venv .venv
 .venv/bin/python -m pip install --require-hashes --requirement backend/requirements-dev.lock
 ```
 
-Supply local values through an untracked `.env` or process environment. At minimum, configure a real PostgreSQL URL; integration tests additionally require `TEST_DATABASE_URL` and fail instead of falling back to SQLite.
+Supply local values through an untracked `.env` or process environment. Configure a real PostgreSQL URL plus test-only GitHub/RepoLume authentication values. Integration tests require `TEST_DATABASE_URL`, truncate it, and fail instead of falling back to SQLite.
 
 ```sh
 export APP_ENV=development
 export DATABASE_URL='postgresql+asyncpg://<user>:<password>@127.0.0.1:5432/<database>'
 export TEST_DATABASE_URL='postgresql+asyncpg://<user>:<password>@127.0.0.1:5432/<disposable_test_database>'
+export GITHUB_APP_ID='<app-id>'
+export GITHUB_CLIENT_ID='<client-id>'
+export GITHUB_CLIENT_SECRET='<secret-store-value>'
+export GITHUB_APP_PRIVATE_KEY='<PEM-private-key>'
+export GITHUB_WEBHOOK_SECRET='<secret-store-value>'
+export GITHUB_OAUTH_CALLBACK_URL='http://127.0.0.1:8000/api/v1/auth/github/callback'
+export ACCESS_TOKEN_SECRET='<independent-random-value-at-least-32-characters>'
+export TOKEN_HASH_SECRET='<independent-random-value-at-least-32-characters>'
+export CORS_ORIGINS='["http://127.0.0.1:3000"]'
 ```
 
 Apply migrations and start the API:
@@ -164,23 +183,26 @@ curl --fail-with-body http://127.0.0.1:8000/api/v1/health/ready
 
 Stop Uvicorn with `Ctrl-C`; lifespan shutdown disposes the async engine. Docker Compose can start the `postgres` and `api` services after a non-empty local `POSTGRES_PASSWORD` and a container-addressable `DATABASE_URL` are supplied. Do not commit those values.
 
-## Foundation verification commands
+For live GitHub verification, configure the App callback and webhook URLs to the public HTTPS API; grant read-only Metadata, Contents, and Pull requests permissions; subscribe to Installation, Installation repositories, Push, and Repository events; then install it on a controlled test account/organization. Automated tests require no real credentials and use injected mocked responses.
+
+## Milestone 2 verification commands
 
 ```sh
 .venv/bin/ruff format --check backend
 .venv/bin/ruff check backend
 .venv/bin/mypy backend/app backend/tests
 APP_ENV=test DATABASE_URL="$DATABASE_URL" .venv/bin/alembic -c backend/alembic.ini upgrade head
+APP_ENV=test DATABASE_URL="$DATABASE_URL" .venv/bin/alembic -c backend/alembic.ini current
 APP_ENV=test DATABASE_URL="$DATABASE_URL" .venv/bin/alembic -c backend/alembic.ini check
 cd backend
 APP_ENV=test DATABASE_URL="$DATABASE_URL" TEST_DATABASE_URL="$TEST_DATABASE_URL" ../.venv/bin/pytest
 cd ..
 .venv/bin/pip-audit --requirement backend/requirements.lock --disable-pip
-podman build --tag repolume-api:milestone1 backend
-podman image inspect --format '{{.Config.User}}' repolume-api:milestone1
+podman build --tag repolume-api:milestone2 backend
+podman image inspect --format '{{.Config.User}}' repolume-api:milestone2
 ```
 
-The Milestone 1 execution results are recorded in `docs/BUILD_STATUS.md`. GitHub Actions repeats the quality, PostgreSQL, audit, and image-user checks on Python 3.13.
+The Milestone 2 execution results are recorded in `docs/BUILD_STATUS.md`. GitHub Actions repeats the quality, PostgreSQL, audit, and image-user checks on Python 3.13 with test-only placeholder authentication settings. Hosted CI has not run because no remote workflow run exists.
 
 ## Incident evidence policy
 

@@ -79,6 +79,7 @@ def test_production_responses_include_hsts() -> None:
         docs_enabled=False,
         cors_origins=["https://app.repolume.example"],
         trusted_hosts=["api.repolume.example", "testserver"],
+        github_oauth_callback_url="https://api.repolume.example/api/v1/auth/github/callback",
     )
     app = create_app(settings=settings, database=FakeDatabase())
 
