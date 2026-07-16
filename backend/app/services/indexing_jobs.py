@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, delete, or_, select, update
 
 from app.core.config import Settings
 from app.db.models.enums import (
@@ -17,8 +17,10 @@ from app.db.models.enums import (
 from app.db.models.github_installation import GitHubInstallation, InstallationMember
 from app.db.models.indexing_job import IndexingJob
 from app.db.models.repository import Repository
+from app.db.models.symbol_definition import SymbolDefinition
 from app.db.session import Database
 from app.indexing.discovery import DiscoveryResult
+from app.indexing.models import ProcessingResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +38,7 @@ class JobContext:
     owner: str
     name: str
     default_branch: str
+    index_version: int
 
 
 class IndexingJobStore:
@@ -131,6 +134,7 @@ class IndexingJobStore:
             owner=repository.github_owner,
             name=repository.github_name,
             default_branch=repository.default_branch,
+            index_version=repository.index_version + 1,
         )
 
     async def heartbeat(self, claimed: ClaimedJob, worker_id: str) -> None:
@@ -196,7 +200,14 @@ class IndexingJobStore:
         *,
         commit_sha: str,
         discovery: DiscoveryResult,
+        processing: ProcessingResult,
     ) -> None:
+        if (
+            processing.repository_id != claimed.repository_id
+            or processing.commit_sha != commit_sha
+            or processing.index_version < 1
+        ):
+            raise RuntimeError("processing_result_mismatch")
         now = datetime.now(UTC)
         async with self._database.session() as session:
             result = await session.execute(
@@ -209,7 +220,7 @@ class IndexingJobStore:
                 .values(
                     status=IndexingJobStatus.COMPLETE,
                     progress=100,
-                    stage="discovery_complete",
+                    stage="chunking_complete",
                     source_commit_sha=commit_sha,
                     target_commit_sha=commit_sha,
                     heartbeat_at=now,
@@ -218,18 +229,46 @@ class IndexingJobStore:
                     discovered_file_count=len(discovery.files),
                     discovered_total_bytes=discovery.total_bytes,
                     skipped_files_json=discovery.skipped,
+                    parsed_file_count=processing.parsed_file_count,
+                    partial_file_count=processing.partial_file_count,
+                    parser_skipped_file_count=processing.skipped_file_count,
+                    symbol_count=processing.symbol_count,
+                    chunk_count=processing.chunk_count,
+                    parser_warnings_json=processing.warning_counts,
                 )
                 .returning(IndexingJob.repository_id)
             )
             repository_id = result.scalar_one_or_none()
             if repository_id is not None:
                 await session.execute(
+                    delete(SymbolDefinition).where(
+                        SymbolDefinition.repository_id == repository_id,
+                        SymbolDefinition.index_version == processing.index_version,
+                    )
+                )
+                session.add_all(
+                    SymbolDefinition(
+                        repository_id=repository_id,
+                        index_version=processing.index_version,
+                        file_path=symbol.file_path,
+                        language=symbol.language,
+                        symbol_name=symbol.symbol_name,
+                        qualified_name=symbol.qualified_name,
+                        symbol_type=symbol.symbol_type,
+                        start_line=symbol.start_line,
+                        end_line=symbol.end_line,
+                        content_hash=symbol.content_hash,
+                        commit_sha=symbol.commit_sha,
+                    )
+                    for symbol in processing.symbols
+                )
+                await session.execute(
                     update(Repository)
                     .where(Repository.id == repository_id)
                     .values(
                         indexing_status=RepositoryIndexingStatus.NOT_INDEXED,
                         indexing_progress=100,
-                        indexing_stage="discovery_complete",
+                        indexing_stage="chunking_complete",
                         indexing_error_code=None,
                         indexing_error_message=None,
                         current_remote_sha=commit_sha,

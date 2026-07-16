@@ -81,7 +81,7 @@ jobs:
         run: ruff check backend
 
       - name: Type check
-        run: mypy backend/app backend/tests
+        run: mypy --config-file backend/pyproject.toml backend/app backend/tests
 
       - name: Apply clean-database migration
         run: alembic -c backend/alembic.ini upgrade head

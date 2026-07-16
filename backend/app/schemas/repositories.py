@@ -49,6 +49,12 @@ class IndexingStatusResponse(BaseModel):
     discovered_file_count: int
     discovered_total_bytes: int
     skipped_file_counts: dict[str, int]
+    parsed_file_count: int
+    partial_file_count: int
+    parser_skipped_file_count: int
+    symbol_count: int
+    chunk_count: int
+    parser_warning_counts: dict[str, int]
     heartbeat_at: datetime | None
     completed_at: datetime | None
 

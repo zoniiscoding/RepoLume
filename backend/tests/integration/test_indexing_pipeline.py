@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -32,13 +32,16 @@ from app.db.models.enums import (
 )
 from app.db.models.github_installation import GitHubInstallation, InstallationMember
 from app.db.models.indexing_job import IndexingJob
+from app.db.models.symbol_definition import SymbolDefinition
 from app.db.models.user import User
 from app.db.session import Database
 from app.github.schemas import GitHubInstallation as GitHubInstallationData
 from app.github.schemas import GitHubRepository, GitHubUser
+from app.indexing.analyzer import ProcessIsolatedAnalyzer
 from app.indexing.clone import ClonedRepository, CloneRequest
-from app.indexing.discovery import FileDiscovery
+from app.indexing.discovery import DiscoveryResult, FileDiscovery
 from app.indexing.failures import IndexingError
+from app.indexing.models import ProcessingResult
 from app.indexing.worker import IndexingWorker
 from app.queue import RedisJobQueue
 from app.services.indexing_jobs import IndexingJobStore
@@ -317,6 +320,25 @@ class ControlledFixtureCloner:
         shutil.rmtree(cloned.workspace)
 
 
+class FailingAnalyzer:
+    async def analyze(
+        self,
+        *,
+        checkout: Path,
+        discovery: DiscoveryResult,
+        repository_id: uuid.UUID,
+        index_version: int,
+        commit_sha: str,
+        on_chunking: Callable[[], Awaitable[None]],
+    ) -> ProcessingResult:
+        del checkout, discovery, repository_id, index_version, commit_sha, on_chunking
+        raise IndexingError(
+            code="internal_parser_failure",
+            message="Static repository processing failed safely",
+            retryable=False,
+        )
+
+
 async def process_two_deliveries(
     settings: Settings,
     github: FakeGitHub,
@@ -334,6 +356,7 @@ async def process_two_deliveries(
         github=github,
         cloner=cloner,
         discovery=FileDiscovery(settings),
+        analyzer=ProcessIsolatedAnalyzer(settings),
         worker_id="integration-worker",
     )
     await queue.ensure_group()
@@ -411,11 +434,62 @@ def test_real_worker_clones_controlled_fixture_without_execution_and_cleans_up(
     )
     assert status.status_code == 200
     assert status.json()["job_status"] == "complete"
-    assert status.json()["stage"] == "discovery_complete"
+    assert status.json()["stage"] == "chunking_complete"
     assert status.json()["discovered_file_count"] == 3
+    assert status.json()["parsed_file_count"] == 3
+    assert status.json()["symbol_count"] == 1
+    assert status.json()["chunk_count"] == 3
+    assert asyncio.run(scalar(select(func.count(SymbolDefinition.id)))) == 1
+    assert asyncio.run(scalar(select(SymbolDefinition.index_version))) == 1
     assert cloner.calls == 1
     assert tuple(clone_root.iterdir()) == ()
     assert not marker.exists()
+
+
+def test_parsing_failure_is_safe_and_still_cleans_temporary_clone(
+    api_runtime: tuple[TestClient, Settings, FakeGitHub, uuid.UUID, uuid.UUID],
+    tmp_path: Path,
+) -> None:
+    client, settings, github, user_id, installation_id = api_runtime
+    selected, _ = select_repository(client, settings, user_id, installation_id)
+    fixture = create_git_fixture(tmp_path, tmp_path / "must-not-exist")
+    clone_root = tmp_path / "clones"
+    clone_root.mkdir()
+    cloner = ControlledFixtureCloner(fixture, clone_root)
+
+    async def process() -> None:
+        database = Database(
+            engine=create_async_engine(database_url(), pool_pre_ping=True),
+            ready_timeout_seconds=2,
+        )
+        queue = RedisJobQueue.from_settings(settings)
+        await queue.ensure_group()
+        delivery = await queue.receive("parser-failure-worker")
+        assert delivery is not None
+        worker = IndexingWorker(
+            settings=settings,
+            queue=queue,
+            store=IndexingJobStore(database, settings),
+            github=github,
+            cloner=cloner,
+            discovery=FileDiscovery(settings),
+            analyzer=FailingAnalyzer(),
+            worker_id="parser-failure-worker",
+        )
+        await worker.process_delivery(delivery)
+        await queue.close()
+        await database.dispose()
+
+    asyncio.run(process())
+    response = client.get(
+        f"/api/v1/repositories/{selected['repository']['id']}/status",
+        headers=authorization(settings, user_id),
+    )
+    assert response.status_code == 200
+    assert response.json()["job_status"] == "failed"
+    assert response.json()["error_code"] == "internal_parser_failure"
+    assert response.json()["safe_error_message"] == ("Static repository processing failed safely")
+    assert tuple(clone_root.iterdir()) == ()
 
 
 def test_atomic_claim_retry_exhaustion_and_abandoned_recovery(
@@ -517,6 +591,7 @@ def test_worker_refuses_suspended_installation_before_clone(
             github=github,
             cloner=cloner,
             discovery=FileDiscovery(settings),
+            analyzer=ProcessIsolatedAnalyzer(settings),
             worker_id="revocation-worker",
         )
         await worker.process_delivery(delivery)

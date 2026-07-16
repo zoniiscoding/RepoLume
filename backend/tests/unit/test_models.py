@@ -49,13 +49,13 @@ def test_repository_states_match_product_specification() -> None:
 
 
 def test_installation_membership_is_unique_per_user_and_installation() -> None:
-    table = cast(Table, Base.metadata.tables["installation_members"])
+    table = Base.metadata.tables["installation_members"]
     constraints = {constraint.name for constraint in table.constraints}
     assert "uq_installation_members_installation_user" in constraints
 
 
 def test_repository_identity_is_scoped_to_installation() -> None:
-    table = cast(Table, Base.metadata.tables["repositories"])
+    table = Base.metadata.tables["repositories"]
     unique_constraints = {
         tuple(column.name for column in constraint.columns)
         for constraint in table.constraints
@@ -66,7 +66,7 @@ def test_repository_identity_is_scoped_to_installation() -> None:
 
 
 def test_repository_progress_and_version_have_database_checks() -> None:
-    table = cast(Table, Base.metadata.tables["repositories"])
+    table = Base.metadata.tables["repositories"]
     checks = {
         constraint.name
         for constraint in table.constraints
@@ -74,6 +74,22 @@ def test_repository_progress_and_version_have_database_checks() -> None:
     }
     assert "ck_repositories_index_version_nonnegative" in checks
     assert "ck_repositories_indexing_progress_range" in checks
+
+
+def test_indexing_processing_counts_have_database_checks() -> None:
+    table = Base.metadata.tables["indexing_jobs"]
+    checks = {
+        constraint.name
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert {
+        "ck_indexing_jobs_parsed_file_count_nonnegative",
+        "ck_indexing_jobs_partial_file_count_nonnegative",
+        "ck_indexing_jobs_parser_skipped_file_count_nonnegative",
+        "ck_indexing_jobs_symbol_count_nonnegative",
+        "ck_indexing_jobs_chunk_count_nonnegative",
+    } <= checks
 
 
 def test_call_edges_have_composite_symbol_scope_foreign_keys() -> None:
@@ -88,9 +104,9 @@ def test_call_edges_have_composite_symbol_scope_foreign_keys() -> None:
 
 
 def test_tenant_and_version_query_indexes_exist() -> None:
-    symbol_table = cast(Table, Base.metadata.tables["symbol_definitions"])
-    call_table = cast(Table, Base.metadata.tables["call_edges"])
-    repository_table = cast(Table, Base.metadata.tables["repositories"])
+    symbol_table = Base.metadata.tables["symbol_definitions"]
+    call_table = Base.metadata.tables["call_edges"]
+    repository_table = Base.metadata.tables["repositories"]
     symbol_indexes = {index.name for index in symbol_table.indexes}
     call_indexes = {index.name for index in call_table.indexes}
     assert "ix_symbol_definitions_repository_version_file" in symbol_indexes

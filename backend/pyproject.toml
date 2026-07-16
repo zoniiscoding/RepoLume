@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "repolume-backend"
-version = "0.3.0"
+version = "0.4.0"
 description = "RepoLume FastAPI API"
 readme = "../README.md"
 requires-python = ">=3.11,<3.15"
@@ -19,6 +19,8 @@ dependencies = [
   "redis==8.0.1",
   "sqlalchemy[asyncio]==2.0.51",
   "structlog==26.1.0",
+  "tree-sitter==0.26.0",
+  "tree-sitter-python==0.25.0",
   "uvicorn[standard]==0.51.0",
 ]
 
@@ -39,7 +41,7 @@ packages = ["app"]
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-extend-exclude = ["alembic/versions"]
+extend-exclude = ["alembic/versions", "tests/fixtures"]
 
 [tool.ruff.lint]
 select = [
@@ -88,7 +90,7 @@ python_version = "3.11"
 strict = true
 plugins = ["pydantic.mypy"]
 warn_unused_configs = true
-exclude = ["alembic/versions/"]
+exclude = ["alembic/versions/", "tests/fixtures/", "backend/tests/fixtures/"]
 
 [[tool.mypy.overrides]]
 module = "asyncpg.*"

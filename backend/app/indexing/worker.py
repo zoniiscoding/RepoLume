@@ -11,6 +11,7 @@ import structlog
 from app.core.config import Settings
 from app.db.models.enums import RepositoryIndexingStatus
 from app.github.client import GitHubAPIError, GitHubClientProtocol
+from app.indexing.analyzer import RepositoryAnalyzerProtocol
 from app.indexing.clone import CloneRequest, RepositoryClonerProtocol
 from app.indexing.discovery import FileDiscovery
 from app.indexing.failures import IndexingError
@@ -32,6 +33,7 @@ class IndexingWorker:
         github: GitHubClientProtocol,
         cloner: RepositoryClonerProtocol,
         discovery: FileDiscovery,
+        analyzer: RepositoryAnalyzerProtocol,
         worker_id: str | None = None,
     ) -> None:
         self._settings = settings
@@ -40,6 +42,7 @@ class IndexingWorker:
         self._github = github
         self._cloner = cloner
         self._discovery = discovery
+        self._analyzer = analyzer
         self._worker_id = worker_id or (
             f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
         )
@@ -138,11 +141,39 @@ class IndexingWorker:
                     commit_sha=cloned.commit_sha,
                 )
                 discovery = await asyncio.to_thread(self._discovery.discover, cloned.checkout)
+                await self._store.stage(
+                    claimed,
+                    self._worker_id,
+                    status=RepositoryIndexingStatus.PARSING,
+                    stage="parsing",
+                    progress=65,
+                    commit_sha=cloned.commit_sha,
+                )
+
+                async def mark_chunking() -> None:
+                    await self._store.stage(
+                        claimed,
+                        self._worker_id,
+                        status=RepositoryIndexingStatus.PARSING,
+                        stage="chunking",
+                        progress=85,
+                        commit_sha=cloned.commit_sha,
+                    )
+
+                processing = await self._analyzer.analyze(
+                    checkout=cloned.checkout,
+                    discovery=discovery,
+                    repository_id=context.repository_id,
+                    index_version=context.index_version,
+                    commit_sha=cloned.commit_sha,
+                    on_chunking=mark_chunking,
+                )
                 await self._store.complete(
                     claimed,
                     self._worker_id,
                     commit_sha=cloned.commit_sha,
                     discovery=discovery,
+                    processing=processing,
                 )
                 logger.info(
                     "indexing_job_completed",
@@ -150,6 +181,11 @@ class IndexingWorker:
                     repository_id=str(claimed.repository_id),
                     discovered_file_count=len(discovery.files),
                     skipped_file_count=sum(discovery.skipped.values()),
+                    parsed_file_count=processing.parsed_file_count,
+                    partial_file_count=processing.partial_file_count,
+                    parser_skipped_file_count=processing.skipped_file_count,
+                    symbol_count=processing.symbol_count,
+                    chunk_count=processing.chunk_count,
                 )
             finally:
                 if cloned is not None:

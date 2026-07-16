@@ -9,6 +9,7 @@ from app.core.config import load_settings
 from app.core.logging import configure_logging
 from app.db.session import Database
 from app.github.client import GitHubClient
+from app.indexing.analyzer import ProcessIsolatedAnalyzer
 from app.indexing.clone import GitHubRepositoryCloner
 from app.indexing.discovery import FileDiscovery
 from app.indexing.worker import IndexingWorker
@@ -31,6 +32,7 @@ async def run_worker() -> None:
         github=github,
         cloner=GitHubRepositoryCloner(settings),
         discovery=FileDiscovery(settings),
+        analyzer=ProcessIsolatedAnalyzer(settings),
     )
     logger.info("worker_configuration_loaded", **settings.safe_summary())
     try:

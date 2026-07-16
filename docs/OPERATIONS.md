@@ -1,16 +1,16 @@
 # RepoLume Operations
 
-**Status:** Milestone 3 local API/worker/PostgreSQL/Redis/safe-clone operations are implemented and verified with mocked GitHub responses and a controlled Git fixture. No live GitHub App, hosted environment, dashboard, alert, backup, or production runbook has been verified.
+**Status:** Milestone 4 local API/worker/PostgreSQL/Redis/safe-clone/static-processing operations are implemented and verified with mocked GitHub responses and controlled Git/parser fixtures. No live GitHub App, hosted environment, dashboard, alert, backup, or production runbook has been verified.
 
 ## Service inventory
 
 | Service | Exposure | Planned owner responsibility | Current state |
 | --- | --- | --- | --- |
 | React frontend | Public via Vercel | User interface and safe rendering | Not created |
-| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status, health | Milestone 3 routes verified locally; not deployed |
-| Indexing worker | Railway private service | Durable claim/heartbeat/retry, safe clone/discovery, cleanup | Implemented and locally verified; not deployed |
+| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status, health | Milestone 4 status summaries verified locally; not deployed |
+| Indexing worker | Railway private service | Durable jobs, safe clone/discovery, isolated parse/chunk, cleanup | Implemented and locally verified; not deployed |
 | Embedding service | Railway private service | Authenticated bounded embeddings | Not created |
-| PostgreSQL | Neon private credentials | Durable identity, access, delivery, application, and job state | Three-revision schema/migration verified on disposable PostgreSQL 18.4; managed production instance not provisioned |
+| PostgreSQL | Neon private credentials | Durable identity, access, delivery, job summaries, inactive symbols | Four-revision schema/migration verified on disposable PostgreSQL 18.4; managed production instance not provisioned |
 | Redis | Private managed service | Opaque job-ID Stream delivery; later cache/rate-limit support | Redis 8.8 locally verified; managed authenticated TLS service not provisioned |
 | Qdrant | Qdrant Cloud authenticated | Scoped vectors | Not provisioned |
 | Hosted LLM | Server-side provider API | Tool selection and answer synthesis | Not configured |
@@ -31,7 +31,7 @@ Structured logs include request IDs plus safe startup/HTTP metadata and worker j
 
 Logs must exclude tokens, cookies, secrets, clone credential material, full repository chunks, full prompts/responses, private file contents, and complete chat messages.
 
-Uvicorn access logging is disabled because its raw target can include OAuth codes and other unbounded query data. `httpx`, `httpx2`, and `httpcore` INFO logs are suppressed for the same reason. Milestone 3 tests and final verification inspect logs for database/Redis URLs, credential/token/cookie/private-key/webhook sentinels, repository paths/content, askpass values, and provider bodies. Only allowlisted operational metadata is permitted.
+Uvicorn access logging is disabled because its raw target can include OAuth codes and other unbounded query data. `httpx`, `httpx2`, and `httpcore` INFO logs are suppressed for the same reason. Milestone 4 tests and final verification inspect logs for database/Redis URLs, credential/token/cookie/private-key/webhook sentinels, repository paths/source/chunks, parser internals, askpass values, and provider bodies. Only allowlisted operational metadata is permitted.
 
 Metrics remain planned: request and tool latency/error rates, job queue age/duration, worker heartbeat/stuck jobs, embedding throughput, vector operations, model token/cost usage, indexing stages, webhook outcomes, and deletion backlog. Names, cardinality limits, alert thresholds, and retention require deployed telemetry.
 
@@ -55,6 +55,8 @@ Implemented state behavior:
 - Retry uses bounded exponential backoff plus jitter. Do not manually change attempts or mark a job complete.
 - Duplicate Redis delivery is acknowledged after a conditional PostgreSQL claim fails; it does not start another clone.
 - Access-revoked work becomes `cancelled` before token minting or clone.
+- Static processing exposes `parsing` and `chunking` durable stages. File-local malformed/oversized/unsupported cases increment safe categories; repository chunk overflow and unsafe paths fail closed.
+- `parser_timeout` and `internal_parser_failure` are nonretryable for the same immutable commit/config. Operators must inspect capacity/configuration without collecting source or raw parser exceptions before submitting fresh work.
 
 ### Database migration rollback
 
@@ -156,7 +158,7 @@ The API never runs Alembic during application startup. From the repository root,
 
 Review generated SQL and backup/restore compatibility before any future production migration. The initial migration downgrade was exercised by the integration suite against a disposable database; that does not make production downgrades universally safe.
 
-## Local Milestone 3 procedure
+## Local Milestone 4 procedure
 
 Use Python 3.13 for the reproducible baseline. Install the hashed development lock:
 
@@ -166,6 +168,8 @@ python3.13 -m venv .venv
 ```
 
 Supply local values through an untracked `.env` or process environment. Configure real PostgreSQL and Redis URLs plus test-only GitHub/RepoLume authentication values. Integration tests require `TEST_DATABASE_URL` and `TEST_REDIS_URL`; they truncate/flush them and never fall back to SQLite or an in-memory queue.
+
+Parser defaults and documentation are in `.env.example`. Tune them as one validated set: parser input cannot exceed the discovery file ceiling; chunks cannot exceed symbol/document-section ceilings; child CPU cannot exceed the parent wall timeout. Do not increase bounds for untrusted repositories without capacity and failure testing.
 
 ```sh
 export APP_ENV=development
@@ -209,12 +213,12 @@ Stop Uvicorn/worker with `Ctrl-C`; shutdown closes database, GitHub, and Redis c
 
 For live GitHub verification, configure the App callback and webhook URLs to the public HTTPS API; grant read-only Metadata, Contents, and Pull requests permissions; subscribe to Installation, Installation repositories, Push, and Repository events; then install it on a controlled test account/organization. Automated tests require no real credentials and use injected mocked responses.
 
-## Milestone 3 verification commands
+## Milestone 4 verification commands
 
 ```sh
 .venv/bin/ruff format --check backend
 .venv/bin/ruff check backend
-.venv/bin/mypy backend/app backend/tests
+.venv/bin/mypy --config-file backend/pyproject.toml backend/app backend/tests
 .venv/bin/python -m pip check
 APP_ENV=test DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" .venv/bin/alembic -c backend/alembic.ini upgrade head
 APP_ENV=test DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" .venv/bin/alembic -c backend/alembic.ini current
@@ -223,11 +227,11 @@ cd backend
 APP_ENV=test DATABASE_URL="$DATABASE_URL" TEST_DATABASE_URL="$TEST_DATABASE_URL" REDIS_URL="$REDIS_URL" TEST_REDIS_URL="$TEST_REDIS_URL" ../.venv/bin/pytest
 cd ..
 .venv/bin/pip-audit --requirement backend/requirements.lock --disable-pip
-podman build --tag repolume-api:milestone3 backend
-podman image inspect --format '{{.Config.User}}' repolume-api:milestone3
+podman build --tag repolume-api:milestone4 backend
+podman image inspect --format '{{.Config.User}}' repolume-api:milestone4
 ```
 
-The Milestone 3 execution results are recorded in `docs/BUILD_STATUS.md`. GitHub Actions repeats quality, PostgreSQL 18, Redis 8.8, migration, audit, and image-user checks on Python 3.13 with test-only authentication settings. Hosted CI has not run because no remote workflow run exists.
+The Milestone 4 execution results are recorded in `docs/BUILD_STATUS.md`. GitHub Actions repeats strict quality, PostgreSQL 18, Redis 8.8, migration, audit, complete parser/worker tests, and image-user checks on Python 3.13 with test-only authentication settings. Hosted CI has not run because no remote workflow run exists.
 
 ## Incident evidence policy
 

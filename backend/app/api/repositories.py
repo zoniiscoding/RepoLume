@@ -74,6 +74,12 @@ def _status_response(repository: Repository, job: IndexingJob | None) -> Indexin
         discovered_file_count=0 if job is None else job.discovered_file_count,
         discovered_total_bytes=0 if job is None else job.discovered_total_bytes,
         skipped_file_counts={} if job is None else job.skipped_files_json,
+        parsed_file_count=0 if job is None else job.parsed_file_count,
+        partial_file_count=0 if job is None else job.partial_file_count,
+        parser_skipped_file_count=0 if job is None else job.parser_skipped_file_count,
+        symbol_count=0 if job is None else job.symbol_count,
+        chunk_count=0 if job is None else job.chunk_count,
+        parser_warning_counts={} if job is None else job.parser_warnings_json,
         heartbeat_at=None if job is None else job.heartbeat_at,
         completed_at=None if job is None else job.completed_at,
     )

@@ -10,9 +10,11 @@ import pytest
 from pydantic import SecretStr
 
 from app.github.client import GitHubClientProtocol
+from app.indexing.analyzer import RepositoryAnalyzerProtocol
 from app.indexing.clone import ClonedRepository, RepositoryClonerProtocol
 from app.indexing.discovery import DiscoveryResult, FileDiscovery
 from app.indexing.failures import IndexingError
+from app.indexing.models import ProcessingResult
 from app.indexing.worker import IndexingWorker
 from app.queue import QueueDelivery, WorkerQueueProtocol
 from app.services.indexing_jobs import ClaimedJob, IndexingJobStore, JobContext
@@ -58,6 +60,26 @@ def worker_dependencies(
         skipped={"unsupported_type": 1},
     )
     discovery.discover = MagicMock(return_value=result)
+    analyzer = MagicMock()
+    processing = ProcessingResult(
+        repository_id=uuid.UUID(int=0),
+        index_version=1,
+        commit_sha="a" * 40,
+        parsed_file_count=0,
+        partial_file_count=0,
+        skipped_file_count=0,
+        symbol_count=0,
+        chunk_count=0,
+        warning_counts={},
+        symbols=(),
+        chunk_fingerprints=(),
+    )
+
+    async def analyze(**kwargs: Any) -> ProcessingResult:
+        await kwargs["on_chunking"]()
+        return processing
+
+    analyzer.analyze = AsyncMock(side_effect=analyze)
     worker = IndexingWorker(
         settings=settings,
         queue=cast(WorkerQueueProtocol, queue),
@@ -65,6 +87,7 @@ def worker_dependencies(
         github=cast(GitHubClientProtocol, github),
         cloner=cast(RepositoryClonerProtocol, cloner),
         discovery=cast(FileDiscovery, discovery),
+        analyzer=cast(RepositoryAnalyzerProtocol, analyzer),
         worker_id="test-worker",
     )
     return worker, queue, store, github, cloner, discovery
@@ -82,6 +105,7 @@ def job_context(claimed: ClaimedJob) -> JobContext:
         owner="octo-org",
         name="repo",
         default_branch="main",
+        index_version=1,
     )
 
 
@@ -95,7 +119,13 @@ async def test_worker_completes_discovery_and_cleans_clone(tmp_path: Path) -> No
 
     await worker.process_delivery(delivery)
 
-    store.stage.assert_awaited_once()
+    assert store.stage.await_count == 3
+    assert [call.kwargs["stage"] for call in store.stage.await_args_list] == [
+        "discovering",
+        "parsing",
+        "chunking",
+    ]
+    assert [call.kwargs["progress"] for call in store.stage.await_args_list] == [55, 65, 85]
     store.complete.assert_awaited_once()
     github.create_installation_token.assert_awaited_once_with(42)
     discovery.discover.assert_called_once_with(tmp_path)

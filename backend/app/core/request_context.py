@@ -4,6 +4,7 @@ import re
 import time
 import uuid
 from contextvars import ContextVar
+from typing import cast
 
 import structlog
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -21,7 +22,8 @@ def get_request_id() -> str:
 
 
 def _request_id_from_scope(scope: Scope) -> str:
-    for name, value in scope.get("headers", []):
+    headers = cast(list[tuple[bytes, bytes]], scope.get("headers", []))
+    for name, value in headers:
         if name.lower() == REQUEST_ID_HEADER:
             candidate = value.decode("ascii", errors="ignore")
             if REQUEST_ID_PATTERN.fullmatch(candidate):

@@ -225,3 +225,35 @@ Decisions are append-only. If a decision changes, add a superseding entry instea
 - **Decision:** Discover only an allowlisted Python/documentation/config text set, never follow symlinks, fail on containment/resource violations, and persist only file/byte/skipped-category counts plus the commit SHA. Mark the job `complete` at `discovery_complete` while keeping the repository `not_indexed`.
 - **Rationale:** Persisting paths or bytes is unnecessary before parsing, and labelling discovery as an index would misrepresent product capability. Milestone 4 owns parsing/chunking.
 - **Consequence:** The API can expose honest acquisition progress without a searchable index. No Tree-sitter, chunks, symbols, calls, embeddings, Qdrant, or repository content persistence was added.
+
+## D-029 — Use Tree-sitter as the only Milestone 4 Python parser
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 4
+- **Decision:** Pin `tree-sitter==0.26.0` with `tree-sitter-python==0.25.0` and extract syntax exclusively from Tree-sitter nodes and bounded UTF-8 source ranges. Never import repository modules, call Python `ast` evaluation helpers, or execute repository-controlled code.
+- **Rationale:** Tree-sitter provides resilient, concrete source ranges for valid and partially malformed Python without crossing the repository-code execution boundary.
+- **Consequence:** Parse recovery is explicitly best effort, source encodings other than UTF-8 are skipped, and static results cannot establish runtime behavior.
+
+## D-030 — Isolate static processing in a killable child process
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 4
+- **Decision:** Run repository parsing and chunk construction in a spawned child that receives only safe limits, checkout/discovery metadata, repository/index context, and commit SHA. Return only safe processing metadata; enforce wall timeout from the worker parent plus child CPU and Linux address-space limits.
+- **Rationale:** A thread timeout cannot stop native parser work and could race clone cleanup. A process boundary makes timeout termination and memory reclamation enforceable without placing secrets in the child.
+- **Consequence:** Source/chunk bodies remain within the child and temporary checkout. Darwin rejects this `RLIMIT_AS` shape, so local macOS verification uses CPU plus wall termination; Linux containers/CI also apply the memory ceiling.
+
+## D-031 — Chunk by syntax/document structure and never silently truncate
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 4
+- **Decision:** Keep small Python definitions whole; split large definitions only across immediate AST statement boundaries; create separate nested-definition chunks; and split Markdown/text by headings, paragraphs, fences, then exact line ranges. If one permitted unit cannot fit, record a safe size classification rather than truncate bytes.
+- **Rationale:** Fixed-character Python chunks break syntax and meaning, while silent truncation produces misleading evidence.
+- **Consequence:** Chunk sizes are upper bounds, nested definitions are not duplicated into parent line slices, and an oversized single statement/document line is skipped rather than split mid-line.
+
+## D-032 — Persist M4 symbols and summaries, not chunk content
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 4
+- **Decision:** Persist versioned symbol definitions under the next inactive repository index version plus job counts and safe warning categories. Keep chunk bodies and fingerprints transient and leave the repository active version/status unchanged.
+- **Rationale:** Milestone 4 needs durable symbol metadata and operational evidence, but Milestone 5 owns coordinated vector persistence and activation. Persisting chunks early would create an unversioned partial index.
+- **Consequence:** `chunking_complete` is honest preprocessing completion, not search readiness. M5 must reconstruct deterministic chunks, persist embeddings/vectors, and activate only after its complete consistency checks.

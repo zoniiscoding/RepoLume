@@ -2,13 +2,14 @@
 
 RepoLume is a multi-tenant, read-only developer SaaS for understanding authorized GitHub repositories through evidence-backed answers.
 
-This repository is at **Milestone 3: durable jobs and safe cloning**. It implements the FastAPI/PostgreSQL foundation, GitHub App authentication and access controls, Redis Stream delivery, PostgreSQL-owned job state, a separate worker, fixed safe shallow cloning, bounded non-executing file discovery, tests, and CI. There is no parsing, chunking, embeddings, vector search, agent, chat, or frontend functionality yet.
+This repository is at **Milestone 4: Python static parsing and AST-aware chunking**. It implements the FastAPI/PostgreSQL foundation, GitHub App authentication and access controls, Redis Stream delivery, PostgreSQL-owned job state, a separate worker, fixed safe shallow cloning, bounded discovery, isolated Tree-sitter parsing, deterministic symbol extraction, and transient Python/Markdown/plain-text chunks. There are no embeddings, vector search, call graph, agent, chat, or frontend features yet.
 
 Read [the product specification](docs/PRODUCT_SPEC.md), [current build status](docs/BUILD_STATUS.md), [security posture](docs/SECURITY.md), and [engineering rules](AGENTS.md) before changing code.
 
 ## Requirements
 
 - Python 3.11–3.14; Python 3.13 is the production/CI baseline.
+- Tree-sitter 0.26.0 and the Python grammar 0.25.0.
 - PostgreSQL 18 for the verified local/CI baseline.
 - Redis 8.8 for the verified local/CI queue-delivery baseline.
 - Git available at the absolute path configured by `CLONE_GIT_EXECUTABLE` (the container uses `/usr/bin/git`).
@@ -69,7 +70,7 @@ cd backend
 ../.venv/bin/python -m app.worker
 ```
 
-Or run the complete local service set with `docker compose up --build`. The API and worker share the same non-root image; only the API publishes a host port. Redis receives only opaque job UUIDs, while PostgreSQL owns job state and recovery.
+Or run the complete local service set with `docker compose up --build`. The API and worker share the same non-root image; only the API publishes a host port. Redis receives only opaque job UUIDs, while PostgreSQL owns job state and recovery. Parser/chunk bodies remain transient inside a resource-bounded worker child process; only safe counts, warning categories, hashes, and versioned symbol metadata are persisted.
 
 Start live OAuth at `GET /api/v1/auth/github/start`. Access tokens are returned in authenticated API responses and belong in frontend memory only. Refresh tokens are handled through the scoped HTTP-only cookie; refresh/logout requests must include an allowed `Origin` header.
 
@@ -80,7 +81,7 @@ Run from the repository root with `DATABASE_URL`/`TEST_DATABASE_URL` pointing to
 ```sh
 .venv/bin/ruff format --check backend
 .venv/bin/ruff check backend
-.venv/bin/mypy backend/app backend/tests
+.venv/bin/mypy --config-file backend/pyproject.toml backend/app backend/tests
 .venv/bin/python -m pip check
 .venv/bin/alembic -c backend/alembic.ini upgrade head
 .venv/bin/alembic -c backend/alembic.ini check
@@ -94,4 +95,4 @@ Integration tests truncate PostgreSQL and flush Redis; they fail rather than sil
 
 ## Security boundary
 
-Connected repository code is untrusted data. RepoLume never executes, imports, installs, builds, tests, or invokes it. The worker clones only a validated `github.com/<owner>/<repository>.git` identity with fixed arguments, disabled hooks/submodules/config, an askpass credential outside argv, process/filesystem limits, and guaranteed temporary cleanup. Milestone 3 stops after safe discovery; no repository parser runs.
+Connected repository code is untrusted data. RepoLume never executes, imports, installs, builds, tests, or invokes it. The worker clones only a validated `github.com/<owner>/<repository>.git` identity with fixed arguments, disabled hooks/submodules/config, an askpass credential outside argv, process/filesystem limits, and guaranteed temporary cleanup. Tree-sitter consumes bounded UTF-8 bytes as inert syntax in an isolated, killable process; it never imports repository modules or follows instructions embedded in source or documentation.

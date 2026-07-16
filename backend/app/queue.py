@@ -123,7 +123,7 @@ class RedisJobQueue:
             )
         except (OSError, RedisError) as error:
             raise QueueUnavailableError from error
-        messages = cast(list[Any], raw)[1]
+        messages = raw[1]
         return tuple(
             delivery
             for delivery in (self._parse_delivery(item) for item in messages)

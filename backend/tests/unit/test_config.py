@@ -49,6 +49,22 @@ def test_pool_limits_are_validated() -> None:
         make_settings(database_pool_size=0)
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"clone_max_file_bytes": 1024, "parser_max_input_bytes": 2048},
+        {"parser_max_symbol_bytes": 1024, "parser_max_chunk_bytes": 2048},
+        {"parser_max_document_section_bytes": 1024, "parser_max_chunk_bytes": 2048},
+        {"parser_timeout_seconds": 5, "parser_process_cpu_seconds": 6},
+    ],
+)
+def test_parser_limits_are_validated_as_a_consistent_set(
+    overrides: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(**overrides)
+
+
 @pytest.mark.parametrize("redis_url", ["http://redis.example", "redis://", "not-a-url"])
 def test_redis_url_rejects_unsupported_or_incomplete_values(redis_url: str) -> None:
     with pytest.raises(ValidationError):

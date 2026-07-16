@@ -29,6 +29,14 @@ class IndexingJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         CheckConstraint("progress >= 0 AND progress <= 100", name="progress_range"),
         CheckConstraint("discovered_file_count >= 0", name="discovered_file_count_nonnegative"),
         CheckConstraint("discovered_total_bytes >= 0", name="discovered_total_bytes_nonnegative"),
+        CheckConstraint("parsed_file_count >= 0", name="parsed_file_count_nonnegative"),
+        CheckConstraint("partial_file_count >= 0", name="partial_file_count_nonnegative"),
+        CheckConstraint(
+            "parser_skipped_file_count >= 0",
+            name="parser_skipped_file_count_nonnegative",
+        ),
+        CheckConstraint("symbol_count >= 0", name="symbol_count_nonnegative"),
+        CheckConstraint("chunk_count >= 0", name="chunk_count_nonnegative"),
         Index("ix_indexing_jobs_repository_status", "repository_id", "status", "created_at"),
         Index("ix_indexing_jobs_requester_created", "requested_by_user_id", "created_at"),
         Index("ix_indexing_jobs_status_next_attempt", "status", "next_attempt_at"),
@@ -74,6 +82,22 @@ class IndexingJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         BigInteger, nullable=False, default=0, server_default="0"
     )
     skipped_files_json: Mapped[dict[str, int]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    parsed_file_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    partial_file_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    parser_skipped_file_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    symbol_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    parser_warnings_json: Mapped[dict[str, int]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

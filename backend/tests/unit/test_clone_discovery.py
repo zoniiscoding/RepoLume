@@ -189,7 +189,9 @@ def test_discovery_filters_without_reading_or_executing_repository(tmp_path: Pat
     marker = tmp_path / "execution-marker"
     (tmp_path / "danger.py").write_text(f"open({str(marker)!r}, 'w').write('bad')")
 
-    result = FileDiscovery(make_settings(clone_max_file_bytes=1024)).discover(tmp_path)
+    result = FileDiscovery(
+        make_settings(clone_max_file_bytes=1024, parser_max_input_bytes=1024)
+    ).discover(tmp_path)
 
     assert [item.relative_path for item in result.files] == [
         "README.md",

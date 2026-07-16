@@ -1,6 +1,6 @@
 # RepoLume Architecture
 
-**Status:** Milestone 3 durable delivery, worker execution, safe cloning, and bounded file discovery are implemented and locally verified with PostgreSQL 18.4, Redis 8.8, mocked GitHub responses, and a controlled real Git fixture. Live GitHub and hosted deployment verification remain outstanding.
+**Status:** Milestone 4 durable delivery, safe cloning/discovery, isolated Tree-sitter Python parsing, deterministic symbol extraction, and transient AST/document chunking are implemented and locally verified with PostgreSQL 18.4, Redis 8.8, mocked GitHub responses, and controlled real Git/parse fixtures. Live GitHub and hosted deployment verification remain outstanding.
 
 ## Goals
 
@@ -34,10 +34,10 @@ Only the frontend, API, webhook route, and safe health routes are public. The wo
 | Component | Responsibility | Must not do |
 | --- | --- | --- |
 | Frontend | Authentication states, repository management, progress, repository-scoped chat, sanitized evidence rendering | Store access tokens persistently; render untrusted HTML |
-| API | **Through Milestone 3:** foundation, GitHub OAuth/sessions, installation/repository authorization, signed webhook ingress, idempotent repository selection, and durable job creation | Perform clone/discovery in request handlers; trust a client repository ID; expose GitHub credentials |
-| Worker | **Through Milestone 3:** claim/recover/heartbeat durable jobs, reauthorize, clone safely, discover bounded supported files, and clean up | Expose a public endpoint; execute connected repository code; parse/index before Milestone 4+ |
+| API | **Through Milestone 4:** foundation, GitHub OAuth/sessions, installation/repository authorization, signed webhook ingress, repository selection, durable job/status counts | Perform ingestion in request handlers; trust a client repository ID; expose GitHub credentials or source |
+| Worker | **Through Milestone 4:** claim/recover/heartbeat jobs, reauthorize, clone/discover, isolate static parsing/chunking, persist safe symbol metadata, clean up | Expose a public endpoint; execute/import connected code; persist chunks or activate an index before M5 |
 | Embedding service | Load one configured model, validate authenticated batches, return deterministic vectors | Log raw chunks; accept public traffic |
-| PostgreSQL | Migrated identity, hashed OAuth/refresh state, authorization relationships, repository state, webhook idempotency, and durable indexing job truth | Act as a vector similarity engine; persist raw browser/GitHub tokens or repository contents |
+| PostgreSQL | Migrated identity/access, webhook/job truth, processing summaries, and inactive versioned symbol definitions | Act as a vector engine; persist raw tokens, source bodies, or M4 chunk content |
 | Redis | **Implemented:** at-least-once Stream delivery of opaque job UUIDs; later ephemeral cache/rate-limit support | Be the only record of a job or access decision; carry repository data or credentials |
 | Qdrant | Repository- and index-version-filtered vector storage/search | Run unfiltered cross-repository searches |
 | LLM adapter | Provider-independent tool selection and grounded synthesis | Choose tenant scope or network destinations |
@@ -46,13 +46,13 @@ Only the frontend, API, webhook route, and safe health routes are public. The wo
 
 ```text
 backend/             FastAPI API, domain services, persistence, jobs, ingestion, tests
-embedding_service/   Reserved for a later private model service; not created through Milestone 3
-frontend/            Reserved for a later React/Vite application; not created through Milestone 3
+embedding_service/   Reserved for a later private model service; not created through Milestone 4
+frontend/            Reserved for a later React/Vite application; not created through Milestone 4
 docs/                Product, architecture, security, decisions, evaluation, status, operations
 .github/              CI/CD and dependency automation
 ```
 
-Within the backend, versioned routes delegate to auth, installation, repository, webhook, and health services. GitHub access is isolated behind a typed client protocol with fixed destinations. Redis delivery is isolated behind a typed queue protocol. The private worker composes PostgreSQL job transitions, GitHub token minting, the clone adapter, and discovery; no ORM session remains open across Git/network/filesystem work. Qdrant, embeddings, parsing, LLM, and frontend integrations do not exist.
+Within the backend, versioned routes delegate to auth, installation, repository, webhook, and health services. GitHub and Redis sit behind typed protocols. The private worker composes PostgreSQL transitions, token minting, clone/discovery, and a typed analyzer protocol; no ORM session remains open across Git/network/filesystem/parser work. The production analyzer spawns a killable child containing Tree-sitter, parser models, Python/document chunkers, and repository bytes. Qdrant, embeddings, call resolution, LLM, and frontend integrations do not exist.
 
 ## Implemented request paths
 
@@ -83,10 +83,11 @@ Repository selection:
 Worker:
   Redis job UUID -> conditional PostgreSQL claim -> durable authorization reload
   -> short-lived installation token -> fixed shallow clone -> bounded discovery
-  -> terminal/retry PostgreSQL transition -> guaranteed clone cleanup -> Redis ACK
+  -> parsing/chunking child -> safe summary + inactive symbols in PostgreSQL
+  -> terminal/retry transition -> guaranteed clone cleanup -> Redis ACK
 ```
 
-Configuration is validated before the app is constructed. Production additionally requires JSON logging, disabled interactive docs, explicit trusted hosts, HTTPS CORS/callback URLs, a credentialed non-local PostgreSQL URL, authenticated TLS Redis, an absolute Git executable, PEM-shaped GitHub App key material, and authentication secrets of at least 32 characters. Clone, discovery, heartbeat, reconciliation, stream, and retry bounds are validated. Secrets are excluded from settings representations and the allowlisted startup summary.
+Configuration is validated before the app is constructed. Production additionally requires JSON logging, disabled interactive docs, explicit trusted hosts, HTTPS CORS/callback URLs, a credentialed non-local PostgreSQL URL, authenticated TLS Redis, an absolute Git executable, PEM-shaped GitHub App key material, and authentication secrets of at least 32 characters. Clone, discovery, parser input/symbol/chunk/document/warning/process, heartbeat, reconciliation, stream, and retry bounds are validated. Secrets are excluded from settings representations and the allowlisted startup summary.
 
 ## Identity and authorization model
 
@@ -115,7 +116,7 @@ RepoLume uses SQLAlchemy 2.x async sessions with `asyncpg` in FastAPI and the wo
 - One short-lived session per worker job step/transaction; no session remains open during clone, embedding, LLM, or other network work.
 - `expire_on_commit=False`; ORM instances do not cross process or queue boundaries.
 - Workers receive scalar identifiers, then reload and re-authorize durable state.
-- Schema changes are made only through Alembic migrations; `94b0f7ce7782` adds Milestone 3 delivery/discovery state after the Milestone 2 revision.
+- Schema changes are made only through Alembic migrations; `f9389ed2964e` adds Milestone 4 parser/chunk/symbol summary state after the Milestone 3 revision.
 - Transactions protect state transitions and atomic index activation; external side effects use idempotent operations and compensating cleanup rather than pretending they share a database transaction.
 
 ## Repository indexing data flow
@@ -125,7 +126,7 @@ RepoLume uses SQLAlchemy 2.x async sessions with `asyncpg` in FastAPI and the wo
 3. **Implemented:** Worker conditionally claims the job, records progress/heartbeat/attempt state, and reloads durable access state.
 4. **Implemented:** Worker obtains a short-lived installation token and performs a fixed-argument, shallow, single-branch clone into a fresh temporary directory.
 5. **Implemented:** Discovery enforces configured file, byte, path, type, binary, directory, and symlink limits, then persists counts only and removes the clone.
-6. **Milestone 4:** Static parsers create Python symbol-aware chunks and heading-aware documentation chunks without importing or running repository code.
+6. **Implemented in Milestone 4:** a resource-bounded child statically extracts Python symbols and creates deterministic Python/Markdown/text chunks without importing or running repository code. It returns safe counts/hashes/metadata only; PostgreSQL stores inactive symbol definitions, while chunks remain transient.
 7. The private embedding service embeds bounded batches; Qdrant writes are always tagged with repository ID and a new inactive index version.
 8. PostgreSQL stores symbol and call-edge records under the same inactive version.
 9. A transaction activates the new version only after all required stages succeed.
@@ -193,8 +194,8 @@ The API and worker use one hashed-dependency, non-root Python 3.13/Git image. Co
 
 - No real GitHub App or hosted frontend is connected; GitHub adapter behavior is automatically verified with mocked responses only.
 - Membership is synchronized at login and accepted for a configurable bounded freshness interval. Signed installation suspension/deletion and repository-removal webhooks override it immediately.
-- Initial repository clone/discovery jobs have a consumer, but webhook-triggered reindex scheduling is not yet connected and no searchable index exists.
-- `discovery_complete` is a terminal Milestone 3 job stage while the repository remains `not_indexed`; it must not be presented as parsed, embedded, or searchable.
+- Initial repository clone/discovery/parse/chunk jobs have a consumer, but webhook-triggered reindex scheduling is not yet connected and no searchable index exists.
+- `chunking_complete` is a terminal Milestone 4 job stage while the repository remains `not_indexed`; it must not be presented as embedded, vector-persisted, or searchable.
 - Static Python analysis cannot prove dynamic dispatch, reflection, monkey patching, metaclass, decorator-generated, dependency-injection, or runtime-assignment behavior.
 - Python is the only initially supported structured language.
 - Repository evidence cannot establish actual runtime state or undocumented historical intent.

@@ -1,10 +1,14 @@
 # RepoLume Evaluation
 
-**Status:** Retrieval methodology only. No parser, chunks, embeddings, vector index, retrieval system, question corpus, or product-quality evaluation exists through Milestone 3. Authentication/authorization and clone/discovery security tests were executed, but they do not create retrieval accuracy scores.
+**Status:** Static-ingestion methodology and fixtures only. Python parsing and transient chunk construction exist through Milestone 4, but there are no embeddings, vector index, retrieval system, labelled question corpus, or product-quality scores. Parser/chunker correctness and security evidence must not be presented as retrieval accuracy.
 
-## Milestone 3 ingestion safety fixture
+## Milestone 4 static-ingestion fixtures
 
-A generated, operator-controlled local Git repository is used only for ingestion-boundary integration testing. It contains three supported text/Python files, including a Python file that would create an external marker if executed. The API durably queued the fixture repository, a separate worker shallow-cloned it with Git, discovery reported three supported files, the duplicate delivery became a no-op, the temporary clone directory was empty afterward, and the execution marker did not exist. This is security/operations evidence, not a retrieval benchmark; the generated fixture has no reusable corpus identity, relevance labels, or quality score.
+A generated, operator-controlled local Git repository is used for end-to-end ingestion-boundary testing. It contains three supported Python/Markdown files, including Python that would create an external marker if executed. The API durably queued it; the worker shallow-cloned, discovered, statically parsed, symbolized, chunked, persisted safe summaries/symbol metadata, and deleted it. The marker remained absent, the duplicate Redis delivery was a no-op, and a forced parser failure also cleaned the clone.
+
+A committed rich fixture covers sync/async functions, classes/methods, nested/duplicate names, decorators, multiline positional-only/keyword-only signatures, annotations, docstrings, imports/aliases/relative imports, Unicode, malformed recovery, Markdown heading hierarchy/fences/prompt-shaped text, and plain documentation. Explicit tests verify exact one-based ranges, stable hashes, deterministic ordering, CRLF/LF normalization, large-unit policy, safe classifications, and repeated identical output.
+
+These are parser/chunker behavior and security results, not a retrieval benchmark. Chunks are transient, the fixtures have no relevance labels, and no MRR, recall, citation, faithfulness, latency-at-scale, or answer-quality score has been measured.
 
 ## Objectives
 

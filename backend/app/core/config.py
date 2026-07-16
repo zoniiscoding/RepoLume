@@ -80,6 +80,18 @@ class Settings(BaseSettings):
     clone_process_memory_bytes: int = Field(default=1024 * 1024 * 1024, ge=64 * 1024 * 1024)
     clone_process_cpu_seconds: int = Field(default=120, ge=5, le=900)
 
+    parser_max_input_bytes: int = Field(default=2 * 1024 * 1024, ge=1024)
+    parser_max_symbols_per_file: int = Field(default=5_000, ge=1, le=100_000)
+    parser_max_symbol_bytes: int = Field(default=512 * 1024, ge=1024)
+    parser_max_chunk_bytes: int = Field(default=32 * 1024, ge=512)
+    parser_max_chunks_per_file: int = Field(default=2_000, ge=1, le=100_000)
+    parser_max_total_chunks: int = Field(default=50_000, ge=1, le=1_000_000)
+    parser_max_document_section_bytes: int = Field(default=256 * 1024, ge=1024)
+    parser_max_warnings_per_file: int = Field(default=50, ge=1, le=1_000)
+    parser_timeout_seconds: float = Field(default=180.0, gt=0, le=900)
+    parser_process_memory_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=64 * 1024 * 1024)
+    parser_process_cpu_seconds: int = Field(default=120, ge=5, le=900)
+
     cors_origins: list[AnyHttpUrl] = Field(default_factory=list)
     trusted_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
 
@@ -189,6 +201,21 @@ class Settings(BaseSettings):
             raise ValueError("REDIS_URL must contain managed remote credentials in production")
         return self
 
+    @model_validator(mode="after")
+    def validate_parser_limits(self) -> Self:
+        """Keep parsing and chunking bounds internally consistent."""
+        if self.parser_max_input_bytes > self.clone_max_file_bytes:
+            raise ValueError("PARSER_MAX_INPUT_BYTES cannot exceed CLONE_MAX_FILE_BYTES")
+        if self.parser_max_chunk_bytes > self.parser_max_symbol_bytes:
+            raise ValueError("PARSER_MAX_CHUNK_BYTES cannot exceed PARSER_MAX_SYMBOL_BYTES")
+        if self.parser_max_chunk_bytes > self.parser_max_document_section_bytes:
+            raise ValueError(
+                "PARSER_MAX_CHUNK_BYTES cannot exceed PARSER_MAX_DOCUMENT_SECTION_BYTES"
+            )
+        if self.parser_process_cpu_seconds > self.parser_timeout_seconds:
+            raise ValueError("PARSER_PROCESS_CPU_SECONDS cannot exceed PARSER_TIMEOUT_SECONDS")
+        return self
+
     @property
     def is_production(self) -> bool:
         """Return whether production safeguards are required."""
@@ -207,12 +234,15 @@ class Settings(BaseSettings):
             "membership_ttl_seconds": self.installation_membership_ttl_seconds,
             "worker_max_attempts": self.worker_max_attempts,
             "clone_timeout_seconds": self.clone_timeout_seconds,
+            "parser_max_input_bytes": self.parser_max_input_bytes,
+            "parser_max_total_chunks": self.parser_max_total_chunks,
+            "parser_timeout_seconds": self.parser_timeout_seconds,
         }
 
 
 def load_settings() -> Settings:
     """Load settings without leaking rejected values through startup errors."""
     try:
-        return Settings()  # type: ignore[call-arg]
+        return Settings()
     except ValidationError:
         raise RuntimeError("Application configuration is invalid") from None
