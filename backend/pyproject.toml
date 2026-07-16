@@ -1,0 +1,115 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "repolume-backend"
+version = "0.1.0"
+description = "RepoLume FastAPI backend foundation"
+readme = "../README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "alembic==1.18.5",
+  "asyncpg==0.31.0",
+  "fastapi==0.139.0",
+  "httpx==0.28.1",
+  "pydantic==2.13.4",
+  "pydantic-settings==2.14.2",
+  "sqlalchemy[asyncio]==2.0.51",
+  "structlog==26.1.0",
+  "uvicorn[standard]==0.51.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx2==2.7.0",
+  "mypy==2.3.0",
+  "pip-audit==2.10.1",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "pytest-cov==7.1.0",
+  "ruff==0.15.20",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = [
+  "A",
+  "ANN",
+  "ASYNC",
+  "B",
+  "BLE",
+  "C4",
+  "DTZ",
+  "E",
+  "F",
+  "FAST",
+  "I",
+  "N",
+  "PERF",
+  "PIE",
+  "PL",
+  "PT",
+  "RET",
+  "RUF",
+  "S",
+  "SIM",
+  "T20",
+  "TRY",
+  "UP",
+  "W",
+]
+ignore = [
+  "ANN401",
+  "PLR0913",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["PLR2004", "PT012", "S101", "S105", "TRY003"]
+"alembic/**/*.py" = ["ANN", "INP001"]
+"app/core/config.py" = ["S104", "TRY003"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+warn_unused_configs = true
+exclude = ["alembic/versions/"]
+
+[[tool.mypy.overrides]]
+module = "asyncpg.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = [
+  "--strict-config",
+  "--strict-markers",
+  "--cov=app",
+  "--cov-report=term-missing:skip-covered",
+  "--cov-fail-under=90",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+markers = [
+  "integration: requires a real disposable PostgreSQL database",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
