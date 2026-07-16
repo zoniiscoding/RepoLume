@@ -19,6 +19,7 @@ class ReadinessChecks(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     database: Literal["ready", "unavailable"]
+    redis: Literal["ready", "unavailable"]
 
 
 class ReadinessResponse(BaseModel):

@@ -1,17 +1,17 @@
 # RepoLume Operations
 
-**Status:** Milestone 2 local authentication/GitHub App operations are implemented and verified with mocked provider responses. No live GitHub App, hosted environment, dashboard, alert, backup, or production runbook has been verified.
+**Status:** Milestone 3 local API/worker/PostgreSQL/Redis/safe-clone operations are implemented and verified with mocked GitHub responses and a controlled Git fixture. No live GitHub App, hosted environment, dashboard, alert, backup, or production runbook has been verified.
 
 ## Service inventory
 
 | Service | Exposure | Planned owner responsibility | Current state |
 | --- | --- | --- | --- |
 | React frontend | Public via Vercel | User interface and safe rendering | Not created |
-| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, health | Milestone 2 routes verified locally; not deployed |
-| Indexing worker | Railway private service | Durable job execution and cleanup | Not created |
+| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status, health | Milestone 3 routes verified locally; not deployed |
+| Indexing worker | Railway private service | Durable claim/heartbeat/retry, safe clone/discovery, cleanup | Implemented and locally verified; not deployed |
 | Embedding service | Railway private service | Authenticated bounded embeddings | Not created |
-| PostgreSQL | Neon private credentials | Durable identity, access, delivery, application, and job state | Two-revision schema/migration verified on disposable PostgreSQL 18.4; managed production instance not provisioned |
-| Redis | Private managed service | Queue, ephemeral cache, rate-limit support | Not provisioned |
+| PostgreSQL | Neon private credentials | Durable identity, access, delivery, application, and job state | Three-revision schema/migration verified on disposable PostgreSQL 18.4; managed production instance not provisioned |
+| Redis | Private managed service | Opaque job-ID Stream delivery; later cache/rate-limit support | Redis 8.8 locally verified; managed authenticated TLS service not provisioned |
 | Qdrant | Qdrant Cloud authenticated | Scoped vectors | Not provisioned |
 | Hosted LLM | Server-side provider API | Tool selection and answer synthesis | Not configured |
 | GitHub App | GitHub | Authentication, installation tokens, webhooks | Adapter and mocked tests complete; real App not configured or verified |
@@ -19,25 +19,25 @@
 ## Health contract
 
 - `GET /api/v1/health/live` indicates API process liveness only, returns `200 {"status":"ok"}`, and does not probe or reveal configuration/dependencies.
-- `GET /api/v1/health/ready` runs a bounded PostgreSQL `SELECT 1`; it returns `200` with database `ready` or a shared safe `503` error when unavailable.
-- Worker health will use durable heartbeat timestamps plus process metrics; an HTTP endpoint is not required if the platform and reconciler can observe it privately.
+- `GET /api/v1/health/ready` runs bounded PostgreSQL and Redis probes; it returns `200` only when both report `ready`, otherwise a content-free `503` readiness body.
+- Worker health uses durable job heartbeat timestamps, pending-entry reclaim, stuck-job recovery, process supervision, and later metrics; it has no public HTTP endpoint.
 - The embedding service will expose a private authenticated health response with model identity, version, dimension, and load state, but no raw data.
 
-Both implemented responses include a generated or validated `X-Request-ID` and API security headers. PostgreSQL is the only current readiness dependency. Liveness remains successful when PostgreSQL is unavailable.
+Both implemented responses include a generated or validated `X-Request-ID` and API security headers. PostgreSQL and Redis are readiness dependencies. Liveness remains successful when either dependency is unavailable.
 
 ## Logging and metrics contract
 
-Structured logs currently include request IDs plus safe startup and HTTP metadata: environment name, boolean/count configuration summaries, route path, method, status, and duration. Later product logs may add opaque actor/installation/repository/session/job identifiers, stage, tool name, result count, and safe error code.
+Structured logs include request IDs plus safe startup/HTTP metadata and worker job/repository IDs, attempt, stage, counts, and safe error code. They do not include repository owner/name/path/content.
 
 Logs must exclude tokens, cookies, secrets, clone credential material, full repository chunks, full prompts/responses, private file contents, and complete chat messages.
 
-Uvicorn access logging is disabled because its raw target can include OAuth codes and other unbounded query data. `httpx`, `httpx2`, and `httpcore` INFO logs are suppressed for the same reason. Host and container JSON logs were inspected during Milestone 2; a callback with an OAuth-code sentinel logged the route path only. No database URL, credential, cookie, token, private key, webhook secret, prompt, private content, or response body was observed.
+Uvicorn access logging is disabled because its raw target can include OAuth codes and other unbounded query data. `httpx`, `httpx2`, and `httpcore` INFO logs are suppressed for the same reason. Milestone 3 tests and final verification inspect logs for database/Redis URLs, credential/token/cookie/private-key/webhook sentinels, repository paths/content, askpass values, and provider bodies. Only allowlisted operational metadata is permitted.
 
 Metrics remain planned: request and tool latency/error rates, job queue age/duration, worker heartbeat/stuck jobs, embedding throughput, vector operations, model token/cost usage, indexing stages, webhook outcomes, and deletion backlog. Names, cardinality limits, alert thresholds, and retention require deployed telemetry.
 
-## Planned runbooks
+## Runbooks
 
-The following sections are operational requirements, not executed procedures. Exact provider commands, dashboard links, escalation contacts, recovery-point objectives, and evidence fields will be filled in during implementation/deployment.
+The job/Redis procedures below reflect implemented local behavior but have not been exercised on a managed production platform. Exact dashboard links, escalation contacts, recovery objectives, and evidence fields remain deployment work.
 
 ### Failed or stuck indexing
 
@@ -47,6 +47,14 @@ The following sections are operational requirements, not executed procedures. Ex
 4. Clean incomplete vectors/graph data idempotently.
 5. Requeue within the retry policy or mark permanently failed with a user-safe message.
 6. Verify the temporary clone no longer exists.
+
+Implemented state behavior:
+
+- `queued`/due `retrying` jobs are reconciled back into Redis when delivery is absent or stale.
+- `running` jobs whose heartbeat exceeds `WORKER_ABANDONED_AFTER_SECONDS` become retryable until `WORKER_MAX_ATTEMPTS`; exhausted jobs become permanently `failed`.
+- Retry uses bounded exponential backoff plus jitter. Do not manually change attempts or mark a job complete.
+- Duplicate Redis delivery is acknowledged after a conditional PostgreSQL claim fails; it does not start another clone.
+- Access-revoked work becomes `cancelled` before token minting or clone.
 
 ### Database migration rollback
 
@@ -77,7 +85,7 @@ Migration upgrade, current-revision, consistency, and downgrade commands are ava
 4. Redeliver through GitHub only after idempotency is confirmed.
 5. Verify revocation events have blocked access even if downstream purge is pending.
 
-The delivery table stores the safe delivery ID, event/action, optional external installation/repository IDs, status, safe error code, and processing time. It deliberately does not store webhook bodies. A `queued` push/repository delivery is expected to remain without a consumer until Milestone 3+; do not mark it processed manually.
+The delivery table stores the safe delivery ID, event/action, optional external installation/repository IDs, status, safe error code, and processing time. It deliberately does not store webhook bodies. Webhook-triggered reindex wiring is still deferred; do not mark queued webhook records processed manually.
 
 ### Refresh-token replay response
 
@@ -100,6 +108,14 @@ The delivery table stores the safe delivery ID, event/action, optional external 
 2. Do not mark unenqueued jobs as running or complete.
 3. After recovery, reconcile durable queued/retryable jobs idempotently.
 4. Detect duplicate delivery at the job transition layer.
+
+Implemented local recovery procedure:
+
+1. Confirm PostgreSQL readiness separately and leave queued/retrying rows unchanged.
+2. Restore the configured Redis endpoint; do not copy repository data or credentials into Redis.
+3. Restart at least one worker. Startup runs abandoned recovery and due-job reconciliation before reading deliveries.
+4. Confirm readiness reports Redis `ready`, due jobs receive a fresh enqueue timestamp, and exactly one worker wins each conditional claim.
+5. Check only safe job IDs/stages/attempts and clone-root cleanup; never inspect tokens or repository bytes in Redis/logs.
 
 ### LLM provider outage
 
@@ -140,7 +156,7 @@ The API never runs Alembic during application startup. From the repository root,
 
 Review generated SQL and backup/restore compatibility before any future production migration. The initial migration downgrade was exercised by the integration suite against a disposable database; that does not make production downgrades universally safe.
 
-## Local Milestone 2 procedure
+## Local Milestone 3 procedure
 
 Use Python 3.13 for the reproducible baseline. Install the hashed development lock:
 
@@ -149,12 +165,14 @@ python3.13 -m venv .venv
 .venv/bin/python -m pip install --require-hashes --requirement backend/requirements-dev.lock
 ```
 
-Supply local values through an untracked `.env` or process environment. Configure a real PostgreSQL URL plus test-only GitHub/RepoLume authentication values. Integration tests require `TEST_DATABASE_URL`, truncate it, and fail instead of falling back to SQLite.
+Supply local values through an untracked `.env` or process environment. Configure real PostgreSQL and Redis URLs plus test-only GitHub/RepoLume authentication values. Integration tests require `TEST_DATABASE_URL` and `TEST_REDIS_URL`; they truncate/flush them and never fall back to SQLite or an in-memory queue.
 
 ```sh
 export APP_ENV=development
 export DATABASE_URL='postgresql+asyncpg://<user>:<password>@127.0.0.1:5432/<database>'
 export TEST_DATABASE_URL='postgresql+asyncpg://<user>:<password>@127.0.0.1:5432/<disposable_test_database>'
+export REDIS_URL='redis://127.0.0.1:6379/0'
+export TEST_REDIS_URL='redis://127.0.0.1:6379/15'
 export GITHUB_APP_ID='<app-id>'
 export GITHUB_CLIENT_ID='<client-id>'
 export GITHUB_CLIENT_SECRET='<secret-store-value>'
@@ -174,6 +192,12 @@ cd backend
 ../.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
 ```
 
+Start the worker separately from `backend/`:
+
+```sh
+../.venv/bin/python -m app.worker
+```
+
 From another shell:
 
 ```sh
@@ -181,28 +205,29 @@ curl --fail-with-body http://127.0.0.1:8000/api/v1/health/live
 curl --fail-with-body http://127.0.0.1:8000/api/v1/health/ready
 ```
 
-Stop Uvicorn with `Ctrl-C`; lifespan shutdown disposes the async engine. Docker Compose can start the `postgres` and `api` services after a non-empty local `POSTGRES_PASSWORD` and a container-addressable `DATABASE_URL` are supplied. Do not commit those values.
+Stop Uvicorn/worker with `Ctrl-C`; shutdown closes database, GitHub, and Redis clients. Docker Compose can start `postgres`, `redis`, `api`, and `worker` after a non-empty local `POSTGRES_PASSWORD` and container-addressable `DATABASE_URL`/`REDIS_URL` are supplied. Do not commit those values.
 
 For live GitHub verification, configure the App callback and webhook URLs to the public HTTPS API; grant read-only Metadata, Contents, and Pull requests permissions; subscribe to Installation, Installation repositories, Push, and Repository events; then install it on a controlled test account/organization. Automated tests require no real credentials and use injected mocked responses.
 
-## Milestone 2 verification commands
+## Milestone 3 verification commands
 
 ```sh
 .venv/bin/ruff format --check backend
 .venv/bin/ruff check backend
 .venv/bin/mypy backend/app backend/tests
-APP_ENV=test DATABASE_URL="$DATABASE_URL" .venv/bin/alembic -c backend/alembic.ini upgrade head
-APP_ENV=test DATABASE_URL="$DATABASE_URL" .venv/bin/alembic -c backend/alembic.ini current
-APP_ENV=test DATABASE_URL="$DATABASE_URL" .venv/bin/alembic -c backend/alembic.ini check
+.venv/bin/python -m pip check
+APP_ENV=test DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" .venv/bin/alembic -c backend/alembic.ini upgrade head
+APP_ENV=test DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" .venv/bin/alembic -c backend/alembic.ini current
+APP_ENV=test DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" .venv/bin/alembic -c backend/alembic.ini check
 cd backend
-APP_ENV=test DATABASE_URL="$DATABASE_URL" TEST_DATABASE_URL="$TEST_DATABASE_URL" ../.venv/bin/pytest
+APP_ENV=test DATABASE_URL="$DATABASE_URL" TEST_DATABASE_URL="$TEST_DATABASE_URL" REDIS_URL="$REDIS_URL" TEST_REDIS_URL="$TEST_REDIS_URL" ../.venv/bin/pytest
 cd ..
 .venv/bin/pip-audit --requirement backend/requirements.lock --disable-pip
-podman build --tag repolume-api:milestone2 backend
-podman image inspect --format '{{.Config.User}}' repolume-api:milestone2
+podman build --tag repolume-api:milestone3 backend
+podman image inspect --format '{{.Config.User}}' repolume-api:milestone3
 ```
 
-The Milestone 2 execution results are recorded in `docs/BUILD_STATUS.md`. GitHub Actions repeats the quality, PostgreSQL, audit, and image-user checks on Python 3.13 with test-only placeholder authentication settings. Hosted CI has not run because no remote workflow run exists.
+The Milestone 3 execution results are recorded in `docs/BUILD_STATUS.md`. GitHub Actions repeats quality, PostgreSQL 18, Redis 8.8, migration, audit, and image-user checks on Python 3.13 with test-only authentication settings. Hosted CI has not run because no remote workflow run exists.
 
 ## Incident evidence policy
 

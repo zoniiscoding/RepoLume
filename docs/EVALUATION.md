@@ -1,6 +1,10 @@
 # RepoLume Evaluation
 
-**Status:** Methodology only. No retrieval system, fixture corpus, evaluation run, or result exists through Milestone 2. Authentication/authorization security tests were executed, but they are not retrieval-quality evaluation and do not create product accuracy scores.
+**Status:** Retrieval methodology only. No parser, chunks, embeddings, vector index, retrieval system, question corpus, or product-quality evaluation exists through Milestone 3. Authentication/authorization and clone/discovery security tests were executed, but they do not create retrieval accuracy scores.
+
+## Milestone 3 ingestion safety fixture
+
+A generated, operator-controlled local Git repository is used only for ingestion-boundary integration testing. It contains three supported text/Python files, including a Python file that would create an external marker if executed. The API durably queued the fixture repository, a separate worker shallow-cloned it with Git, discovery reported three supported files, the duplicate delivery became a no-op, the temporary clone directory was empty afterward, and the execution marker did not exist. This is security/operations evidence, not a retrieval benchmark; the generated fixture has no reusable corpus identity, relevance labels, or quality score.
 
 ## Objectives
 
@@ -73,4 +77,4 @@ Numeric thresholds will be established after the first honest baseline; they wil
 
 ## Result history
 
-No evaluations have been executed. There are no valid scores to report.
+No retrieval or answer evaluations have been executed. There are no valid quality scores to report.

@@ -193,3 +193,35 @@ Decisions are append-only. If a decision changes, add a superseding entry instea
 - **Decision:** Use `Secure; HttpOnly; SameSite=None` for the production refresh cookie because the planned frontend/API are cross-origin, scope it to `/api/v1/auth`, and require refresh/logout `Origin` to exactly match an allowlisted CORS origin. Development/test uses Lax and omits Secure for local HTTP only.
 - **Rationale:** Cookie confidentiality alone does not prevent cross-site request forgery, and the deployment shape cannot rely on SameSite=Lax for legitimate cross-origin refresh.
 - **Consequence:** Production requires HTTPS and an exact frontend origin. Requests without an allowed Origin are rejected before the cookie is used.
+
+## D-025 — Supersede ARQ with direct Redis Streams delivery
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 3; supersedes the ARQ-specific part of D-004
+- **Decision:** Keep PostgreSQL as durable job truth and use `redis-py` Streams/consumer groups directly for at-least-once delivery of opaque job UUIDs. Use `XACK`/`XDEL`, pending-entry reclaim, and PostgreSQL reconciliation rather than adopting ARQ.
+- **Rationale:** ARQ 0.28.0 is explicitly in maintenance-only mode. Redis Streams provides the required narrow delivery primitives without making Redis the job database or adding framework-owned retry state.
+- **Consequence:** Queue payload/schema and recovery behavior remain application-owned. Redis loss may delay work but cannot erase PostgreSQL jobs; duplicate delivery is expected and conditional database transitions make it harmless.
+
+## D-026 — Commit job intent before queue delivery and reconcile gaps
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 3
+- **Decision:** Commit an idempotent PostgreSQL job before attempting Redis delivery. If delivery fails, return a safe temporary error while retaining the queued row; workers periodically re-enqueue due queued/retrying/abandoned jobs. A partial unique PostgreSQL index permits only one active job per repository.
+- **Rationale:** PostgreSQL and Redis do not share a transaction. Persisting Redis first can create ownerless work; pretending the dual write is atomic would lose or duplicate intent under failure.
+- **Consequence:** A client may receive 503 even though durable intent exists, but retry returns and re-enqueues the same job. Every worker claim is a status/lease-owner conditional update, so concurrent consumers cannot process one job together.
+
+## D-027 — Treat clone as a fixed credential-isolated subprocess
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 3
+- **Decision:** Build the remote only from strictly validated GitHub owner/repository fields and the literal `github.com` host. Invoke an absolute Git binary with fixed shallow/single-branch/no-submodule arguments; disable hooks, templates, system/global config, unsafe protocols, prompting, and LFS smudge. Supply the short-lived installation token only through a mode-0700 askpass helper environment.
+- **Rationale:** Shell construction, provider-controlled URLs, inherited Git configuration, hooks, filters, or credentials in argv would cross the primary untrusted-repository boundary.
+- **Consequence:** GitHub Enterprise/custom hosts are not supported. Clone stdout/stderr is discarded, errors are classified into safe codes, process resources/time are limited, and the entire fresh workspace is removed on every exit path.
+
+## D-028 — End Milestone 3 at content-free discovery state
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 3
+- **Decision:** Discover only an allowlisted Python/documentation/config text set, never follow symlinks, fail on containment/resource violations, and persist only file/byte/skipped-category counts plus the commit SHA. Mark the job `complete` at `discovery_complete` while keeping the repository `not_indexed`.
+- **Rationale:** Persisting paths or bytes is unnecessary before parsing, and labelling discovery as an index would misrepresent product capability. Milestone 4 owns parsing/chunking.
+- **Consequence:** The API can expose honest acquisition progress without a searchable index. No Tree-sitter, chunks, symbols, calls, embeddings, Qdrant, or repository content persistence was added.

@@ -1,100 +1,87 @@
 # RepoLume Build Status
 
 **Last updated:** 2026-07-16
-**Authorized milestone:** Milestone 2 — Authentication and GitHub App
-**Overall status:** Milestone 2 implementation and local acceptance verification complete
-**Production readiness:** Not production-ready; authentication and GitHub authorization are implemented and tested with mocked GitHub responses, but a real GitHub App, hosted CI, frontend, deployment, and all Milestone 3+ product capabilities remain absent
+**Authorized milestone:** Milestone 3 — Durable jobs and safe cloning
+**Overall status:** Milestone 3 implementation and local acceptance verification complete
+**Production readiness:** Not production-ready. The durable clone/discovery boundary exists, but live GitHub credentials, hosted CI/deployment, parsing, embeddings, vectors, retrieval, agents, chat, frontend, rate limits, backups, and production operations remain absent or unverified.
 
-## Implemented through Milestone 2
+## Implemented through Milestone 3
 
-- GitHub App user authorization start/callback with HMAC-hashed, expiring, one-time OAuth state and S256 PKCE binding.
-- Server-only authorization-code exchange, authenticated GitHub-user retrieval, and create/update synchronization of RepoLume users.
-- Fifteen-minute RepoLume HS256 access tokens with issuer, audience, type, subject, timestamps, and unique token IDs.
-- Thirty-day opaque refresh tokens held in scoped HTTP-only cookies; only keyed SHA-256 hashes are persisted.
-- Transactional refresh-token rotation, parent/family tracking, expiry, revocation, replay detection, family invalidation, logout, and cookie clearing.
-- Bearer authentication dependency that validates the token and reloads the user from PostgreSQL for every protected request.
-- Login-time GitHub App installation and membership synchronization, including organization/member and user/owner roles, suspension state, and bounded membership freshness.
-- Authorized installation listing and authorized repository synchronization through short-lived server-minted installation tokens.
-- Authorization-aware installation and repository services that join the actor through a fresh membership and active installation; cross-user selectors return a non-enumerating not-found response.
-- GitHub webhook raw-body HMAC-SHA256 verification, bounded headers/body, delivery-ID idempotency, safe acknowledgements, and durable content-free delivery state.
-- Immediate access-revocation states for installation suspension/deletion and repository removal/deletion; unsuspension and repository addition can restore eligible state.
-- Durable `queued` delivery state for push and non-deletion repository events without adding a Milestone 3 worker.
-- Fixed GitHub API destinations, bounded pagination/timeouts, read-only installation-token permissions, no redirects, and no GitHub credential persistence.
-- Versioned API endpoints required by Milestone 2; no frontend or Milestone 3 behavior was added.
+- All Milestone 1 foundation and Milestone 2 GitHub authentication, session, authorization, installation, and webhook behavior.
+- Authenticated repository selection/list/detail/status endpoints:
+  - `POST /api/v1/repositories`
+  - `GET /api/v1/repositories`
+  - `GET /api/v1/repositories/{repository_id}`
+  - `GET /api/v1/repositories/{repository_id}/status`
+- Selection rechecks current user membership, active installation state, and the current installation repository list before committing work.
+- PostgreSQL-first idempotent job creation. Repository row locking plus a partial unique index prevents concurrent active jobs; repeated initial selection returns the same initial job.
+- Redis 8 Streams at-least-once delivery containing only `job_id`. PostgreSQL remains the source of status, attempt, stage, heartbeat, retry, error, and discovery summary state.
+- A separate private worker that reloads the job/repository/installation/membership, claims conditionally, heartbeats, persists progress, classifies safe errors, retries only retryable failures with bounded exponential backoff and jitter, recovers abandoned work, and treats duplicate delivery as a no-op.
+- Fixed `github.com` shallow single-branch clone using an absolute Git executable, disabled system/global config, hooks, templates, submodules, file/ext protocols, prompts, redirects through arbitrary hosts, and LFS smudge behavior.
+- Short-lived GitHub installation tokens exist only in the worker process environment through a private askpass helper. They never appear in Git argv, Redis, PostgreSQL, responses, or logs.
+- Per-process CPU/address-space/file-size/file-descriptor limits, a 120-second clone timeout, a 500 MiB clone ceiling, a fresh mode-0700 temporary workspace, and unconditional cleanup.
+- Non-following file discovery with root containment and symlink-escape rejection; ignored dependency/build/cache directories; supported text/Python/docs/config allowlist; binary, unsupported, and oversized-file skipping; 20,000-file and 250 MiB discovery ceilings; persisted counts only, never contents.
+- Readiness now requires both PostgreSQL and Redis. Liveness remains dependency-free.
+- Python `redis==8.0.1` is pinned in both hashed locks; Redis 8.8 is the verified local/CI service baseline.
+- Compose includes PostgreSQL, Redis, non-root API, and non-root worker services. The backend image includes Git and continues to run as UID/GID `10001:10001`.
 
-## API surface
+## Database and migration
 
-- `GET /api/v1/auth/github/start`
-- `GET /api/v1/auth/github/callback`
-- `POST /api/v1/auth/refresh`
-- `POST /api/v1/auth/logout`
-- `GET /api/v1/auth/me`
-- `GET /api/v1/installations`
-- `GET /api/v1/installations/{installation_id}/repositories`
-- `POST /api/v1/webhooks/github`
-- Existing liveness and readiness endpoints remain unchanged.
+Alembic revision `94b0f7ce7782` follows `f8eba5464d8c` and adds to `indexing_jobs`:
 
-## Schema and migration
+- `locked_by`, `next_attempt_at`, and `last_enqueued_at` for conditional claims, delayed retry, recovery, and reconciliation;
+- non-negative `discovered_file_count` and `discovered_total_bytes`;
+- content-free `skipped_files_json` category counts;
+- a due-job index on status/next-attempt;
+- a PostgreSQL partial unique index allowing at most one queued/running/retrying job per repository.
 
-Alembic revision `f8eba5464d8c` follows the Milestone 1 revision `d2eea490eb59`. It adds:
+No repository file paths, file contents, installation tokens, or clone credentials are persisted.
 
-- `oauth_states`: state hash, PKCE-verifier hash, expiry, use timestamp, unique state, and expiry/use index.
-- `refresh_tokens`: token hash, user, family, parent, expiry/use/revocation fields, unique token hash, cascading user ownership, and active-family/user indexes.
-- `installation_members.verified_at` for bounded fail-closed membership freshness.
-- Safe action, GitHub installation ID, and GitHub repository ID fields on `webhook_deliveries`; webhook bodies remain unpersisted.
-
-The full downgrade to base and upgrade from an empty PostgreSQL database succeeded. The database reported `f8eba5464d8c (head)`, and `alembic check` reported no new upgrade operations.
-
-## Acceptance evidence
+## Acceptance evidence to date
 
 | Gate | Actual result |
 | --- | --- |
-| Runtime baseline | Python 3.13.14 locally; Python 3.13 container built and started |
-| Database baseline | Disposable PostgreSQL 18.4; no SQLite substitution |
-| Migrations | Full `downgrade base` and clean `upgrade head` succeeded through both revisions |
-| Migration consistency | `f8eba5464d8c (head)` and `No new upgrade operations detected.` |
-| Tests | 73 passed, 0 failed, 0 skipped in 2.00 seconds; 96.59% branch-aware coverage |
-| Security regressions | OAuth replay/expiry/mismatch, refresh rotation/reuse/expiry, origin enforcement, cross-user/cross-installation denial, membership staleness, invalid/duplicate webhooks, suspension, deletion, and repository removal/addition passed |
-| Formatting/lint/type checking | Ruff format, Ruff lint, and strict mypy passed on 63 files / 62 typed source files before documentation finalization |
-| Dependency audit | `pip-audit` reported `No known vulnerabilities found` for the production lock |
-| Host HTTP | Uvicorn started and stopped cleanly; live and ready returned HTTP 200; unauthenticated `/auth/me` returned the safe 401 envelope |
-| Log safety | A callback containing an OAuth-code sentinel logged only the route path; host/test/container logs contained no code, token, cookie, credential, private key, webhook secret, or database URL |
-| Container | Podman 6.0.1 built the Python 3.13 image; UID/GID `10001:10001`; read-only/no-capability container live and ready returned HTTP 200 |
-| CI | Workflow updated for all required test-only configuration and locally reproduced; no hosted GitHub Actions run exists because no remote run is configured |
+| Runtime | Python 3.13.14 local baseline |
+| PostgreSQL | Disposable PostgreSQL 18.4; migration applied successfully; no SQLite |
+| Redis | Disposable Redis 8.8.0; real Stream delivery and consumer-group tests |
+| Migrations | Full downgrade to base and clean upgrade through `94b0f7ce7782 (head)` succeeded; `alembic check` reported no new operations |
+| Tests | Final complete run: 111 passed, 0 failed, 0 skipped in 2.75 seconds; 93.45% branch-aware coverage |
+| Controlled repository | A real local Git fixture was shallow-cloned by the separate worker, discovered, and deleted; a deliberate Python execution marker was not created |
+| API/worker live flow | Real API and separate worker processes with PostgreSQL/Redis: POST returned in 25.91 ms before worker start; one job; retry then completion at attempt 2; live/ready HTTP 200; both processes exited 0 |
+| API latency/idempotency | PostgreSQL/Redis integration test proves repeated selection creates one job; concurrent claim test allows one winner; Redis payload contains only `job_id` |
+| Retry/recovery/revocation | Retry exhaustion, permanent terminal failure, abandoned recovery, duplicate delivery, cross-user denial, and pre-clone installation suspension passed |
+| Security limits | Argument injection, invalid identity/branch, timeout, repository/file/file-count/total-byte limits, binary/type filters, symlink escape, cleanup, and credential-in-argv tests passed |
+| Quality/dependencies | Ruff format/lint, strict mypy, and `pip check` passed; `pip-audit` reported no known production-lock vulnerabilities |
+| Container | Podman built Python 3.13.14/Git image; API and worker ran UID 10001, readiness returned 200 for PostgreSQL+Redis, and sensitive log scan passed |
+| Hosted CI | Workflow updated for Python 3.13, PostgreSQL 18, Redis 8.8, locks, migrations, tests, audit, and non-root container build; no hosted run exists yet |
 
 ## Failures encountered and fixed
 
-1. The first focused unit run found that an injected GitHub HTTP client did not inherit required API headers. The GitHub adapter now applies its allowlisted headers on every request. An older production-settings test was also updated for the new mandatory HTTPS OAuth callback.
-2. The first PostgreSQL suite run found a test cookie-domain collision and migration tests missing the new required settings. Cookie setup was made unambiguous and the migration harness now supplies explicit test-only authentication configuration.
-3. The same run showed the test HTTP client's INFO log included the OAuth callback query string. `httpx`, `httpx2`, and `httpcore` INFO logging is now suppressed centrally; a regression test and a real callback sentinel check verify that codes are absent from logs.
-4. The unchanged 90% coverage gate initially failed because async service branches invoked through the test-client worker were incompletely traced. Direct PostgreSQL-backed service tests were added; the final suite reached 96.59% without excluding code or weakening the gate.
-5. Ruff surfaced a deprecated HTTP 413 alias during the expanded webhook tests. The endpoint now uses the current `HTTP_413_CONTENT_TOO_LARGE` constant.
+1. Lock generation first failed because the sandbox could not resolve PyPI and its default pip-tools cache was not writable. It was rerun with an isolated temporary cache and approved network access; both hashed locks were generated successfully.
+2. The disposable PostgreSQL cluster initially restarted on port 5432 instead of its isolated port. It was stopped and restarted explicitly on `127.0.0.1:55432`; subsequent migration/test connections succeeded.
+3. Existing readiness tests failed after Redis became a required readiness dependency. An injected fake queue was added to unit construction and expected readiness contracts were updated.
+4. The first new test helper left its fake timeout process waiting after cancellation. The fake process now models termination correctly; the focused clone/worker suite dropped from about 60 seconds to sub-second execution.
+5. Strict Ruff/mypy surfaced import, exception-boundary, async filesystem, Redis typing, and mock return annotations. Causes were fixed without lowering the quality or coverage gates.
+6. The first Podman worker-container run rejected Docker-style tmpfs `uid`/`gid` mount options. The Compose/verification mount now uses a writable sticky tmpfs; each clone immediately creates its own mode-0700 workspace. The rerun passed with both API and worker at UID 10001.
 
 ## External configuration still required
 
-No real GitHub App credentials were available, so live GitHub sign-in, installation synchronization, token minting, and webhook delivery were not claimed.
-
-Before a live environment can use Milestone 2, an operator must:
-
-1. Create a GitHub App and configure its callback URL as the public API's `/api/v1/auth/github/callback` route.
-2. Configure the webhook URL as `/api/v1/webhooks/github` and supply a high-entropy webhook secret.
-3. Grant only read access to repository metadata, contents, and pull requests; subscribe to installation, installation repositories, push, and repository events; grant no repository write permission.
-4. Put the App ID, client ID/secret, private key, webhook secret, independent RepoLume signing/hash secrets, and database URL in platform secret stores.
-5. Configure the production frontend HTTPS origin, API trusted host, HTTPS callback, and exact CORS origin.
-6. Execute a real sign-in/install/list/revoke/redelivery acceptance pass in a non-production GitHub organization before public traffic.
+- A real least-privilege GitHub App with the documented callback/webhook URLs, read-only metadata/contents/pull-request permissions, and installation on a controlled account.
+- Managed PostgreSQL and authenticated TLS Redis (`rediss://`) credentials in platform secret stores.
+- Private worker networking/egress restricted to GitHub, PostgreSQL, Redis, DNS, and required telemetry; no public worker endpoint.
+- Hosted CI execution, image vulnerability scanning/digest pinning, deployment, backups/restore drills, alerting, capacity tests, and live GitHub clone/revocation acceptance.
 
 ## Current limitations
 
-- GitHub behavior is covered with mocked HTTP responses and signed local payloads, not live credentials.
-- Membership is refreshed at login and accepted only within the configured freshness window; signed suspension/deletion/removal webhooks revoke access immediately.
-- Push and repository-change deliveries are durably marked `queued`, but no worker exists until Milestone 3.
-- No repository clone, connected-code execution, Redis, parser, embeddings, Qdrant, LLM, chat, product frontend, rate-limit service, hosted deployment, backup, alerting, or recovery drill exists.
-- The container base image is not digest-pinned; release hardening remains a later milestone.
+- No live GitHub authentication, installation-token clone, or webhook delivery was claimed; automated tests use mocked GitHub API responses and an operator-controlled local Git fixture.
+- Milestone 3 completes only safe acquisition and discovery. `discovery_complete` does not mean a searchable index exists; repository status remains `not_indexed`.
+- No Tree-sitter, chunking, symbol extraction, call graph, embeddings, Qdrant, LLM, agents, repository chat, frontend, or connected-repository code execution exists.
+- Redis is delivery/coordination only. Losing Redis does not lose PostgreSQL jobs; reconciliation re-enqueues eligible jobs after recovery.
 
 ## Production-readiness statement
 
-Milestone 2 meets its local implementation and automated acceptance gates and is a sound base for the next authorized milestone. RepoLume as a public SaaS is not production-ready and must not receive production GitHub credentials or private repository traffic until live GitHub configuration, hosted deployment controls, later repository-isolation functionality, and the remaining launch gates are implemented and verified.
+Milestone 3 is a tested local foundation for later static indexing. RepoLume is not ready for production credentials or private repository traffic. A real GitHub App acceptance pass and the remaining security, data-plane, deployment, and operations milestones are still mandatory.
 
 ## Next milestone
 
-Milestone 3 — Durable jobs and safe cloning. It has not started and requires explicit authorization.
+Milestone 4 — Python parsing and chunking. It has not started and requires explicit authorization.

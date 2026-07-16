@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
 class GitHubUser(BaseModel):
@@ -37,7 +37,7 @@ class GitHubInstallation(BaseModel):
 class GitHubRepositoryOwner(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    login: str = Field(min_length=1, max_length=255)
+    login: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
 
 
 class GitHubRepository(BaseModel):
@@ -45,12 +45,28 @@ class GitHubRepository(BaseModel):
 
     id: int = Field(gt=0)
     owner: GitHubRepositoryOwner
-    name: str = Field(min_length=1, max_length=255)
-    full_name: str = Field(min_length=1, max_length=512)
+    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+    full_name: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}/[A-Za-z0-9][A-Za-z0-9._-]{0,254}$"
+    )
     html_url: str = Field(pattern=r"^https://github\.com/")
     private: bool
-    default_branch: str = Field(min_length=1, max_length=255)
+    default_branch: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
     language: str | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_repository_identity(self) -> "GitHubRepository":
+        """Bind every provider field to one fixed github.com repository identity."""
+        expected_full_name = f"{self.owner.login}/{self.name}"
+        expected_url = f"https://github.com/{expected_full_name}"
+        invalid_branch_fragments = ("..", "//", "@{", "\\")
+        if self.full_name != expected_full_name or self.html_url.rstrip("/") != expected_url:
+            raise ValueError
+        if any(item in self.default_branch for item in invalid_branch_fragments):
+            raise ValueError
+        if self.default_branch.endswith(("/", ".", ".lock")):
+            raise ValueError
+        return self
 
 
 class GitHubOAuthToken(BaseModel):

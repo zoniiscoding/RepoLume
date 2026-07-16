@@ -49,6 +49,12 @@ def test_pool_limits_are_validated() -> None:
         make_settings(database_pool_size=0)
 
 
+@pytest.mark.parametrize("redis_url", ["http://redis.example", "redis://", "not-a-url"])
+def test_redis_url_rejects_unsupported_or_incomplete_values(redis_url: str) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(redis_url=redis_url)
+
+
 def test_safe_summary_and_repr_do_not_contain_database_secret() -> None:
     settings = make_settings(database_url=f"postgresql+asyncpg://user:{SECRET}@127.0.0.1/repolume")
 
@@ -96,12 +102,16 @@ def test_production_settings_accept_secure_explicit_values() -> None:
         ("database_url", "postgresql+asyncpg://service:secret@127.0.0.1/repolume"),
         ("database_url", "postgresql+asyncpg://service@db.example.com/repolume"),
         ("github_oauth_callback_url", "http://api.repolume.example/callback"),
+        ("redis_url", "redis://service:secret@redis.example.com/0"),
+        ("redis_url", "rediss://127.0.0.1/0"),
+        ("redis_url", "rediss://redis.example.com/0"),
     ],
 )
 def test_production_settings_fail_closed(override: str, value: object) -> None:
     values: dict[str, object] = {
         "app_env": AppEnvironment.PRODUCTION,
         "database_url": "postgresql+asyncpg://service:secret@db.example.com/repolume",
+        "redis_url": "rediss://service:secret@redis.example.com/0",
         "log_json": True,
         "docs_enabled": False,
         "cors_origins": ["https://app.repolume.example"],

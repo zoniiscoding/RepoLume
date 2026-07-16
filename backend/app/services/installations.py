@@ -64,6 +64,28 @@ class InstallationService:
             result = await session.scalars(self._authorized_installation_query(user_id=user_id))
             return tuple(result.all())
 
+    async def list_authorized_repositories(self, user_id: uuid.UUID) -> Sequence[Repository]:
+        cutoff = datetime.now(UTC) - self._membership_ttl
+        async with self._database.session() as session:
+            result = await session.scalars(
+                select(Repository)
+                .join(GitHubInstallation, GitHubInstallation.id == Repository.installation_id)
+                .join(
+                    InstallationMember,
+                    InstallationMember.installation_id == GitHubInstallation.id,
+                )
+                .where(
+                    InstallationMember.user_id == user_id,
+                    InstallationMember.verified_at >= cutoff,
+                    GitHubInstallation.status == InstallationStatus.ACTIVE,
+                    GitHubInstallation.deleted_at.is_(None),
+                    Repository.access_revoked_at.is_(None),
+                    Repository.deleted_at.is_(None),
+                )
+                .order_by(Repository.github_full_name)
+            )
+            return tuple(result.all())
+
     async def get_authorized_installation(
         self,
         *,
@@ -137,6 +159,25 @@ class InstallationService:
                 .order_by(Repository.github_full_name)
             )
             return tuple(result.all())
+
+    async def synchronize_repository(
+        self,
+        *,
+        user_id: uuid.UUID,
+        installation_id: uuid.UUID,
+        github_repository_id: int,
+    ) -> Repository:
+        repositories = await self.synchronize_repositories(
+            user_id=user_id,
+            installation_id=installation_id,
+        )
+        repository = next(
+            (item for item in repositories if item.github_repository_id == github_repository_id),
+            None,
+        )
+        if repository is None:
+            raise InstallationAccessError
+        return repository
 
     async def _upsert_repository(
         self,

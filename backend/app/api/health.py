@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
 from app.db.session import DatabaseProtocol
+from app.queue import JobQueueProtocol
 from app.schemas.health import HealthResponse, ReadinessResponse
 from app.services.health import HealthService
 
@@ -24,7 +25,8 @@ async def liveness() -> HealthResponse:
 async def readiness(request: Request) -> ReadinessResponse | JSONResponse:
     """Report whether PostgreSQL is reachable within the configured timeout."""
     database: DatabaseProtocol = request.app.state.database
-    result = await HealthService(database).readiness()
+    queue: JobQueueProtocol = request.app.state.job_queue
+    result = await HealthService(database, queue).readiness()
     if result.status == "ready":
         return result
     return JSONResponse(

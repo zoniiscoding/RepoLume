@@ -5,6 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH"
 
 RUN python -m venv /opt/venv \
+    && apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 repolume \
     && useradd --system --uid 10001 --gid repolume --home-dir /app --shell /usr/sbin/nologin repolume
 

@@ -3,7 +3,17 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -17,8 +27,17 @@ class IndexingJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint("attempt >= 0", name="attempt_nonnegative"),
         CheckConstraint("progress >= 0 AND progress <= 100", name="progress_range"),
+        CheckConstraint("discovered_file_count >= 0", name="discovered_file_count_nonnegative"),
+        CheckConstraint("discovered_total_bytes >= 0", name="discovered_total_bytes_nonnegative"),
         Index("ix_indexing_jobs_repository_status", "repository_id", "status", "created_at"),
         Index("ix_indexing_jobs_requester_created", "requested_by_user_id", "created_at"),
+        Index("ix_indexing_jobs_status_next_attempt", "status", "next_attempt_at"),
+        Index(
+            "uq_indexing_jobs_repository_active",
+            "repository_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running', 'retrying')"),
+        ),
     )
 
     repository_id: Mapped[uuid.UUID] = mapped_column(
@@ -45,6 +64,18 @@ class IndexingJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     target_commit_sha: Mapped[str | None] = mapped_column(String(64))
     error_code: Mapped[str | None] = mapped_column(String(64))
     safe_error_message: Mapped[str | None] = mapped_column(String(512))
+    locked_by: Mapped[str | None] = mapped_column(String(128))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_enqueued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    discovered_file_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    discovered_total_bytes: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    skipped_files_json: Mapped[dict[str, int]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -7,9 +7,10 @@ import httpx
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from app.github.client import GITHUB_API_VERSION, GitHubAPIError, GitHubClient
+from app.github.schemas import GitHubRepository
 from tests.conftest import make_settings
 
 
@@ -20,6 +21,31 @@ def _private_key() -> str:
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     ).decode()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", "--upload-pack=evil"),
+        ("full_name", "attacker/other"),
+        ("html_url", "https://evil.example/octocat/repo"),
+        ("default_branch", "refs/../escape"),
+    ],
+)
+def test_github_repository_identity_fails_closed(field: str, value: str) -> None:
+    payload = {
+        "id": 100,
+        "owner": {"login": "octocat"},
+        "name": "repo",
+        "full_name": "octocat/repo",
+        "html_url": "https://github.com/octocat/repo",
+        "private": True,
+        "default_branch": "main",
+    }
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        GitHubRepository.model_validate(payload)
 
 
 @pytest.mark.asyncio

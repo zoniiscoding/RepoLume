@@ -1,7 +1,9 @@
 """Validated environment configuration with secret-safe representations."""
 
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Self
+from urllib.parse import urlsplit
 
 from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,6 +35,7 @@ class Settings(BaseSettings):
     app_name: str = "RepoLume API"
     app_env: AppEnvironment = AppEnvironment.DEVELOPMENT
     database_url: SecretStr
+    redis_url: SecretStr
     log_level: str = "INFO"
     log_json: bool = False
     docs_enabled: bool = True
@@ -57,6 +60,26 @@ class Settings(BaseSettings):
     installation_membership_ttl_seconds: int = Field(default=28_800, ge=900, le=86_400)
     refresh_cookie_name: str = Field(default="repolume_refresh_token", pattern=r"^[a-z0-9_]+$")
 
+    worker_stream_name: str = Field(default="repolume:indexing", pattern=r"^[a-z0-9:_-]+$")
+    worker_consumer_group: str = Field(default="repolume-workers", pattern=r"^[a-z0-9:_-]+$")
+    worker_poll_timeout_ms: int = Field(default=1_000, ge=100, le=30_000)
+    worker_reconcile_interval_seconds: float = Field(default=5.0, ge=0.1, le=60)
+    worker_heartbeat_interval_seconds: float = Field(default=5.0, ge=0.1, le=60)
+    worker_abandoned_after_seconds: int = Field(default=30, ge=5, le=600)
+    worker_max_attempts: int = Field(default=3, ge=1, le=10)
+    worker_retry_base_seconds: int = Field(default=2, ge=1, le=300)
+    worker_retry_max_seconds: int = Field(default=60, ge=1, le=3_600)
+    worker_stream_max_length: int = Field(default=10_000, ge=100, le=1_000_000)
+
+    clone_git_executable: Path = Path("/usr/bin/git")
+    clone_timeout_seconds: int = Field(default=120, ge=5, le=900)
+    clone_max_repository_bytes: int = Field(default=500 * 1024 * 1024, ge=1024)
+    clone_max_file_bytes: int = Field(default=2 * 1024 * 1024, ge=1024)
+    clone_max_file_count: int = Field(default=20_000, ge=1)
+    clone_max_discovered_bytes: int = Field(default=250 * 1024 * 1024, ge=1024)
+    clone_process_memory_bytes: int = Field(default=1024 * 1024 * 1024, ge=64 * 1024 * 1024)
+    clone_process_cpu_seconds: int = Field(default=120, ge=5, le=900)
+
     cors_origins: list[AnyHttpUrl] = Field(default_factory=list)
     trusted_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
 
@@ -73,6 +96,23 @@ class Settings(BaseSettings):
             raise ValueError("DATABASE_URL must use the postgresql+asyncpg driver")
         if not parsed.host or not parsed.database:
             raise ValueError("DATABASE_URL must include a host and database name")
+        return value
+
+    @field_validator("redis_url")
+    @classmethod
+    def validate_redis_url(cls, value: SecretStr) -> SecretStr:
+        """Require a network Redis URL without exposing its credentials."""
+        parsed = urlsplit(value.get_secret_value())
+        if parsed.scheme not in {"redis", "rediss"} or not parsed.hostname:
+            raise ValueError("REDIS_URL must use redis:// or rediss:// and include a host")
+        return value
+
+    @field_validator("clone_git_executable")
+    @classmethod
+    def validate_git_executable(cls, value: Path) -> Path:
+        """Use an explicit absolute Git binary, never PATH lookup."""
+        if not value.is_absolute():
+            raise ValueError("CLONE_GIT_EXECUTABLE must be an absolute path")
         return value
 
     @field_validator("log_level")
@@ -142,6 +182,11 @@ class Settings(BaseSettings):
             raise ValueError("DATABASE_URL cannot target a local host in production")
         if database_url.password is None:
             raise ValueError("DATABASE_URL must contain managed credentials in production")
+        redis_url = urlsplit(self.redis_url.get_secret_value())
+        if redis_url.scheme != "rediss":
+            raise ValueError("REDIS_URL must use TLS in production")
+        if redis_url.hostname in forbidden_hosts or redis_url.password is None:
+            raise ValueError("REDIS_URL must contain managed remote credentials in production")
         return self
 
     @property
@@ -160,6 +205,8 @@ class Settings(BaseSettings):
             "trusted_host_count": len(self.trusted_hosts),
             "access_token_ttl_seconds": self.access_token_ttl_seconds,
             "membership_ttl_seconds": self.installation_membership_ttl_seconds,
+            "worker_max_attempts": self.worker_max_attempts,
+            "clone_timeout_seconds": self.clone_timeout_seconds,
         }
 
 

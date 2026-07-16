@@ -1,5 +1,6 @@
 """Shared test construction without hidden global dependencies."""
 
+import uuid
 from collections.abc import Iterator
 
 import pytest
@@ -25,11 +26,30 @@ class FakeDatabase:
         self.disposed = True
 
 
+class FakeJobQueue:
+    """In-process queue dependency for HTTP unit tests."""
+
+    def __init__(self, *, ready: bool = True) -> None:
+        self.ready = ready
+        self.enqueued: list[uuid.UUID] = []
+        self.closed = False
+
+    async def is_ready(self) -> bool:
+        return self.ready
+
+    async def enqueue(self, job_id: uuid.UUID) -> None:
+        self.enqueued.append(job_id)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 def make_settings(**overrides: object) -> Settings:
     """Build settings through normal Pydantic validation without reading environment."""
     values: dict[str, object] = {
         "app_env": AppEnvironment.TEST,
         "database_url": "postgresql+asyncpg://test:test@127.0.0.1:5432/repolume_test",
+        "redis_url": "redis://127.0.0.1:6379/15",
         "log_level": "INFO",
         "log_json": True,
         "docs_enabled": False,
@@ -44,6 +64,9 @@ def make_settings(**overrides: object) -> Settings:
         "access_token_secret": "access-token-secret-for-tests-only-0000000",
         "token_hash_secret": "token-hash-secret-for-tests-only-000000000",
     }
+    requested_environment = overrides.get("app_env")
+    if requested_environment in {AppEnvironment.PRODUCTION, "production"}:
+        values["redis_url"] = "rediss://service:secret@redis.example.com/0"
     values.update(overrides)
     return Settings.model_validate(values)
 
@@ -59,7 +82,16 @@ def fake_database() -> FakeDatabase:
 
 
 @pytest.fixture
-def client(settings: Settings, fake_database: FakeDatabase) -> Iterator[TestClient]:
-    app = create_app(settings=settings, database=fake_database)
+def fake_job_queue() -> FakeJobQueue:
+    return FakeJobQueue()
+
+
+@pytest.fixture
+def client(
+    settings: Settings,
+    fake_database: FakeDatabase,
+    fake_job_queue: FakeJobQueue,
+) -> Iterator[TestClient]:
+    app = create_app(settings=settings, database=fake_database, job_queue=fake_job_queue)
     with TestClient(app) as test_client:
         yield test_client
