@@ -4,7 +4,7 @@
 
 **Authorized milestone:** Milestone 6 — plain grounded RAG
 
-**Overall status:** Milestone 6 implementation and controlled local acceptance complete
+**Overall status:** Milestone 6 implementation, controlled local acceptance, and focused CI coverage correction complete
 
 **Production readiness:** Not production-ready. Real hosted-LLM and GitHub App acceptance, hosted CI/deployment/private networking, production rate/usage controls, representative quality/load evaluation, telemetry/alerts, backups/restores, deletion, and later security gates remain absent or unverified.
 
@@ -64,16 +64,16 @@ The final run used Python 3.13.14, real PostgreSQL 18, Redis 8.8, official check
 | Gate | Actual result |
 | --- | --- |
 | Runtime | Python 3.13.14 locally and in both production images; CI selects Python 3.13 |
-| Backend quality | 112 files formatted; Ruff passed; strict mypy passed 111 source files using an isolated cache |
+| Backend quality | 114 files formatted; Ruff passed; strict mypy passed 113 source files |
 | Embedding quality | 13 files formatted; Ruff passed; strict mypy passed 13 source files |
-| Backend suite | 212 passed, 0 failed, 0 skipped in 16.62 seconds; 91.41% coverage |
+| Backend suite | 247 passed, 0 failed, 0 skipped in 16.75 seconds; 91.15% combined statement/branch coverage on Python 3.13.14 |
 | Embedding suite | 15 passed, 0 failed, 0 skipped in 1.59 seconds; 92.24% coverage with the real immutable model |
-| Focused M6 tests | 31 unit tests passed; expanded PostgreSQL/Qdrant authorization/isolation set passed 16/16 |
+| Focused M6 tests | 50 LLM/RAG/Qdrant/entrypoint tests passed; expanded PostgreSQL/Qdrant authorization/isolation coverage remains in the complete suite |
 | Migrations | Full base downgrade/upgrade regression passed in the complete suite; `current` reported `d06a6455fcd7 (head)`; `alembic check` reported no upgrade operations |
 | Dependencies | `pip check` reported no broken requirements; four Python 3.13 pip-compile resolution dry-runs exited 0; both production locks reported no known vulnerabilities |
 | Local containers | Repeatable standalone verification is blocked by contradictory Podman VM state and refused sockets. One retained-process workaround did build both `python:3.13.14-slim-trixie` images and verify Python 3.13.14, Git 2.47.3, worker import, Uvicorn commands, and users `10001:10001` / `10002:10002`; the runtime could not remain available afterward |
 | Image scans | The two archives from that one successful retained-process build passed checksum-verified Grype 0.112.0 fixed High/Critical scans; only three Medium CPython findings were listed. Reproducible hosted CI remains the authoritative pending container gate |
-| Hosted CI | Workflow covers the complete Python 3.13/service/migration/test/audit/build/non-root/scan path with deterministic synthesis. No hosted run exists for this local-only commit; relevant checks were reproduced locally |
+| Hosted CI | The Milestone 6 workflow ran all 212 original backend tests successfully on Linux/Python 3.13 but failed its coverage gate at 89.16%. The focused correction reproduces the same branch-aware configuration locally with 247 tests and 91.15%; a hosted rerun of the correction is pending |
 | Hosted LLM | Environment check reported `hosted_llm_credential=unavailable`; mock-adapter and deterministic end-to-end tests passed, but real hosted behavior remains pending |
 
 ## Failures encountered and fixes
@@ -87,6 +87,7 @@ The final run used Python 3.13.14, real PostgreSQL 18, Redis 8.8, official check
 7. Grype was first given `oci-archive:` for Podman's default Docker archive and correctly rejected the format. Retrying the same archives with `docker-archive:` passed both fixed High/Critical gates.
 8. Podman could not reliably host Qdrant during service verification. The official Qdrant 1.18.2 ARM64 release archive was downloaded, its SHA-256 matched the release checksum `859f487e316ae1bda3b5d7c1e129a0a7344424d992503c188979ca6ac1b47253`, and that real server passed all retrieval/live tests.
 9. The first live API child used `fork` and did not start cleanly around async/native service clients. The verifier switched to multiprocessing `spawn`; startup and both health endpoints passed.
+10. The Milestone 6 report recorded 91.41% by calculating statement-only coverage even though `[tool.coverage.run]` enables branch measurement and `pytest-cov` enforces the combined result. Linux CI correctly reported the combined 89.16% and failed the unchanged 90% gate. Focused assertions now cover malformed/oversized LLM output, transient and terminal provider failures, RAG timeout/retrieval/synthesis/revalidation fail-closed paths, invalid Qdrant vectors/evidence/scope and retry classes, plus ASGI/worker entrypoint startup and cleanup. The unchanged branch-aware gate now passes locally at 91.15% with 247 tests.
 
 ## External configuration still required
 
