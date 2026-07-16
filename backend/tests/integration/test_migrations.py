@@ -27,6 +27,7 @@ def _alembic_config(monkeypatch: pytest.MonkeyPatch) -> Config:
     url = _test_database_url()
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.setenv("REDIS_URL", os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:6379/15"))
     monkeypatch.setenv("GITHUB_APP_ID", "12345")
     monkeypatch.setenv("GITHUB_CLIENT_ID", "test-client-id")
     monkeypatch.setenv("GITHUB_CLIENT_SECRET", "github-client-secret-for-tests-only-000000")
@@ -38,6 +39,7 @@ def _alembic_config(monkeypatch: pytest.MonkeyPatch) -> Config:
     )
     monkeypatch.setenv("ACCESS_TOKEN_SECRET", "access-token-secret-for-tests-only-0000000")
     monkeypatch.setenv("TOKEN_HASH_SECRET", "token-hash-secret-for-tests-only-000000000")
+    monkeypatch.setenv("EMBEDDING_SERVICE_TOKEN", "embedding-service-secret-for-tests-000000")
     root = Path(__file__).resolve().parents[2]
     return Config(str(root / "alembic.ini"))
 

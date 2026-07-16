@@ -38,6 +38,7 @@ class ParserLimits:
     max_chunk_bytes: int
     max_chunks_per_file: int
     max_total_chunks: int
+    max_total_chunk_bytes: int
     max_document_section_bytes: int
     max_warnings_per_file: int
     timeout_seconds: float
@@ -53,6 +54,7 @@ class ParserLimits:
             max_chunk_bytes=settings.parser_max_chunk_bytes,
             max_chunks_per_file=settings.parser_max_chunks_per_file,
             max_total_chunks=settings.parser_max_total_chunks,
+            max_total_chunk_bytes=settings.parser_max_total_chunk_bytes,
             max_document_section_bytes=settings.parser_max_document_section_bytes,
             max_warnings_per_file=settings.parser_max_warnings_per_file,
             timeout_seconds=settings.parser_timeout_seconds,
@@ -148,6 +150,7 @@ class RepositoryAnalyzer:
             )
         )
         chunks = [replace(chunk, ordinal=ordinal) for ordinal, chunk in enumerate(chunks)]
+        self._assert_total_chunk_bytes(chunks)
         fingerprints = tuple(
             ChunkFingerprint(
                 ordinal=chunk.ordinal,
@@ -172,6 +175,7 @@ class RepositoryAnalyzer:
             warning_counts=dict(sorted(warnings.items())),
             symbols=tuple(symbols),
             chunk_fingerprints=fingerprints,
+            chunks=tuple(chunks),
         )
 
     def _build_chunks(
@@ -322,6 +326,15 @@ class RepositoryAnalyzer:
             raise IndexingError(
                 code="chunk_count_exceeded",
                 message="Repository exceeds the configured chunk-count limit",
+                retryable=False,
+            )
+
+    def _assert_total_chunk_bytes(self, chunks: list[ContentChunk]) -> None:
+        total_bytes = sum(len(chunk.content.encode("utf-8")) for chunk in chunks)
+        if total_bytes > self._limits.max_total_chunk_bytes:
+            raise IndexingError(
+                code="chunk_bytes_exceeded",
+                message="Repository exceeds the configured chunk-content limit",
                 retryable=False,
             )
 

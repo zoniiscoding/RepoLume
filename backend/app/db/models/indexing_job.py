@@ -37,6 +37,18 @@ class IndexingJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ),
         CheckConstraint("symbol_count >= 0", name="symbol_count_nonnegative"),
         CheckConstraint("chunk_count >= 0", name="chunk_count_nonnegative"),
+        CheckConstraint("embedded_chunk_count >= 0", name="embedded_chunk_count_nonnegative"),
+        CheckConstraint("vector_count >= 0", name="vector_count_nonnegative"),
+        CheckConstraint("embedding_failed_count >= 0", name="embedding_failed_count_nonnegative"),
+        CheckConstraint("embedding_skipped_count >= 0", name="embedding_skipped_count_nonnegative"),
+        CheckConstraint(
+            "target_index_version IS NULL OR target_index_version >= 1",
+            name="target_index_version_positive",
+        ),
+        CheckConstraint(
+            "embedding_dimension IS NULL OR embedding_dimension > 0",
+            name="embedding_dimension_positive",
+        ),
         Index("ix_indexing_jobs_repository_status", "repository_id", "status", "created_at"),
         Index("ix_indexing_jobs_requester_created", "requested_by_user_id", "created_at"),
         Index("ix_indexing_jobs_status_next_attempt", "status", "next_attempt_at"),
@@ -97,6 +109,23 @@ class IndexingJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Integer, nullable=False, default=0, server_default="0"
     )
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    target_index_version: Mapped[int | None] = mapped_column(Integer)
+    embedded_chunk_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    vector_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    embedding_failed_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    embedding_skipped_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    embedding_model_identifier: Mapped[str | None] = mapped_column(String(255))
+    embedding_model_revision: Mapped[str | None] = mapped_column(String(64))
+    embedding_dimension: Mapped[int | None] = mapped_column(Integer)
+    preprocessing_fingerprint: Mapped[str | None] = mapped_column(String(64))
     parser_warnings_json: Mapped[dict[str, int]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )

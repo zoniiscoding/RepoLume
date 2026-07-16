@@ -8,6 +8,7 @@ import structlog
 from app.core.config import load_settings
 from app.core.logging import configure_logging
 from app.db.session import Database
+from app.embeddings.client import EmbeddingServiceClient
 from app.github.client import GitHubClient
 from app.indexing.analyzer import ProcessIsolatedAnalyzer
 from app.indexing.clone import GitHubRepositoryCloner
@@ -15,6 +16,7 @@ from app.indexing.discovery import FileDiscovery
 from app.indexing.worker import IndexingWorker
 from app.queue import RedisJobQueue
 from app.services.indexing_jobs import IndexingJobStore
+from app.vector.qdrant import QdrantVectorStore
 
 logger = structlog.get_logger(__name__)
 
@@ -25,6 +27,8 @@ async def run_worker() -> None:
     database = Database.from_settings(settings)
     github = GitHubClient(settings)
     queue = RedisJobQueue.from_settings(settings)
+    embeddings = EmbeddingServiceClient(settings)
+    vectors = QdrantVectorStore(settings)
     worker = IndexingWorker(
         settings=settings,
         queue=queue,
@@ -33,12 +37,16 @@ async def run_worker() -> None:
         cloner=GitHubRepositoryCloner(settings),
         discovery=FileDiscovery(settings),
         analyzer=ProcessIsolatedAnalyzer(settings),
+        embeddings=embeddings,
+        vectors=vectors,
     )
     logger.info("worker_configuration_loaded", **settings.safe_summary())
     try:
         await worker.run()
     finally:
         await queue.close()
+        await embeddings.close()
+        await vectors.close()
         await github.close()
         await database.dispose()
 

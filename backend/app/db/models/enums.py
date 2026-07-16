@@ -59,6 +59,20 @@ class IndexingJobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class IndexBuildState(StrEnum):
+    BUILDING = "building"
+    READY = "ready"
+    ACTIVE = "active"
+    FAILED = "failed"
+    SUPERSEDED = "superseded"
+
+
+class IndexCleanupStatus(StrEnum):
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    COMPLETE = "complete"
+
+
 class ChatRole(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"

@@ -1,14 +1,16 @@
 # RepoLume Evaluation
 
-**Status:** Static-ingestion methodology and fixtures only. Python parsing and transient chunk construction exist through Milestone 4, but there are no embeddings, vector index, retrieval system, labelled question corpus, or product-quality scores. Parser/chunker correctness and security evidence must not be presented as retrieval accuracy.
+**Status:** Static-ingestion plus embedding/vector-index integrity methodology and fixtures exist through Milestone 5. There is still no public retrieval implementation, labelled question corpus, RAG answer system, or product-quality score. Deterministic embedding, vector isolation, and activation evidence must not be presented as retrieval relevance or answer accuracy.
 
-## Milestone 4 static-ingestion fixtures
+## Milestone 5 ingestion/index fixtures
 
-A generated, operator-controlled local Git repository is used for end-to-end ingestion-boundary testing. It contains three supported Python/Markdown files, including Python that would create an external marker if executed. The API durably queued it; the worker shallow-cloned, discovered, statically parsed, symbolized, chunked, persisted safe summaries/symbol metadata, and deleted it. The marker remained absent, the duplicate Redis delivery was a no-op, and a forced parser failure also cleaned the clone.
+A generated, operator-controlled local Git repository is used for end-to-end ingestion-boundary testing. It contains supported Python/Markdown files, prompt-injection-shaped text, and Python that would create an external marker if executed. The API durably queued it; the worker cloned, discovered, statically parsed, symbolized, chunked, called the real private pinned model in authenticated bounded batches, wrote/validated a real inactive Qdrant version, atomically activated PostgreSQL state, and deleted the clone. The marker remained absent, Redis contained only `job_id`, repeated upserts were deterministic/idempotent, and the repository became searchable only after exact count/metadata validation.
 
-A committed rich fixture covers sync/async functions, classes/methods, nested/duplicate names, decorators, multiline positional-only/keyword-only signatures, annotations, docstrings, imports/aliases/relative imports, Unicode, malformed recovery, Markdown heading hierarchy/fences/prompt-shaped text, and plain documentation. Explicit tests verify exact one-based ranges, stable hashes, deterministic ordering, CRLF/LF normalization, large-unit policy, safe classifications, and repeated identical output.
+A committed rich fixture covers sync/async functions, classes/methods, nested/duplicate names, decorators, multiline positional-only/keyword-only signatures, annotations, docstrings, imports/aliases/relative imports, Unicode, malformed recovery, Markdown hierarchy/fences/prompt-shaped text, and plain documentation. Tests verify exact ranges, stable hashes, canonical preprocessing fingerprints, deterministic 768-dimensional L2-normalized embeddings for identical input/model state, UUIDv5 point identity, complete citation payload metadata, cross-repository/version filters, and repeated identical output.
 
-These are parser/chunker behavior and security results, not a retrieval benchmark. Chunks are transient, the fixtures have no relevance labels, and no MRR, recall, citation, faithfulness, latency-at-scale, or answer-quality score has been measured.
+Replacement scenarios establish integrity rather than relevance: a deliberately failed replacement leaves the old active version/count queryable and cleans only the failed inactive scope; a successful replacement activates the complete version before scoped superseded cleanup. Collection mismatch, wrong dimensions, non-finite/non-normalized/missing/extra embeddings, count/metadata mismatch, stale activation, duplicate delivery, authorization revocation, and scope mismatch all fail closed.
+
+These are ingestion, model-contract, vector-isolation, and activation results—not a retrieval benchmark. The fixtures have no relevance labels and no search ranking exists, so no MRR, recall, citation, faithfulness, latency-at-scale, or answer-quality score has been measured.
 
 ## Objectives
 
@@ -21,7 +23,7 @@ Evaluation must answer four questions:
 
 ## Planned fixture corpus
 
-Milestone 6 will select one or more redistributable fixture repositories and pin exact commit SHAs. Fixtures must include:
+Milestone 6 will select one or more redistributable retrieval fixtures and pin exact commit SHAs. Fixtures must include:
 
 - Multiple Python modules with same-file, directly imported, module-qualified, probable-method, and deliberately unresolved calls.
 - Markdown documentation that is both accurate and intentionally stale relative to code.
@@ -81,4 +83,4 @@ Numeric thresholds will be established after the first honest baseline; they wil
 
 ## Result history
 
-No retrieval or answer evaluations have been executed. There are no valid quality scores to report.
+Milestone 5 executed deterministic model and index-integrity tests only: the real-model service suite passed 15/15 with 92.24% coverage and the backend suite passed 166/166 with 90.76% coverage, including real Qdrant isolation and controlled indexing. No retrieval or answer evaluation has been executed, and there are no valid product-quality scores to report.

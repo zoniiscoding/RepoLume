@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request, status
 from app.auth.dependencies import CurrentUser
 from app.core.config import Settings
 from app.core.errors import APIError
+from app.db.models.enums import RepositoryIndexingStatus
 from app.db.models.indexing_job import IndexingJob
 from app.db.models.repository import Repository
 from app.db.session import Database
@@ -24,6 +25,18 @@ from app.services.installations import InstallationAccessError, InstallationServ
 from app.services.repositories import RepositoryAccessError, RepositoryJob, RepositoryService
 
 router = APIRouter()
+
+
+def _is_searchable(repository: Repository) -> bool:
+    return (
+        repository.index_version > 0
+        and repository.last_indexed_commit_sha is not None
+        and repository.indexing_status
+        not in {
+            RepositoryIndexingStatus.ACCESS_REVOKED,
+            RepositoryIndexingStatus.DELETING,
+        }
+    )
 
 
 def _service(request: Request) -> RepositoryService:
@@ -57,6 +70,10 @@ def _repository_response(repository: Repository) -> RepositoryDetailResponse:
         indexing_progress=repository.indexing_progress,
         indexing_stage=repository.indexing_stage,
         size_bytes=repository.size_bytes,
+        active_commit_sha=repository.last_indexed_commit_sha,
+        active_index_version=repository.index_version,
+        vector_count=repository.active_vector_count,
+        searchable=_is_searchable(repository),
     )
 
 
@@ -80,6 +97,16 @@ def _status_response(repository: Repository, job: IndexingJob | None) -> Indexin
         symbol_count=0 if job is None else job.symbol_count,
         chunk_count=0 if job is None else job.chunk_count,
         parser_warning_counts={} if job is None else job.parser_warnings_json,
+        target_index_version=None if job is None else job.target_index_version,
+        embedded_chunk_count=0 if job is None else job.embedded_chunk_count,
+        vector_count=repository.active_vector_count if job is None else job.vector_count,
+        active_vector_count=repository.active_vector_count,
+        embedding_failed_count=0 if job is None else job.embedding_failed_count,
+        embedding_skipped_count=0 if job is None else job.embedding_skipped_count,
+        active_commit_sha=repository.last_indexed_commit_sha,
+        active_index_version=repository.index_version,
+        searchable=_is_searchable(repository),
+        last_failure_category=(repository.indexing_error_code if job is None else job.error_code),
         heartbeat_at=None if job is None else job.heartbeat_at,
         completed_at=None if job is None else job.completed_at,
     )

@@ -257,3 +257,43 @@ Decisions are append-only. If a decision changes, add a superseding entry instea
 - **Decision:** Persist versioned symbol definitions under the next inactive repository index version plus job counts and safe warning categories. Keep chunk bodies and fingerprints transient and leave the repository active version/status unchanged.
 - **Rationale:** Milestone 4 needs durable symbol metadata and operational evidence, but Milestone 5 owns coordinated vector persistence and activation. Persisting chunks early would create an unversioned partial index.
 - **Consequence:** `chunking_complete` is honest preprocessing completion, not search readiness. M5 must reconstruct deterministic chunks, persist embeddings/vectors, and activate only after its complete consistency checks.
+
+## D-033 — Use one immutable Apache-2.0 code embedding model through ONNX
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 5
+- **Decision:** Use `jinaai/jina-embeddings-v2-base-code` at immutable Hugging Face revision `516f4baf13dec4ddddda8631e019b5737c8bc250`, with its reviewed revision-bound tokenizer artifacts and `tokenizers==0.22.2`, 768-dimensional L2-normalized output, 8,192-token ceiling, FastEmbed 0.8.0, and ONNX Runtime CPU execution. Download only the explicit ONNX/tokenizer/config artifact allowlist and never enable remote model code.
+- **Rationale:** The Apache-2.0 model supports source code and technical text, has a useful long context, runs privately on CPU, and can be pinned without `trust_remote_code=True`. A smaller local model is preferable to sending private repository chunks to a third-party embedding API.
+- **Consequence:** The production embedding image is large and needs network access while it is built or the model cache is first populated; runtime is local-files-only. Changing model, revision, dimension, normalization, tokenizer artifacts, or preprocessing policy requires a new collection/build compatibility decision and full reindex.
+
+## D-034 — Isolate model inference behind an authenticated private service
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 5
+- **Decision:** Deploy embeddings as a separate private FastAPI service with an independent service credential, no GitHub/database/Redis/Qdrant secrets, no public docs, strict request/document/count/token/time/concurrency bounds, background load/warm-up, and authenticated readiness/embedding routes. Only liveness is unauthenticated.
+- **Rationale:** Model dependencies and capacity have a different lifecycle from the API/worker, and a narrow credentialed contract limits what a compromised inference component can reach.
+- **Consequence:** Worker startup fails closed until exact model identity/revision/dimension readiness succeeds. Logs contain only request ID, kind, count, duration, state, and safe error class—not chunk text, vectors, or the bearer value.
+
+## D-035 — Preprocess complete chunks deterministically and reject instead of truncate
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 5
+- **Decision:** Centralize model input construction in the worker. Canonically serialize trusted chunk type, code/document kind, relative path, language, lines, symbol/signature/decorator/heading metadata, delimit the complete M4 content as inert data, and hash both policy and prepared input. Reject any input beyond the configured byte or model-token ceiling; never silently truncate or independently reparse inside the embedding service.
+- **Rationale:** Stable preprocessing makes repeated builds reproducible and preserves citation/semantic context. Silent truncation would change meaning and make hashes/counts misleading.
+- **Consequence:** A single over-limit prepared chunk is a permanent safe failure for that configuration. Repository text can look like instructions but remains ordinary model input data and receives no authority.
+
+## D-036 — Keep PostgreSQL authoritative over scoped Qdrant versions
+
+- **Date:** 2026-07-16
+- **Status:** Accepted and implemented in Milestone 5; completes D-009 for vectors
+- **Decision:** Use one Qdrant collection fixed to 768-dimensional cosine vectors and exact model metadata. Derive point UUIDv5 values from installation, repository, inactive index version, path, stable chunk hash, chunk type, and ordinal. Require typed installation/repository/version filters for every count, validation scroll, delete, and future search. Activate only after exact vector count and commit/model/scope metadata checks; use PostgreSQL locks, relational checks, and a partial unique index as the active-version authority.
+- **Rationale:** Collection names are not a tenant boundary, Qdrant and PostgreSQL cannot share a transaction, and a progressive overwrite could expose partial or cross-version evidence.
+- **Consequence:** The previous active version stays available until the replacement is complete. Retry writes are deterministic/idempotent; pre-activation failure deletes only the inactive scope. Qdrant stores complete chunk text required for later citations but never credentials or vectors in PostgreSQL/Redis.
+
+## D-037 — Move runtime images to Debian 13 and scope one temporary CPython finding
+
+- **Date:** 2026-07-16
+- **Status:** Accepted with a required follow-up
+- **Decision:** Pin both runtime Dockerfiles to `python:3.13.14-slim-trixie` because Debian 12 left standard support. Keep the container gate at fixed High/Critical findings. Temporarily suppress only `CVE-2026-15308` for the exact `python` binary version `3.13.14`; RepoLume does not import or execute the affected `html.parser` path, and the rule stops matching on any version change.
+- **Rationale:** The first real archive scan correctly exposed the unsupported base and a CPython advisory published after the latest 3.13 maintenance release. A version-scoped, documented non-reachability decision is more honest than weakening the severity gate or pretending a fixed 3.13 release exists.
+- **Consequence:** Remove the rule immediately when a patched Python 3.13 release is available and re-run both image scans. This exception is not a general CVE allowlist and does not make the undeployed system production-ready.

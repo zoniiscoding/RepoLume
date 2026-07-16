@@ -32,6 +32,10 @@ class RepositoryDetailResponse(BaseModel):
     indexing_progress: int
     indexing_stage: str | None
     size_bytes: int | None
+    active_commit_sha: str | None
+    active_index_version: int
+    vector_count: int
+    searchable: bool
 
 
 class IndexingStatusResponse(BaseModel):
@@ -55,6 +59,16 @@ class IndexingStatusResponse(BaseModel):
     symbol_count: int
     chunk_count: int
     parser_warning_counts: dict[str, int]
+    target_index_version: int | None
+    embedded_chunk_count: int
+    vector_count: int
+    active_vector_count: int
+    embedding_failed_count: int
+    embedding_skipped_count: int
+    active_commit_sha: str | None
+    active_index_version: int
+    searchable: bool
+    last_failure_category: str | None
     heartbeat_at: datetime | None
     completed_at: datetime | None
 

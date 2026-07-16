@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import SecretStr
 
+from app.embeddings.client import EmbeddingProviderProtocol
 from app.github.client import GitHubClientProtocol
 from app.indexing.analyzer import RepositoryAnalyzerProtocol
 from app.indexing.clone import ClonedRepository, RepositoryClonerProtocol
@@ -18,7 +19,30 @@ from app.indexing.models import ProcessingResult
 from app.indexing.worker import IndexingWorker
 from app.queue import QueueDelivery, WorkerQueueProtocol
 from app.services.indexing_jobs import ClaimedJob, IndexingJobStore, JobContext
+from app.vector.qdrant import VectorStoreProtocol
 from tests.conftest import make_settings
+
+
+def empty_processing_result() -> ProcessingResult:
+    return ProcessingResult(
+        repository_id=uuid.UUID(int=0),
+        index_version=1,
+        commit_sha="a" * 40,
+        parsed_file_count=0,
+        partial_file_count=0,
+        skipped_file_count=0,
+        symbol_count=0,
+        chunk_count=0,
+        warning_counts={},
+        symbols=(),
+        chunk_fingerprints=(),
+        chunks=(),
+    )
+
+
+async def analyze_empty(**kwargs: Any) -> ProcessingResult:
+    await kwargs["on_chunking"]()
+    return empty_processing_result()
 
 
 def worker_dependencies(
@@ -36,7 +60,13 @@ def worker_dependencies(
     store.authorized_context = AsyncMock()
     store.heartbeat = AsyncMock()
     store.stage = AsyncMock()
-    store.complete = AsyncMock()
+    store.prepare_build = AsyncMock()
+    store.record_vector_counts = AsyncMock()
+    store.mark_build_ready = AsyncMock()
+    store.activate = AsyncMock(return_value=0)
+    store.can_cleanup_inactive = AsyncMock(return_value=True)
+    store.record_failed_build_cleanup = AsyncMock()
+    store.complete_superseded_cleanup = AsyncMock()
     store.cancel_revoked = AsyncMock()
     store.fail = AsyncMock(return_value=False)
     store.recover_abandoned = AsyncMock(return_value=0)
@@ -61,25 +91,20 @@ def worker_dependencies(
     )
     discovery.discover = MagicMock(return_value=result)
     analyzer = MagicMock()
-    processing = ProcessingResult(
-        repository_id=uuid.UUID(int=0),
-        index_version=1,
-        commit_sha="a" * 40,
-        parsed_file_count=0,
-        partial_file_count=0,
-        skipped_file_count=0,
-        symbol_count=0,
-        chunk_count=0,
-        warning_counts={},
-        symbols=(),
-        chunk_fingerprints=(),
-    )
-
-    async def analyze(**kwargs: Any) -> ProcessingResult:
-        await kwargs["on_chunking"]()
-        return processing
-
-    analyzer.analyze = AsyncMock(side_effect=analyze)
+    analyzer.analyze = AsyncMock(side_effect=analyze_empty)
+    embeddings = MagicMock()
+    embeddings.is_ready = AsyncMock(return_value=True)
+    embeddings.embed_documents = AsyncMock(return_value={})
+    embeddings.embed_query = AsyncMock()
+    embeddings.close = AsyncMock()
+    vectors = MagicMock()
+    vectors.is_ready = AsyncMock(return_value=True)
+    vectors.ensure_collection = AsyncMock()
+    vectors.delete_scope = AsyncMock()
+    vectors.upsert = AsyncMock()
+    vectors.validate_scope = AsyncMock()
+    vectors.count_scope = AsyncMock(return_value=0)
+    vectors.close = AsyncMock()
     worker = IndexingWorker(
         settings=settings,
         queue=cast(WorkerQueueProtocol, queue),
@@ -88,6 +113,8 @@ def worker_dependencies(
         cloner=cast(RepositoryClonerProtocol, cloner),
         discovery=cast(FileDiscovery, discovery),
         analyzer=cast(RepositoryAnalyzerProtocol, analyzer),
+        embeddings=cast(EmbeddingProviderProtocol, embeddings),
+        vectors=cast(VectorStoreProtocol, vectors),
         worker_id="test-worker",
     )
     return worker, queue, store, github, cloner, discovery
@@ -101,6 +128,7 @@ def job_context(claimed: ClaimedJob) -> JobContext:
     return JobContext(
         job_id=claimed.id,
         repository_id=claimed.repository_id,
+        installation_id=uuid.uuid4(),
         github_installation_id=42,
         owner="octo-org",
         name="repo",
@@ -119,14 +147,27 @@ async def test_worker_completes_discovery_and_cleans_clone(tmp_path: Path) -> No
 
     await worker.process_delivery(delivery)
 
-    assert store.stage.await_count == 3
+    assert store.stage.await_count == 7
     assert [call.kwargs["stage"] for call in store.stage.await_args_list] == [
         "discovering",
         "parsing",
         "chunking",
+        "embedding",
+        "storing_vectors",
+        "validating_index",
+        "activating_index",
     ]
-    assert [call.kwargs["progress"] for call in store.stage.await_args_list] == [55, 65, 85]
-    store.complete.assert_awaited_once()
+    assert [call.kwargs["progress"] for call in store.stage.await_args_list] == [
+        55,
+        65,
+        85,
+        88,
+        92,
+        96,
+        99,
+    ]
+    store.prepare_build.assert_awaited_once()
+    store.activate.assert_awaited_once()
     github.create_installation_token.assert_awaited_once_with(42)
     discovery.discover.assert_called_once_with(tmp_path)
     cloner.cleanup.assert_called_once()
@@ -193,6 +234,57 @@ async def test_worker_classifies_retryable_and_unexpected_failures(tmp_path: Pat
         "safe_message": "The indexing worker encountered an internal error",
         "retryable": True,
     }
+
+
+@pytest.mark.parametrize(
+    ("failure_method", "error_code", "retryable"),
+    [
+        ("upsert", "qdrant_partial_write_failed", True),
+        ("validate_scope", "vector_count_mismatch", False),
+        ("mark_build_ready", "vector_count_mismatch", False),
+        ("activate", "index_activation_race", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_worker_cleans_failed_inactive_index_without_activation(
+    tmp_path: Path,
+    failure_method: str,
+    error_code: str,
+    retryable: bool,
+) -> None:
+    worker, queue, store, _, cloner, _ = worker_dependencies(tmp_path)
+    claimed = claimed_job()
+    context = job_context(claimed)
+    store.claim.return_value = claimed
+    store.authorized_context.return_value = context
+    dependency = store if failure_method in {"mark_build_ready", "activate"} else worker._vectors
+    getattr(dependency, failure_method).side_effect = IndexingError(
+        code=error_code,
+        message="The inactive index failed safely",
+        retryable=retryable,
+    )
+
+    await worker.process_delivery(
+        QueueDelivery(delivery_id=f"failed-{failure_method}", job_id=claimed.id)
+    )
+
+    assert store.fail.await_args.kwargs == {
+        "code": error_code,
+        "safe_message": "The inactive index failed safely",
+        "retryable": retryable,
+    }
+    if failure_method == "activate":
+        store.activate.assert_awaited_once()
+    else:
+        store.activate.assert_not_awaited()
+    assert cast(Any, worker._vectors.delete_scope).await_count == 2
+    store.record_failed_build_cleanup.assert_awaited_once_with(
+        context.repository_id,
+        context.index_version,
+        cleanup_complete=True,
+    )
+    cloner.cleanup.assert_called_once()
+    queue.acknowledge.assert_awaited_once()
 
 
 @pytest.mark.asyncio

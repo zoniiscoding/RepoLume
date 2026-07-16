@@ -1,6 +1,6 @@
 # RepoLume Architecture
 
-**Status:** Milestone 4 durable delivery, safe cloning/discovery, isolated Tree-sitter Python parsing, deterministic symbol extraction, and transient AST/document chunking are implemented and locally verified with PostgreSQL 18.4, Redis 8.8, mocked GitHub responses, and controlled real Git/parse fixtures. Live GitHub and hosted deployment verification remain outstanding.
+**Status:** Milestone 5 private embeddings, Qdrant vector persistence, and PostgreSQL-authoritative atomic searchable index versions are implemented and locally verified with PostgreSQL 18, Redis 8.8, Qdrant 1.18.2, the exact pinned ONNX model, mocked GitHub responses, and controlled Git fixtures. Live GitHub and hosted deployment verification remain outstanding.
 
 ## Goals
 
@@ -34,31 +34,35 @@ Only the frontend, API, webhook route, and safe health routes are public. The wo
 | Component | Responsibility | Must not do |
 | --- | --- | --- |
 | Frontend | Authentication states, repository management, progress, repository-scoped chat, sanitized evidence rendering | Store access tokens persistently; render untrusted HTML |
-| API | **Through Milestone 4:** foundation, GitHub OAuth/sessions, installation/repository authorization, signed webhook ingress, repository selection, durable job/status counts | Perform ingestion in request handlers; trust a client repository ID; expose GitHub credentials or source |
-| Worker | **Through Milestone 4:** claim/recover/heartbeat jobs, reauthorize, clone/discover, isolate static parsing/chunking, persist safe symbol metadata, clean up | Expose a public endpoint; execute/import connected code; persist chunks or activate an index before M5 |
-| Embedding service | Load one configured model, validate authenticated batches, return deterministic vectors | Log raw chunks; accept public traffic |
-| PostgreSQL | Migrated identity/access, webhook/job truth, processing summaries, and inactive versioned symbol definitions | Act as a vector engine; persist raw tokens, source bodies, or M4 chunk content |
+| API | **Through Milestone 5:** foundation, GitHub OAuth/sessions, installation/repository authorization, signed webhooks, selection/status, and PostgreSQL/Redis/Qdrant readiness | Perform ingestion in request handlers; trust a client repository ID; expose source, vectors, or infrastructure details |
+| Worker | **Through Milestone 5:** claim/recover/heartbeat, reauthorize, clone/discover/parse/chunk, call embeddings, write/validate scoped vectors, atomically activate, clean up | Expose a public endpoint; execute/import connected code; activate incomplete data; perform unscoped vector operations |
+| Embedding service | Load and warm one immutable ONNX model, authenticate and bound batches, enforce token/output contracts, return deterministic normalized vectors | Receive GitHub/Redis/database credentials; log raw chunks/vectors; accept public traffic; load remote code |
+| PostgreSQL | Identity/access, webhook/job truth, processing summaries, versioned symbols, index-build/count/activation/cleanup truth | Act as a vector engine; persist raw tokens, source bodies, or vector arrays |
 | Redis | **Implemented:** at-least-once Stream delivery of opaque job UUIDs; later ephemeral cache/rate-limit support | Be the only record of a job or access decision; carry repository data or credentials |
-| Qdrant | Repository- and index-version-filtered vector storage/search | Run unfiltered cross-repository searches |
+| Qdrant | Complete citation-ready chunk payloads and normalized vectors under installation/repository/version scope | Decide active versions; store credentials; run unfiltered reads/counts/deletes/searches |
 | LLM adapter | Provider-independent tool selection and grounded synthesis | Choose tenant scope or network destinations |
 
 ## Monorepo boundaries
 
 ```text
 backend/             FastAPI API, domain services, persistence, jobs, ingestion, tests
-embedding_service/   Reserved for a later private model service; not created through Milestone 4
-frontend/            Reserved for a later React/Vite application; not created through Milestone 4
+embedding_service/   Private FastAPI/FastEmbed ONNX service, independent locks/image/tests
+frontend/            Reserved for a later React/Vite application; not created through Milestone 5
 docs/                Product, architecture, security, decisions, evaluation, status, operations
 .github/              CI/CD and dependency automation
 ```
 
-Within the backend, versioned routes delegate to auth, installation, repository, webhook, and health services. GitHub and Redis sit behind typed protocols. The private worker composes PostgreSQL transitions, token minting, clone/discovery, and a typed analyzer protocol; no ORM session remains open across Git/network/filesystem/parser work. The production analyzer spawns a killable child containing Tree-sitter, parser models, Python/document chunkers, and repository bytes. Qdrant, embeddings, call resolution, LLM, and frontend integrations do not exist.
+Within the backend, versioned routes delegate to auth, installation, repository, webhook, and health services. GitHub, Redis, embeddings, and Qdrant sit behind typed protocols. The private worker composes short PostgreSQL transitions, token minting, clone/discovery, a typed isolated analyzer, authenticated embedding batches, and scoped Qdrant writes; no ORM session remains open across Git/network/filesystem/parser/model work. Call resolution, public retrieval, LLM, agent, and frontend integrations do not exist.
 
 ## Implemented request paths
 
 ```text
 Health:
-  ASGI safeguards -> health service -> bounded PostgreSQL + Redis readiness checks
+  ASGI safeguards -> health service -> bounded PostgreSQL + Redis + Qdrant readiness
+
+Private embeddings:
+  worker service credential -> bounded typed batch -> fixed local ONNX model
+  -> exact model/revision/dimension/normalization response -> hostile-response validation
 
 GitHub login:
   state + PKCE generation -> hashed one-time state in PostgreSQL
@@ -84,10 +88,13 @@ Worker:
   Redis job UUID -> conditional PostgreSQL claim -> durable authorization reload
   -> short-lived installation token -> fixed shallow clone -> bounded discovery
   -> parsing/chunking child -> safe summary + inactive symbols in PostgreSQL
+  -> deterministic preprocessing -> authenticated bounded embedding batches
+  -> inactive scoped Qdrant upsert/count/metadata validation
+  -> PostgreSQL atomic activation -> superseded-version cleanup
   -> terminal/retry transition -> guaranteed clone cleanup -> Redis ACK
 ```
 
-Configuration is validated before the app is constructed. Production additionally requires JSON logging, disabled interactive docs, explicit trusted hosts, HTTPS CORS/callback URLs, a credentialed non-local PostgreSQL URL, authenticated TLS Redis, an absolute Git executable, PEM-shaped GitHub App key material, and authentication secrets of at least 32 characters. Clone, discovery, parser input/symbol/chunk/document/warning/process, heartbeat, reconciliation, stream, and retry bounds are validated. Secrets are excluded from settings representations and the allowlisted startup summary.
+Configuration is validated before either app is constructed. Production additionally requires JSON logging, disabled API docs, explicit trusted hosts, HTTPS CORS/callback/embedding/Qdrant URLs, credentialed non-local PostgreSQL, authenticated TLS Redis and Qdrant, an absolute Git executable, PEM-shaped GitHub App material, and authentication/service secrets of at least 32 characters. Clone, discovery, parser, embedding document/batch/timeout, Qdrant batch/timeout, heartbeat, stream, and retry bounds are validated. Secrets are excluded from settings representations and allowlisted startup summaries.
 
 ## Identity and authorization model
 
@@ -116,7 +123,7 @@ RepoLume uses SQLAlchemy 2.x async sessions with `asyncpg` in FastAPI and the wo
 - One short-lived session per worker job step/transaction; no session remains open during clone, embedding, LLM, or other network work.
 - `expire_on_commit=False`; ORM instances do not cross process or queue boundaries.
 - Workers receive scalar identifiers, then reload and re-authorize durable state.
-- Schema changes are made only through Alembic migrations; `f9389ed2964e` adds Milestone 4 parser/chunk/symbol summary state after the Milestone 3 revision.
+- Schema changes are made only through Alembic migrations; `d06a6455fcd7` adds the Milestone 5 build/count/model/cleanup lifecycle after `f9389ed2964e`.
 - Transactions protect state transitions and atomic index activation; external side effects use idempotent operations and compensating cleanup rather than pretending they share a database transaction.
 
 ## Repository indexing data flow
@@ -126,12 +133,13 @@ RepoLume uses SQLAlchemy 2.x async sessions with `asyncpg` in FastAPI and the wo
 3. **Implemented:** Worker conditionally claims the job, records progress/heartbeat/attempt state, and reloads durable access state.
 4. **Implemented:** Worker obtains a short-lived installation token and performs a fixed-argument, shallow, single-branch clone into a fresh temporary directory.
 5. **Implemented:** Discovery enforces configured file, byte, path, type, binary, directory, and symlink limits, then persists counts only and removes the clone.
-6. **Implemented in Milestone 4:** a resource-bounded child statically extracts Python symbols and creates deterministic Python/Markdown/text chunks without importing or running repository code. It returns safe counts/hashes/metadata only; PostgreSQL stores inactive symbol definitions, while chunks remain transient.
-7. The private embedding service embeds bounded batches; Qdrant writes are always tagged with repository ID and a new inactive index version.
-8. PostgreSQL stores symbol and call-edge records under the same inactive version.
-9. A transaction activates the new version only after all required stages succeed.
-10. Failure preserves the last successful version and triggers cleanup of incomplete graph/vector data.
-11. Temporary content is removed in a `finally` path.
+6. **Implemented:** a resource-bounded child statically extracts Python symbols and creates deterministic Python/Markdown/text chunks without importing or running repository code. PostgreSQL stores inactive symbol definitions; chunk text is returned only transiently to the trusted worker.
+7. **Implemented:** one central preprocessor serializes trusted citation metadata and complete content without truncation, fingerprints the policy/input, and rejects over-limit items. The worker sends bounded authenticated batches to the private service.
+8. **Implemented:** the service loads `jinaai/jina-embeddings-v2-base-code` revision `516f4baf13dec4ddddda8631e019b5737c8bc250` through FastEmbed/ONNX CPU execution with an artifact allowlist and no remote code. It returns 768-dimensional L2-normalized vectors.
+9. **Implemented:** deterministic UUIDv5 point IDs bind installation, repository, inactive version, path, stable chunk hash, type, and ordinal. Qdrant collection metadata fixes cosine/768/model/revision/L2; all writes, counts, scroll validation, and deletes use typed installation/repository/version filters.
+10. **Implemented:** exact count plus commit/model/scope metadata validation marks the build ready. One PostgreSQL transaction locks the job/repository/build, supersedes the prior row, activates the new build, updates the repository active version/SHA/vector count, and completes the job.
+11. **Implemented:** any pre-activation failure preserves the old active version, deletes only the failed inactive scope, records cleanup state, and keeps duplicate retries idempotent. Post-activation cleanup deletes only the superseded trusted scope.
+12. Temporary clones are removed in a `finally` path.
 
 Incremental indexing will be introduced only in Milestone 9. Until then, re-indexing is a full versioned rebuild.
 
@@ -148,9 +156,9 @@ The LLM never receives a shell, repository write capability, secret access, arbi
 
 ## Index consistency
 
-`repositories.index_version` identifies the only active version. New vector, symbol, and edge records are written under a distinct inactive version. Activation updates the repository's version and indexed SHA in one database transaction after all external writes succeed. Searches read the active version from an authorized repository record and filter on both dimensions.
+`repositories.index_version` and `repository_index_builds.state='active'` identify the only active version. A partial unique index enforces one active build per repository; ready/active constraints require exact embedded/vector/expected counts with zero failed/skipped items. New vectors and symbols are written under a distinct inactive version. Activation updates the old/new build rows, repository version/SHA/count/status, and job in one transaction after all Qdrant validation succeeds. The old row is flushed as superseded before the new active row to keep the partial uniqueness invariant valid throughout transaction flush ordering.
 
-Cleanup is idempotent. A failed activation keeps the prior version queryable. A later reconciler removes orphaned inactive versions.
+Cleanup is idempotent and always uses trusted installation/repository/version filters. A failed activation keeps the prior version queryable. Failed inactive, retry-artifact, and just-superseded vector scopes are cleaned now; full repository deletion and general orphan reconciliation remain later lifecycle work.
 
 ## Deletion model
 
@@ -168,7 +176,9 @@ Exact retention decisions will be finalized before deletion functionality is aut
 ## Availability and failure behavior
 
 - Implemented liveness proves only that the API process can serve requests.
-- Implemented readiness performs bounded PostgreSQL and Redis probes, returns `200` only when both succeed, and otherwise returns a content-free `503` readiness response.
+- API readiness performs bounded PostgreSQL, Redis, and Qdrant configuration/readiness probes, returns `200` only when all succeed, and otherwise returns a topology-minimizing `503` response.
+- Worker startup requires authenticated embedding-model readiness, exact Qdrant collection compatibility, Redis group setup, and PostgreSQL reconciliation before consumption.
+- Embedding liveness is dependency-free; authenticated readiness reports only fixed model identity/revision/dimension/normalization/token ceiling and load state.
 - GitHub dependency failures return safe `503` responses without response bodies, credentials, or provider error text.
 - OAuth state is consumed before the code exchange so a failed or replayed callback cannot reuse it.
 - Refresh rotation uses PostgreSQL row locks; replay of a used/revoked token invalidates its complete family.
@@ -188,16 +198,17 @@ Exact retention decisions will be finalized before deletion functionality is aut
 - Vectors: authenticated Qdrant Cloud collection.
 - Secrets: platform secret stores only.
 
-The API and worker use one hashed-dependency, non-root Python 3.13/Git image. Compose provides PostgreSQL 18, Redis 8.8, a read-only/capability-dropped API, and an equivalently restricted private worker with bounded temporary storage. Production infrastructure and deployment details remain unverified until Milestone 12; no deployment currently exists.
+The API and worker use one hashed-dependency, non-root Python 3.13.14/Git image on Debian 13. The independently deployable embedding image preloads the immutable model and runs local-only as UID 10002. Compose provides PostgreSQL 18, Redis 8.8, Qdrant 1.18.2, API, worker, and embedding service with persistent database/vector/model volumes. Production private networking, provider credentials, capacity, backups, and deployment remain unverified until later milestones; no deployment currently exists.
 
 ## Known architectural limits
 
 - No real GitHub App or hosted frontend is connected; GitHub adapter behavior is automatically verified with mocked responses only.
 - Membership is synchronized at login and accepted for a configurable bounded freshness interval. Signed installation suspension/deletion and repository-removal webhooks override it immediately.
-- Initial repository clone/discovery/parse/chunk jobs have a consumer, but webhook-triggered reindex scheduling is not yet connected and no searchable index exists.
-- `chunking_complete` is a terminal Milestone 4 job stage while the repository remains `not_indexed`; it must not be presented as embedded, vector-persisted, or searchable.
+- Initial selected-repository jobs can now complete a searchable vector version, but webhook-triggered reindex scheduling is not connected and no user-facing retrieval path exists.
 - Static Python analysis cannot prove dynamic dispatch, reflection, monkey patching, metaclass, decorator-generated, dependency-injection, or runtime-assignment behavior.
 - Python is the only initially supported structured language.
 - Repository evidence cannot establish actual runtime state or undocumented historical intent.
 - Cross-service index activation requires idempotency and reconciliation because PostgreSQL and Qdrant do not share a transaction.
+- Qdrant now persists complete chunk text for later retrieval/citation; it must be treated as a private sensitive-content store with backups, deletion, encryption, and authorization controls equivalent to repository data.
+- A version-scoped container-scan exception exists for CPython 3.13.14 `CVE-2026-15308`; the vulnerable `html.parser` path is outside these services' execution path and the exception must be removed when a fixed 3.13 maintenance release exists.
 - External account, plan, quota, and private-network behavior must be verified against the selected providers before production deployment.

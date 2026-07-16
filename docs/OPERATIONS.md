@@ -1,37 +1,37 @@
 # RepoLume Operations
 
-**Status:** Milestone 4 local API/worker/PostgreSQL/Redis/safe-clone/static-processing operations are implemented and verified with mocked GitHub responses and controlled Git/parser fixtures. No live GitHub App, hosted environment, dashboard, alert, backup, or production runbook has been verified.
+**Status:** Milestone 5 local API/worker/PostgreSQL/Redis/Qdrant/private-embedding/static-index operations are implemented and verified with mocked GitHub responses and controlled Git fixtures. No live GitHub App, hosted environment, dashboard, alert, backup, or production runbook has been verified.
 
 ## Service inventory
 
 | Service | Exposure | Planned owner responsibility | Current state |
 | --- | --- | --- | --- |
 | React frontend | Public via Vercel | User interface and safe rendering | Not created |
-| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status, health | Milestone 4 status summaries verified locally; not deployed |
-| Indexing worker | Railway private service | Durable jobs, safe clone/discovery, isolated parse/chunk, cleanup | Implemented and locally verified; not deployed |
-| Embedding service | Railway private service | Authenticated bounded embeddings | Not created |
-| PostgreSQL | Neon private credentials | Durable identity, access, delivery, job summaries, inactive symbols | Four-revision schema/migration verified on disposable PostgreSQL 18.4; managed production instance not provisioned |
+| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status, health | Milestone 5 searchable status and three-dependency readiness verified locally; not deployed |
+| Indexing worker | Railway private service | Durable jobs, safe static ingestion, embedding/vector validation, atomic activation, cleanup | Implemented and locally verified; not deployed |
+| Embedding service | Railway private service | Authenticated bounded fixed-model embeddings | Implemented, real pinned model verified, UID 10002 image built; not deployed |
+| PostgreSQL | Neon private credentials | Durable identity, access, delivery, job/build/count/activation/cleanup truth, symbols | Five-revision schema verified on disposable PostgreSQL 18; managed production instance not provisioned |
 | Redis | Private managed service | Opaque job-ID Stream delivery; later cache/rate-limit support | Redis 8.8 locally verified; managed authenticated TLS service not provisioned |
-| Qdrant | Qdrant Cloud authenticated | Scoped vectors | Not provisioned |
+| Qdrant | Qdrant Cloud authenticated | Installation/repository/version-scoped vectors and private citation chunks | Qdrant 1.18.2 locally verified; managed authenticated service not provisioned |
 | Hosted LLM | Server-side provider API | Tool selection and answer synthesis | Not configured |
 | GitHub App | GitHub | Authentication, installation tokens, webhooks | Adapter and mocked tests complete; real App not configured or verified |
 
 ## Health contract
 
 - `GET /api/v1/health/live` indicates API process liveness only, returns `200 {"status":"ok"}`, and does not probe or reveal configuration/dependencies.
-- `GET /api/v1/health/ready` runs bounded PostgreSQL and Redis probes; it returns `200` only when both report `ready`, otherwise a content-free `503` readiness body.
-- Worker health uses durable job heartbeat timestamps, pending-entry reclaim, stuck-job recovery, process supervision, and later metrics; it has no public HTTP endpoint.
-- The embedding service will expose a private authenticated health response with model identity, version, dimension, and load state, but no raw data.
+- `GET /api/v1/health/ready` runs bounded PostgreSQL, Redis, and exact Qdrant collection/configuration probes; it returns `200` only when all report `ready`, otherwise a topology-minimizing `503` body.
+- Worker startup requires authenticated exact embedding-model readiness, Qdrant collection compatibility, Redis consumer-group setup, and PostgreSQL reconciliation. Ongoing health uses durable heartbeats/process supervision; there is no public worker HTTP endpoint.
+- Private `GET /health/live` on the embedding service is dependency-independent. Credentialed `GET /health/ready` returns only load state and fixed model/revision/dimension/normalization/token ceiling; unauthenticated requests return 401.
 
-Both implemented responses include a generated or validated `X-Request-ID` and API security headers. PostgreSQL and Redis are readiness dependencies. Liveness remains successful when either dependency is unavailable.
+API responses include a generated or validated `X-Request-ID` and security headers. PostgreSQL, Redis, and Qdrant are API readiness dependencies. API and model liveness remain successful during dependency/model readiness failure.
 
 ## Logging and metrics contract
 
-Structured logs include request IDs plus safe startup/HTTP metadata and worker job/repository IDs, attempt, stage, counts, and safe error code. They do not include repository owner/name/path/content.
+Structured logs include request IDs plus safe startup/HTTP metadata and worker job/repository IDs, attempt, stage, counts, model identity, and safe error code. The embedding service logs request ID, document/query kind, count, duration, and safe model state only. They do not include repository owner/name/path/content or vectors.
 
 Logs must exclude tokens, cookies, secrets, clone credential material, full repository chunks, full prompts/responses, private file contents, and complete chat messages.
 
-Uvicorn access logging is disabled because its raw target can include OAuth codes and other unbounded query data. `httpx`, `httpx2`, and `httpcore` INFO logs are suppressed for the same reason. Milestone 4 tests and final verification inspect logs for database/Redis URLs, credential/token/cookie/private-key/webhook sentinels, repository paths/source/chunks, parser internals, askpass values, and provider bodies. Only allowlisted operational metadata is permitted.
+Uvicorn access logging is disabled because its raw target can include OAuth codes and unbounded query data. `httpx`, `httpx2`, and `httpcore` INFO logs are suppressed. Milestone 5 tests and final verification inspect logs for database/Redis/Qdrant URLs or keys, GitHub/browser/service credentials, paths/source/chunks/vectors, parser/model internals, askpass values, and provider bodies. Only allowlisted operational metadata is permitted.
 
 Metrics remain planned: request and tool latency/error rates, job queue age/duration, worker heartbeat/stuck jobs, embedding throughput, vector operations, model token/cost usage, indexing stages, webhook outcomes, and deletion backlog. Names, cardinality limits, alert thresholds, and retention require deployed telemetry.
 
@@ -57,6 +57,9 @@ Implemented state behavior:
 - Access-revoked work becomes `cancelled` before token minting or clone.
 - Static processing exposes `parsing` and `chunking` durable stages. File-local malformed/oversized/unsupported cases increment safe categories; repository chunk overflow and unsafe paths fail closed.
 - `parser_timeout` and `internal_parser_failure` are nonretryable for the same immutable commit/config. Operators must inspect capacity/configuration without collecting source or raw parser exceptions before submitting fresh work.
+- M5 additionally exposes `embedding`, `storing_vectors`, `validating_index`, and `activating_index`. Do not mark a build ready/active unless expected, embedded, and vector counts match exactly with zero failed/skipped chunks.
+- Before activation, failed inactive vectors are deleted only by trusted installation/repository/version scope and the previous active build remains untouched. After activation, a failed superseded cleanup is recorded as pending and must be retried with that exact scope.
+- Embedding/Qdrant transport outages and timeouts follow bounded retry policy. Authentication, model/collection/dimension/metadata/count/scope mismatches, token/input limits, invalid responses, and activation races fail closed and require review rather than blind retry.
 
 ### Database migration rollback
 
@@ -100,9 +103,10 @@ The delivery table stores the safe delivery ID, event/action, optional external 
 ### Qdrant outage
 
 1. Keep the last PostgreSQL active-version record unchanged.
-2. Fail retrieval with a safe tool/dependency status; do not search without required filters or substitute another tenant's data.
-3. Leave indexing retryable and clean incomplete version data after recovery.
-4. Verify collection health and repository/version filter behavior before resuming.
+2. API readiness becomes unavailable; do not bypass readiness or substitute another collection/tenant.
+3. Keep pre-activation indexing retryable where classified and record failed/pending cleanup state. Never activate from Qdrant's count alone.
+4. After recovery, verify 768/cosine/model/revision/L2 collection metadata and all payload index types.
+5. Validate the exact installation/repository/version count and metadata, then retry only the durable job/cleanup transition. Never issue collection-wide deletion.
 
 ### Redis outage
 
@@ -129,8 +133,10 @@ Implemented local recovery procedure:
 ### Embedding-service outage
 
 1. Do not activate the in-progress index version.
-2. Mark the stage safely, retry within policy, and retain the last successful index.
-3. Confirm model identity/dimension matches the collection before resuming batches.
+2. Confirm private liveness separately from authenticated model readiness without printing the service bearer.
+3. Mark the stage safely, retry within policy, and retain the last successful index.
+4. Confirm exact model identifier, immutable revision, 768 dimensions, L2 normalization, and preprocessing compatibility before resuming batches.
+5. If model/cache load fails, replace or rebuild the service; never enable remote code or silently change model/revision to restore readiness.
 
 ### Repository deletion verification
 
@@ -158,16 +164,17 @@ The API never runs Alembic during application startup. From the repository root,
 
 Review generated SQL and backup/restore compatibility before any future production migration. The initial migration downgrade was exercised by the integration suite against a disposable database; that does not make production downgrades universally safe.
 
-## Local Milestone 4 procedure
+## Local Milestone 5 procedure
 
 Use Python 3.13 for the reproducible baseline. Install the hashed development lock:
 
 ```sh
 python3.13 -m venv .venv
 .venv/bin/python -m pip install --require-hashes --requirement backend/requirements-dev.lock
+.venv/bin/python -m pip install --require-hashes --requirement embedding_service/requirements-dev.lock
 ```
 
-Supply local values through an untracked `.env` or process environment. Configure real PostgreSQL and Redis URLs plus test-only GitHub/RepoLume authentication values. Integration tests require `TEST_DATABASE_URL` and `TEST_REDIS_URL`; they truncate/flush them and never fall back to SQLite or an in-memory queue.
+Supply local values through an untracked `.env` or process environment. Configure real PostgreSQL, Redis, Qdrant, and private embedding endpoints plus test-only GitHub/RepoLume authentication values. Integration tests require `TEST_DATABASE_URL`, `TEST_REDIS_URL`, `TEST_QDRANT_URL`, `TEST_EMBEDDING_SERVICE_URL`, and `TEST_EMBEDDING_SERVICE_TOKEN`; they destroy disposable test state and never fall back to SQLite or in-memory queue/vector/model substitutes.
 
 Parser defaults and documentation are in `.env.example`. Tune them as one validated set: parser input cannot exceed the discovery file ceiling; chunks cannot exceed symbol/document-section ceilings; child CPU cannot exceed the parent wall timeout. Do not increase bounds for untrusted repositories without capacity and failure testing.
 
@@ -177,6 +184,13 @@ export DATABASE_URL='postgresql+asyncpg://<user>:<password>@127.0.0.1:5432/<data
 export TEST_DATABASE_URL='postgresql+asyncpg://<user>:<password>@127.0.0.1:5432/<disposable_test_database>'
 export REDIS_URL='redis://127.0.0.1:6379/0'
 export TEST_REDIS_URL='redis://127.0.0.1:6379/15'
+export QDRANT_URL='http://127.0.0.1:6333'
+export TEST_QDRANT_URL='http://127.0.0.1:6333'
+export QDRANT_COLLECTION_NAME='repolume_test_chunks'
+export EMBEDDING_SERVICE_URL='http://127.0.0.1:8100'
+export TEST_EMBEDDING_SERVICE_URL='http://127.0.0.1:8100'
+export EMBEDDING_SERVICE_TOKEN='<independent-random-value-at-least-32-characters>'
+export TEST_EMBEDDING_SERVICE_TOKEN="$EMBEDDING_SERVICE_TOKEN"
 export GITHUB_APP_ID='<app-id>'
 export GITHUB_CLIENT_ID='<client-id>'
 export GITHUB_CLIENT_SECRET='<secret-store-value>'
@@ -186,6 +200,16 @@ export GITHUB_OAUTH_CALLBACK_URL='http://127.0.0.1:8000/api/v1/auth/github/callb
 export ACCESS_TOKEN_SECRET='<independent-random-value-at-least-32-characters>'
 export TOKEN_HASH_SECRET='<independent-random-value-at-least-32-characters>'
 export CORS_ORIGINS='["http://127.0.0.1:3000"]'
+```
+
+Start the pinned model service before the worker. Artifact download needs network access only during initial cache population; runtime is local-files-only:
+
+```sh
+cd embedding_service
+EMBEDDING_MODEL_CACHE_DIR=/tmp/repolume-models ../.venv/bin/python -m app.download_model
+EMBEDDING_ENVIRONMENT=development EMBEDDING_LOG_JSON=true \
+EMBEDDING_MODEL_CACHE_DIR=/tmp/repolume-models EMBEDDING_MODEL_LOCAL_FILES_ONLY=true \
+HF_HUB_OFFLINE=1 ../.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8100 --no-access-log
 ```
 
 Apply migrations and start the API:
@@ -209,29 +233,36 @@ curl --fail-with-body http://127.0.0.1:8000/api/v1/health/live
 curl --fail-with-body http://127.0.0.1:8000/api/v1/health/ready
 ```
 
-Stop Uvicorn/worker with `Ctrl-C`; shutdown closes database, GitHub, and Redis clients. Docker Compose can start `postgres`, `redis`, `api`, and `worker` after a non-empty local `POSTGRES_PASSWORD` and container-addressable `DATABASE_URL`/`REDIS_URL` are supplied. Do not commit those values.
+Stop processes with `Ctrl-C`; shutdown closes database, GitHub, Redis, embedding HTTP, Qdrant, and model resources. Docker Compose can start `postgres`, `redis`, `qdrant`, `embedding-service`, `api`, and `worker` after non-empty local secrets and container-addressable URLs are supplied. The embedding image preloads the model during build. Do not commit any credential.
 
 For live GitHub verification, configure the App callback and webhook URLs to the public HTTPS API; grant read-only Metadata, Contents, and Pull requests permissions; subscribe to Installation, Installation repositories, Push, and Repository events; then install it on a controlled test account/organization. Automated tests require no real credentials and use injected mocked responses.
 
-## Milestone 4 verification commands
+## Milestone 5 verification commands
 
 ```sh
 .venv/bin/ruff format --check backend
 .venv/bin/ruff check backend
 .venv/bin/mypy --config-file backend/pyproject.toml backend/app backend/tests
+.venv/bin/ruff format --check embedding_service
+.venv/bin/ruff check embedding_service
+.venv/bin/mypy --config-file embedding_service/pyproject.toml embedding_service/app embedding_service/tests
 .venv/bin/python -m pip check
 APP_ENV=test DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" .venv/bin/alembic -c backend/alembic.ini upgrade head
 APP_ENV=test DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" .venv/bin/alembic -c backend/alembic.ini current
 APP_ENV=test DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" .venv/bin/alembic -c backend/alembic.ini check
 cd backend
-APP_ENV=test DATABASE_URL="$DATABASE_URL" TEST_DATABASE_URL="$TEST_DATABASE_URL" REDIS_URL="$REDIS_URL" TEST_REDIS_URL="$TEST_REDIS_URL" ../.venv/bin/pytest
+APP_ENV=test DATABASE_URL="$DATABASE_URL" TEST_DATABASE_URL="$TEST_DATABASE_URL" REDIS_URL="$REDIS_URL" TEST_REDIS_URL="$TEST_REDIS_URL" TEST_QDRANT_URL="$TEST_QDRANT_URL" TEST_EMBEDDING_SERVICE_URL="$TEST_EMBEDDING_SERVICE_URL" TEST_EMBEDDING_SERVICE_TOKEN="$TEST_EMBEDDING_SERVICE_TOKEN" ../.venv/bin/pytest
 cd ..
+HF_HUB_OFFLINE=1 REPOLUME_TEST_MODEL_CACHE=/tmp/repolume-models .venv/bin/pytest embedding_service
 .venv/bin/pip-audit --requirement backend/requirements.lock --disable-pip
-podman build --tag repolume-api:milestone4 backend
-podman image inspect --format '{{.Config.User}}' repolume-api:milestone4
+.venv/bin/pip-audit --requirement embedding_service/requirements.lock --disable-pip
+podman build --tag repolume-api:milestone5 backend
+podman build --tag repolume-embedding-service:milestone5 embedding_service
+podman image inspect --format '{{.Config.User}}' repolume-api:milestone5
+podman image inspect --format '{{.Config.User}}' repolume-embedding-service:milestone5
 ```
 
-The Milestone 4 execution results are recorded in `docs/BUILD_STATUS.md`. GitHub Actions repeats strict quality, PostgreSQL 18, Redis 8.8, migration, audit, complete parser/worker tests, and image-user checks on Python 3.13 with test-only authentication settings. Hosted CI has not run because no remote workflow run exists.
+The actual Milestone 5 results, including full downgrade/upgrade, Qdrant/real-model pipeline, archive scans, coverage, and failures/fixes, are recorded in `docs/BUILD_STATUS.md`. GitHub Actions repeats strict quality, PostgreSQL 18, Redis, Qdrant 1.18.2, the exact real model, migrations, complete suites, audits, both builds/non-root checks, and immutable-action image scans on Python 3.13. Hosted CI has not run because no remote workflow run exists.
 
 ## Incident evidence policy
 

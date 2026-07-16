@@ -20,6 +20,7 @@ EXPECTED_TABLES = {
     "oauth_states",
     "refresh_tokens",
     "repositories",
+    "repository_index_builds",
     "symbol_definitions",
     "usage_records",
     "users",

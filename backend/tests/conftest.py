@@ -44,6 +44,20 @@ class FakeJobQueue:
         self.closed = True
 
 
+class FakeVectorReadiness:
+    """In-process Qdrant readiness boundary for HTTP unit tests."""
+
+    def __init__(self, *, ready: bool = True) -> None:
+        self.ready = ready
+        self.closed = False
+
+    async def is_ready(self) -> bool:
+        return self.ready
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 def make_settings(**overrides: object) -> Settings:
     """Build settings through normal Pydantic validation without reading environment."""
     values: dict[str, object] = {
@@ -63,10 +77,14 @@ def make_settings(**overrides: object) -> Settings:
         "github_oauth_callback_url": "http://testserver/api/v1/auth/github/callback",
         "access_token_secret": "access-token-secret-for-tests-only-0000000",
         "token_hash_secret": "token-hash-secret-for-tests-only-000000000",
+        "embedding_service_token": "embedding-service-secret-for-tests-000000",
     }
     requested_environment = overrides.get("app_env")
     if requested_environment in {AppEnvironment.PRODUCTION, "production"}:
         values["redis_url"] = "rediss://service:secret@redis.example.com/0"
+        values["embedding_service_url"] = "https://embeddings.example.com"
+        values["qdrant_url"] = "https://qdrant.example.com"
+        values["qdrant_api_key"] = "qdrant-api-key-for-tests-only-000000000"
     values.update(overrides)
     return Settings.model_validate(values)
 
@@ -87,11 +105,22 @@ def fake_job_queue() -> FakeJobQueue:
 
 
 @pytest.fixture
+def fake_vector_store() -> FakeVectorReadiness:
+    return FakeVectorReadiness()
+
+
+@pytest.fixture
 def client(
     settings: Settings,
     fake_database: FakeDatabase,
     fake_job_queue: FakeJobQueue,
+    fake_vector_store: FakeVectorReadiness,
 ) -> Iterator[TestClient]:
-    app = create_app(settings=settings, database=fake_database, job_queue=fake_job_queue)
+    app = create_app(
+        settings=settings,
+        database=fake_database,
+        job_queue=fake_job_queue,
+        vector_store=fake_vector_store,
+    )
     with TestClient(app) as test_client:
         yield test_client

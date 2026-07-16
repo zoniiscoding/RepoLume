@@ -164,3 +164,4 @@ class ProcessingResult:
     warning_counts: dict[str, int]
     symbols: tuple[SymbolRecord, ...]
     chunk_fingerprints: tuple[ChunkFingerprint, ...]
+    chunks: tuple[ContentChunk, ...]

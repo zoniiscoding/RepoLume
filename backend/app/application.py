@@ -18,6 +18,7 @@ from app.core.security_headers import SecurityHeadersMiddleware
 from app.db.session import Database, DatabaseProtocol
 from app.github.client import GitHubClient, GitHubClientProtocol
 from app.queue import JobQueueProtocol, RedisJobQueue
+from app.vector.qdrant import QdrantVectorStore, VectorReadinessProtocol
 
 logger = structlog.get_logger(__name__)
 
@@ -27,6 +28,7 @@ def create_app(
     database: DatabaseProtocol | None = None,
     github_client: GitHubClientProtocol | None = None,
     job_queue: JobQueueProtocol | None = None,
+    vector_store: VectorReadinessProtocol | None = None,
 ) -> FastAPI:
     """Create a fully configured application with explicit dependencies."""
     resolved_settings = settings or load_settings()
@@ -37,6 +39,7 @@ def create_app(
     resolved_database = database or Database.from_settings(resolved_settings)
     resolved_github_client = github_client or GitHubClient(resolved_settings)
     resolved_job_queue = job_queue or RedisJobQueue.from_settings(resolved_settings)
+    resolved_vector_store = vector_store or QdrantVectorStore(resolved_settings)
     token_service = TokenService(resolved_settings)
 
     @asynccontextmanager
@@ -46,6 +49,7 @@ def create_app(
         app.state.github_client = resolved_github_client
         app.state.token_service = token_service
         app.state.job_queue = resolved_job_queue
+        app.state.vector_store = resolved_vector_store
         logger.info("application_started", **resolved_settings.safe_summary())
         try:
             yield
@@ -53,13 +57,14 @@ def create_app(
             await resolved_database.dispose()
             await resolved_github_client.close()
             await resolved_job_queue.close()
+            await resolved_vector_store.close()
             logger.info("application_stopped")
 
     docs_url = "/docs" if resolved_settings.docs_enabled else None
     openapi_url = "/openapi.json" if resolved_settings.docs_enabled else None
     app = FastAPI(
         title=resolved_settings.app_name,
-        version="0.3.0",
+        version="0.5.0",
         docs_url=docs_url,
         redoc_url=None,
         openapi_url=openapi_url,
@@ -71,6 +76,7 @@ def create_app(
     app.state.github_client = resolved_github_client
     app.state.token_service = token_service
     app.state.job_queue = resolved_job_queue
+    app.state.vector_store = resolved_vector_store
 
     app.add_middleware(
         TrustedHostMiddleware,

@@ -86,11 +86,39 @@ class Settings(BaseSettings):
     parser_max_chunk_bytes: int = Field(default=32 * 1024, ge=512)
     parser_max_chunks_per_file: int = Field(default=2_000, ge=1, le=100_000)
     parser_max_total_chunks: int = Field(default=50_000, ge=1, le=1_000_000)
+    parser_max_total_chunk_bytes: int = Field(default=64 * 1024 * 1024, ge=1024)
     parser_max_document_section_bytes: int = Field(default=256 * 1024, ge=1024)
     parser_max_warnings_per_file: int = Field(default=50, ge=1, le=1_000)
     parser_timeout_seconds: float = Field(default=180.0, gt=0, le=900)
     parser_process_memory_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=64 * 1024 * 1024)
     parser_process_cpu_seconds: int = Field(default=120, ge=5, le=900)
+
+    embedding_service_url: AnyHttpUrl = AnyHttpUrl("http://127.0.0.1:8100")
+    embedding_service_token: SecretStr
+    embedding_model_identifier: str = "jinaai/jina-embeddings-v2-base-code"
+    embedding_model_revision: str = "516f4baf13dec4ddddda8631e019b5737c8bc250"
+    embedding_dimension: int = Field(default=768, ge=1, le=65_536)
+    embedding_preprocessing_version: str = Field(
+        default="repolume-embedding-v1",
+        pattern=r"^[a-z0-9._-]+$",
+    )
+    embedding_batch_size: int = Field(default=16, ge=1, le=256)
+    embedding_max_document_bytes: int = Field(default=48 * 1024, ge=1024)
+    embedding_connect_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
+    embedding_read_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
+    embedding_max_attempts: int = Field(default=3, ge=1, le=10)
+    embedding_retry_base_seconds: float = Field(default=0.25, gt=0, le=10)
+
+    qdrant_url: AnyHttpUrl = AnyHttpUrl("http://127.0.0.1:6333")
+    qdrant_api_key: SecretStr = SecretStr("")
+    qdrant_collection_name: str = Field(
+        default="repolume_chunks",
+        pattern=r"^[a-zA-Z0-9_-]+$",
+    )
+    qdrant_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    qdrant_upsert_batch_size: int = Field(default=128, ge=1, le=1_000)
+    qdrant_max_attempts: int = Field(default=3, ge=1, le=10)
+    qdrant_retry_base_seconds: float = Field(default=0.25, gt=0, le=10)
 
     cors_origins: list[AnyHttpUrl] = Field(default_factory=list)
     trusted_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
@@ -141,6 +169,7 @@ class Settings(BaseSettings):
         "github_webhook_secret",
         "access_token_secret",
         "token_hash_secret",
+        "embedding_service_token",
     )
     @classmethod
     def validate_secret_length(cls, value: SecretStr) -> SecretStr:
@@ -185,6 +214,12 @@ class Settings(BaseSettings):
         if self.github_oauth_callback_url.scheme != "https":
             raise ValueError("GITHUB_OAUTH_CALLBACK_URL must use HTTPS in production")
 
+        self._validate_production_backing_services()
+        return self
+
+    def _validate_production_backing_services(self) -> None:
+        """Require authenticated remote infrastructure over encrypted transports."""
+
         forbidden_hosts = {"*", "localhost", "127.0.0.1", "0.0.0.0"}
         if any(host.lower() in forbidden_hosts for host in self.trusted_hosts):
             raise ValueError("TRUSTED_HOSTS contains a development-only host")
@@ -199,7 +234,12 @@ class Settings(BaseSettings):
             raise ValueError("REDIS_URL must use TLS in production")
         if redis_url.hostname in forbidden_hosts or redis_url.password is None:
             raise ValueError("REDIS_URL must contain managed remote credentials in production")
-        return self
+        if self.embedding_service_url.scheme != "https":
+            raise ValueError("EMBEDDING_SERVICE_URL must use HTTPS in production")
+        if self.qdrant_url.scheme != "https":
+            raise ValueError("QDRANT_URL must use HTTPS in production")
+        if len(self.qdrant_api_key.get_secret_value()) < MINIMUM_SECRET_LENGTH:
+            raise ValueError("QDRANT_API_KEY must contain a production credential")
 
     @model_validator(mode="after")
     def validate_parser_limits(self) -> Self:
@@ -214,6 +254,10 @@ class Settings(BaseSettings):
             )
         if self.parser_process_cpu_seconds > self.parser_timeout_seconds:
             raise ValueError("PARSER_PROCESS_CPU_SECONDS cannot exceed PARSER_TIMEOUT_SECONDS")
+        if self.embedding_max_document_bytes < self.parser_max_chunk_bytes:
+            raise ValueError(
+                "EMBEDDING_MAX_DOCUMENT_BYTES cannot be smaller than PARSER_MAX_CHUNK_BYTES"
+            )
         return self
 
     @property
@@ -236,7 +280,13 @@ class Settings(BaseSettings):
             "clone_timeout_seconds": self.clone_timeout_seconds,
             "parser_max_input_bytes": self.parser_max_input_bytes,
             "parser_max_total_chunks": self.parser_max_total_chunks,
+            "parser_max_total_chunk_bytes": self.parser_max_total_chunk_bytes,
             "parser_timeout_seconds": self.parser_timeout_seconds,
+            "embedding_model_identifier": self.embedding_model_identifier,
+            "embedding_model_revision": self.embedding_model_revision,
+            "embedding_dimension": self.embedding_dimension,
+            "embedding_batch_size": self.embedding_batch_size,
+            "qdrant_collection_name": self.qdrant_collection_name,
         }
 
 

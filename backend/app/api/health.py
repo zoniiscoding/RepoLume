@@ -7,6 +7,7 @@ from app.db.session import DatabaseProtocol
 from app.queue import JobQueueProtocol
 from app.schemas.health import HealthResponse, ReadinessResponse
 from app.services.health import HealthService
+from app.vector.qdrant import VectorReadinessProtocol
 
 router = APIRouter()
 
@@ -26,7 +27,8 @@ async def readiness(request: Request) -> ReadinessResponse | JSONResponse:
     """Report whether PostgreSQL is reachable within the configured timeout."""
     database: DatabaseProtocol = request.app.state.database
     queue: JobQueueProtocol = request.app.state.job_queue
-    result = await HealthService(database, queue).readiness()
+    vectors: VectorReadinessProtocol = request.app.state.vector_store
+    result = await HealthService(database, queue, vectors).readiness()
     if result.status == "ready":
         return result
     return JSONResponse(

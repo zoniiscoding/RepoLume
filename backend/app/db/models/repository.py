@@ -42,6 +42,7 @@ class Repository(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             name="indexing_progress_range",
         ),
         CheckConstraint("size_bytes IS NULL OR size_bytes >= 0", name="size_bytes_nonnegative"),
+        CheckConstraint("active_vector_count >= 0", name="active_vector_count_nonnegative"),
         Index(
             "ix_repositories_installation_status",
             "installation_id",
@@ -88,5 +89,8 @@ class Repository(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     primary_language: Mapped[str | None] = mapped_column(String(64))
     last_indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    active_vector_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     access_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app.application import create_app
 from app.core.errors import APIError
 from app.schemas.errors import ErrorCode
-from tests.conftest import FakeDatabase, FakeJobQueue, make_settings
+from tests.conftest import FakeDatabase, FakeJobQueue, FakeVectorReadiness, make_settings
 
 REQUEST_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 
@@ -57,7 +57,7 @@ def test_readiness_reports_ready(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.json() == {
         "status": "ready",
-        "checks": {"database": "ready", "redis": "ready"},
+        "checks": {"database": "ready", "redis": "ready", "qdrant": "ready"},
     }
 
 
@@ -66,6 +66,7 @@ def test_readiness_reports_unavailable_without_details() -> None:
         settings=make_settings(),
         database=FakeDatabase(ready=False),
         job_queue=FakeJobQueue(),
+        vector_store=FakeVectorReadiness(),
     )
 
     with TestClient(app) as client:
@@ -74,7 +75,11 @@ def test_readiness_reports_unavailable_without_details() -> None:
     assert response.status_code == 503
     assert response.json() == {
         "status": "not_ready",
-        "checks": {"database": "unavailable", "redis": "ready"},
+        "checks": {
+            "database": "unavailable",
+            "redis": "ready",
+            "qdrant": "ready",
+        },
     }
 
 

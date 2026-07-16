@@ -15,6 +15,7 @@ from typing import Any, cast
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from qdrant_client import AsyncQdrantClient
 from redis.asyncio import Redis
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -24,6 +25,8 @@ from app.auth.tokens import TokenService
 from app.core.config import Settings
 from app.db.models.enums import (
     GitHubAccountType,
+    IndexBuildState,
+    IndexCleanupStatus,
     IndexingJobStatus,
     IndexingJobType,
     InstallationMemberRole,
@@ -32,9 +35,13 @@ from app.db.models.enums import (
 )
 from app.db.models.github_installation import GitHubInstallation, InstallationMember
 from app.db.models.indexing_job import IndexingJob
+from app.db.models.repository import Repository
+from app.db.models.repository_index_build import RepositoryIndexBuild
 from app.db.models.symbol_definition import SymbolDefinition
 from app.db.models.user import User
 from app.db.session import Database
+from app.embeddings.client import EmbeddingProviderProtocol, EmbeddingServiceClient
+from app.embeddings.preprocessing import PreparedEmbedding
 from app.github.schemas import GitHubInstallation as GitHubInstallationData
 from app.github.schemas import GitHubRepository, GitHubUser
 from app.indexing.analyzer import ProcessIsolatedAnalyzer
@@ -45,6 +52,7 @@ from app.indexing.models import ProcessingResult
 from app.indexing.worker import IndexingWorker
 from app.queue import RedisJobQueue
 from app.services.indexing_jobs import IndexingJobStore
+from app.vector.qdrant import QdrantVectorStore, VectorScope
 from tests.conftest import make_settings
 
 pytestmark = pytest.mark.integration
@@ -64,10 +72,33 @@ def redis_url() -> str:
     return value
 
 
+def qdrant_url() -> str:
+    value = os.environ.get("TEST_QDRANT_URL")
+    if value is None:
+        pytest.fail("TEST_QDRANT_URL must target a disposable Qdrant instance")
+    return value
+
+
+def embedding_service_url() -> str:
+    value = os.environ.get("TEST_EMBEDDING_SERVICE_URL")
+    if value is None:
+        pytest.fail("TEST_EMBEDDING_SERVICE_URL must target the private embedding service")
+    return value
+
+
+def embedding_service_token() -> str:
+    value = os.environ.get("TEST_EMBEDDING_SERVICE_TOKEN")
+    if value is None:
+        pytest.fail("TEST_EMBEDDING_SERVICE_TOKEN must authenticate the private embedding service")
+    return value
+
+
 def integration_settings(**overrides: object) -> Settings:
     return make_settings(
         database_url=database_url(),
         redis_url=redis_url(),
+        qdrant_url=qdrant_url(),
+        qdrant_collection_name="repolume_test_chunks",
         worker_poll_timeout_ms=100,
         worker_abandoned_after_seconds=5,
         worker_retry_base_seconds=1,
@@ -131,7 +162,8 @@ async def reset_dependencies() -> None:
     async with engine.begin() as connection:
         await connection.execute(
             text(
-                "TRUNCATE TABLE call_edges, chat_messages, chat_sessions, indexing_jobs, "
+                "TRUNCATE TABLE call_edges, chat_messages, chat_sessions, "
+                "repository_index_builds, indexing_jobs, "
                 "oauth_states, refresh_tokens, repositories, symbol_definitions, usage_records, "
                 "installation_members, webhook_deliveries, github_installations, users CASCADE"
             )
@@ -140,6 +172,10 @@ async def reset_dependencies() -> None:
     redis = Redis.from_url(redis_url(), decode_responses=True)
     await redis.flushdb()
     await redis.aclose()
+    qdrant = AsyncQdrantClient(url=qdrant_url())
+    if await qdrant.collection_exists("repolume_test_chunks"):
+        await qdrant.delete_collection("repolume_test_chunks")
+    await qdrant.close()
 
 
 @pytest.fixture(autouse=True)
@@ -191,11 +227,13 @@ def api_runtime() -> Iterator[tuple[TestClient, Settings, FakeGitHub, uuid.UUID,
         ready_timeout_seconds=2,
     )
     queue = RedisJobQueue.from_settings(settings)
+    vectors = QdrantVectorStore(settings)
     app = create_app(
         settings=settings,
         database=database,
         github_client=github,
         job_queue=queue,
+        vector_store=vectors,
     )
     with TestClient(app) as client:
         yield client, settings, github, user_id, installation_id
@@ -339,16 +377,57 @@ class FailingAnalyzer:
         )
 
 
+class DeterministicEmbeddings:
+    """Content-free deterministic adapter; the service package tests the real model."""
+
+    async def is_ready(self) -> bool:
+        return True
+
+    async def embed_documents(
+        self, documents: Sequence[PreparedEmbedding]
+    ) -> dict[str, tuple[float, ...]]:
+        results: dict[str, tuple[float, ...]] = {}
+        for document in documents:
+            vector = [0.0] * 768
+            vector[int(document.item_id) % 768] = 1.0
+            results[document.item_id] = tuple(vector)
+        return results
+
+    async def embed_query(self, query: PreparedEmbedding) -> tuple[float, ...]:
+        del query
+        vector = [0.0] * 768
+        vector[0] = 1.0
+        return tuple(vector)
+
+    async def close(self) -> None:
+        return None
+
+
+class FailingEmbeddings(DeterministicEmbeddings):
+    async def embed_documents(
+        self, documents: Sequence[PreparedEmbedding]
+    ) -> dict[str, tuple[float, ...]]:
+        del documents
+        raise IndexingError(
+            code="embedding_generation_failed",
+            message="Embedding generation failed safely",
+            retryable=False,
+        )
+
+
 async def process_two_deliveries(
     settings: Settings,
     github: FakeGitHub,
     cloner: ControlledFixtureCloner,
+    embeddings: EmbeddingProviderProtocol | None = None,
 ) -> None:
     database = Database(
         engine=create_async_engine(database_url(), pool_pre_ping=True),
         ready_timeout_seconds=2,
     )
     queue = RedisJobQueue.from_settings(settings)
+    embedding_provider = embeddings or DeterministicEmbeddings()
+    vectors = QdrantVectorStore(settings)
     worker = IndexingWorker(
         settings=settings,
         queue=queue,
@@ -357,6 +436,8 @@ async def process_two_deliveries(
         cloner=cloner,
         discovery=FileDiscovery(settings),
         analyzer=ProcessIsolatedAnalyzer(settings),
+        embeddings=embedding_provider,
+        vectors=vectors,
         worker_id="integration-worker",
     )
     await queue.ensure_group()
@@ -367,7 +448,57 @@ async def process_two_deliveries(
     assert second is not None
     await worker.process_delivery(second)
     await queue.close()
+    await embedding_provider.close()
+    await vectors.close()
     await database.dispose()
+
+
+async def enqueue_manual_reindex(
+    settings: Settings,
+    github: FakeGitHub,
+    cloner: ControlledFixtureCloner,
+    repository_id: uuid.UUID,
+    user_id: uuid.UUID,
+    embeddings: DeterministicEmbeddings,
+) -> uuid.UUID:
+    database = Database(
+        engine=create_async_engine(database_url(), pool_pre_ping=True),
+        ready_timeout_seconds=2,
+    )
+    async with database.session() as session:
+        job = IndexingJob(
+            repository_id=repository_id,
+            requested_by_user_id=user_id,
+            job_type=IndexingJobType.MANUAL_REINDEX,
+            status=IndexingJobStatus.QUEUED,
+            stage="queued",
+        )
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+    queue = RedisJobQueue.from_settings(settings)
+    vectors = QdrantVectorStore(settings)
+    await queue.ensure_group()
+    await queue.enqueue(job_id)
+    delivery = await queue.receive("replacement-failure-worker")
+    assert delivery is not None
+    worker = IndexingWorker(
+        settings=settings,
+        queue=queue,
+        store=IndexingJobStore(database, settings),
+        github=github,
+        cloner=cloner,
+        discovery=FileDiscovery(settings),
+        analyzer=ProcessIsolatedAnalyzer(settings),
+        embeddings=embeddings,
+        vectors=vectors,
+        worker_id="replacement-failure-worker",
+    )
+    await worker.process_delivery(delivery)
+    await queue.close()
+    await vectors.close()
+    await database.dispose()
+    return job_id
 
 
 def test_api_is_fast_idempotent_tenant_safe_and_queues_only_job_id(
@@ -434,16 +565,74 @@ def test_real_worker_clones_controlled_fixture_without_execution_and_cleans_up(
     )
     assert status.status_code == 200
     assert status.json()["job_status"] == "complete"
-    assert status.json()["stage"] == "chunking_complete"
+    assert status.json()["stage"] == "complete"
     assert status.json()["discovered_file_count"] == 3
     assert status.json()["parsed_file_count"] == 3
     assert status.json()["symbol_count"] == 1
     assert status.json()["chunk_count"] == 3
+    assert status.json()["embedded_chunk_count"] == 3
+    assert status.json()["vector_count"] == 3
+    assert status.json()["active_vector_count"] == 3
+    assert status.json()["active_index_version"] == 1
+    assert status.json()["searchable"] is True
     assert asyncio.run(scalar(select(func.count(SymbolDefinition.id)))) == 1
     assert asyncio.run(scalar(select(SymbolDefinition.index_version))) == 1
+    assert asyncio.run(scalar(select(func.count(RepositoryIndexBuild.id)))) == 1
+    repository = asyncio.run(
+        scalar(select(Repository).where(Repository.id == uuid.UUID(selected["repository"]["id"])))
+    )
+    assert repository is not None
+
+    async def vector_count() -> int:
+        vectors = QdrantVectorStore(settings)
+        count = await vectors.count_scope(
+            VectorScope(installation_id, repository.id, repository.index_version)
+        )
+        await vectors.close()
+        return count
+
+    assert asyncio.run(vector_count()) == 3
     assert cloner.calls == 1
     assert tuple(clone_root.iterdir()) == ()
     assert not marker.exists()
+
+
+def test_real_embedding_service_completes_controlled_fixture_pipeline(
+    api_runtime: tuple[TestClient, Settings, FakeGitHub, uuid.UUID, uuid.UUID],
+    tmp_path: Path,
+) -> None:
+    client, _, github, user_id, installation_id = api_runtime
+    settings = integration_settings(
+        embedding_service_url=embedding_service_url(),
+        embedding_service_token=embedding_service_token(),
+    )
+    fixture = create_git_fixture(tmp_path, tmp_path / "must-not-exist")
+    clone_root = tmp_path / "clones"
+    clone_root.mkdir()
+    cloner = ControlledFixtureCloner(fixture, clone_root)
+    selected, _ = select_repository(client, settings, user_id, installation_id)
+    select_repository(client, settings, user_id, installation_id)
+
+    asyncio.run(
+        process_two_deliveries(
+            settings,
+            github,
+            cloner,
+            embeddings=EmbeddingServiceClient(settings),
+        )
+    )
+
+    response = client.get(
+        f"/api/v1/repositories/{selected['repository']['id']}/status",
+        headers=authorization(settings, user_id),
+    )
+    assert response.status_code == 200
+    assert response.json()["job_status"] == "complete"
+    assert response.json()["active_index_version"] == 1
+    assert response.json()["embedded_chunk_count"] == 3
+    assert response.json()["active_vector_count"] == 3
+    assert response.json()["searchable"] is True
+    assert tuple(clone_root.iterdir()) == ()
 
 
 def test_parsing_failure_is_safe_and_still_cleans_temporary_clone(
@@ -463,6 +652,7 @@ def test_parsing_failure_is_safe_and_still_cleans_temporary_clone(
             ready_timeout_seconds=2,
         )
         queue = RedisJobQueue.from_settings(settings)
+        vectors = QdrantVectorStore(settings)
         await queue.ensure_group()
         delivery = await queue.receive("parser-failure-worker")
         assert delivery is not None
@@ -474,10 +664,13 @@ def test_parsing_failure_is_safe_and_still_cleans_temporary_clone(
             cloner=cloner,
             discovery=FileDiscovery(settings),
             analyzer=FailingAnalyzer(),
+            embeddings=DeterministicEmbeddings(),
+            vectors=vectors,
             worker_id="parser-failure-worker",
         )
         await worker.process_delivery(delivery)
         await queue.close()
+        await vectors.close()
         await database.dispose()
 
     asyncio.run(process())
@@ -489,6 +682,151 @@ def test_parsing_failure_is_safe_and_still_cleans_temporary_clone(
     assert response.json()["job_status"] == "failed"
     assert response.json()["error_code"] == "internal_parser_failure"
     assert response.json()["safe_error_message"] == ("Static repository processing failed safely")
+    assert tuple(clone_root.iterdir()) == ()
+
+
+def test_failed_replacement_preserves_previous_active_index(
+    api_runtime: tuple[TestClient, Settings, FakeGitHub, uuid.UUID, uuid.UUID],
+    tmp_path: Path,
+) -> None:
+    client, settings, github, user_id, installation_id = api_runtime
+    fixture = create_git_fixture(tmp_path, tmp_path / "must-not-exist")
+    clone_root = tmp_path / "clones"
+    clone_root.mkdir()
+    cloner = ControlledFixtureCloner(fixture, clone_root)
+    selected, _ = select_repository(client, settings, user_id, installation_id)
+    select_repository(client, settings, user_id, installation_id)
+    asyncio.run(process_two_deliveries(settings, github, cloner))
+    repository_id = uuid.UUID(selected["repository"]["id"])
+
+    failed_job_id = asyncio.run(
+        enqueue_manual_reindex(
+            settings,
+            github,
+            cloner,
+            repository_id,
+            user_id,
+            FailingEmbeddings(),
+        )
+    )
+
+    response = client.get(
+        f"/api/v1/repositories/{repository_id}/status",
+        headers=authorization(settings, user_id),
+    )
+    assert response.status_code == 200
+    status_payload = response.json()
+    assert status_payload["job_id"] == str(failed_job_id)
+    assert status_payload["job_status"] == "failed"
+    assert status_payload["error_code"] == "embedding_generation_failed"
+    assert status_payload["active_index_version"] == 1
+    assert status_payload["vector_count"] == 0
+    assert status_payload["active_vector_count"] == 3
+    assert status_payload["searchable"] is True
+
+    async def durable_state() -> tuple[int, tuple[tuple[IndexBuildState, IndexCleanupStatus], ...]]:
+        engine = create_async_engine(database_url())
+        async with AsyncSession(engine) as session:
+            repository = await session.get(Repository, repository_id)
+            assert repository is not None
+            rows = (
+                await session.execute(
+                    select(RepositoryIndexBuild.state, RepositoryIndexBuild.cleanup_status)
+                    .where(RepositoryIndexBuild.repository_id == repository_id)
+                    .order_by(RepositoryIndexBuild.index_version)
+                )
+            ).all()
+            builds = tuple((row.state, row.cleanup_status) for row in rows)
+            active_vectors = repository.active_vector_count
+        await engine.dispose()
+        return active_vectors, builds
+
+    active_vectors, builds = asyncio.run(durable_state())
+    assert active_vectors == 3
+    assert builds == (
+        (IndexBuildState.ACTIVE, IndexCleanupStatus.NOT_REQUIRED),
+        (IndexBuildState.FAILED, IndexCleanupStatus.COMPLETE),
+    )
+
+    async def vector_counts() -> tuple[int, int]:
+        vectors = QdrantVectorStore(settings)
+        active = await vectors.count_scope(VectorScope(installation_id, repository_id, 1))
+        failed = await vectors.count_scope(VectorScope(installation_id, repository_id, 2))
+        await vectors.close()
+        return active, failed
+
+    assert asyncio.run(vector_counts()) == (3, 0)
+    assert tuple(clone_root.iterdir()) == ()
+
+
+def test_successful_replacement_activates_then_cleans_previous_version(
+    api_runtime: tuple[TestClient, Settings, FakeGitHub, uuid.UUID, uuid.UUID],
+    tmp_path: Path,
+) -> None:
+    client, settings, github, user_id, installation_id = api_runtime
+    fixture = create_git_fixture(tmp_path, tmp_path / "must-not-exist")
+    clone_root = tmp_path / "clones"
+    clone_root.mkdir()
+    cloner = ControlledFixtureCloner(fixture, clone_root)
+    selected, _ = select_repository(client, settings, user_id, installation_id)
+    select_repository(client, settings, user_id, installation_id)
+    asyncio.run(process_two_deliveries(settings, github, cloner))
+    repository_id = uuid.UUID(selected["repository"]["id"])
+    asyncio.run(
+        enqueue_manual_reindex(
+            settings,
+            github,
+            cloner,
+            repository_id,
+            user_id,
+            DeterministicEmbeddings(),
+        )
+    )
+
+    response = client.get(
+        f"/api/v1/repositories/{repository_id}/status",
+        headers=authorization(settings, user_id),
+    )
+    assert response.status_code == 200
+    assert response.json()["job_status"] == "complete"
+    assert response.json()["active_index_version"] == 2
+    assert response.json()["active_vector_count"] == 3
+    assert response.json()["searchable"] is True
+
+    async def durable_state() -> tuple[list[tuple[IndexBuildState, IndexCleanupStatus]], int]:
+        engine = create_async_engine(database_url())
+        async with AsyncSession(engine) as session:
+            rows = (
+                await session.execute(
+                    select(RepositoryIndexBuild.state, RepositoryIndexBuild.cleanup_status)
+                    .where(RepositoryIndexBuild.repository_id == repository_id)
+                    .order_by(RepositoryIndexBuild.index_version)
+                )
+            ).all()
+            old_symbols = await session.scalar(
+                select(func.count(SymbolDefinition.id)).where(
+                    SymbolDefinition.repository_id == repository_id,
+                    SymbolDefinition.index_version == 1,
+                )
+            )
+        await engine.dispose()
+        return [(row.state, row.cleanup_status) for row in rows], old_symbols or 0
+
+    builds, old_symbols = asyncio.run(durable_state())
+    assert builds == [
+        (IndexBuildState.SUPERSEDED, IndexCleanupStatus.COMPLETE),
+        (IndexBuildState.ACTIVE, IndexCleanupStatus.NOT_REQUIRED),
+    ]
+    assert old_symbols == 0
+
+    async def vector_counts() -> tuple[int, int]:
+        vectors = QdrantVectorStore(settings)
+        old = await vectors.count_scope(VectorScope(installation_id, repository_id, 1))
+        active = await vectors.count_scope(VectorScope(installation_id, repository_id, 2))
+        await vectors.close()
+        return old, active
+
+    assert asyncio.run(vector_counts()) == (0, 3)
     assert tuple(clone_root.iterdir()) == ()
 
 
@@ -581,6 +919,7 @@ def test_worker_refuses_suspended_installation_before_clone(
         await engine.dispose()
         database = Database(engine=create_async_engine(database_url()), ready_timeout_seconds=2)
         queue = RedisJobQueue.from_settings(settings)
+        vectors = QdrantVectorStore(settings)
         await queue.ensure_group()
         delivery = await queue.receive("revocation-worker")
         assert delivery is not None
@@ -592,10 +931,13 @@ def test_worker_refuses_suspended_installation_before_clone(
             cloner=cloner,
             discovery=FileDiscovery(settings),
             analyzer=ProcessIsolatedAnalyzer(settings),
+            embeddings=DeterministicEmbeddings(),
+            vectors=vectors,
             worker_id="revocation-worker",
         )
         await worker.process_delivery(delivery)
         await queue.close()
+        await vectors.close()
         await database.dispose()
 
     asyncio.run(suspend_and_process())

@@ -20,6 +20,7 @@ class ReadinessChecks(BaseModel):
 
     database: Literal["ready", "unavailable"]
     redis: Literal["ready", "unavailable"]
+    qdrant: Literal["ready", "unavailable"]
 
 
 class ReadinessResponse(BaseModel):

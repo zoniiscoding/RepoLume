@@ -1,4 +1,4 @@
-"""Atomic PostgreSQL state transitions for Milestone 3 workers."""
+"""Atomic PostgreSQL state transitions for durable indexing workers."""
 
 import secrets
 import uuid
@@ -10,6 +10,8 @@ from sqlalchemy import and_, delete, or_, select, update
 
 from app.core.config import Settings
 from app.db.models.enums import (
+    IndexBuildState,
+    IndexCleanupStatus,
     IndexingJobStatus,
     InstallationStatus,
     RepositoryIndexingStatus,
@@ -17,9 +19,11 @@ from app.db.models.enums import (
 from app.db.models.github_installation import GitHubInstallation, InstallationMember
 from app.db.models.indexing_job import IndexingJob
 from app.db.models.repository import Repository
+from app.db.models.repository_index_build import RepositoryIndexBuild
 from app.db.models.symbol_definition import SymbolDefinition
 from app.db.session import Database
 from app.indexing.discovery import DiscoveryResult
+from app.indexing.failures import IndexingError
 from app.indexing.models import ProcessingResult
 
 
@@ -34,6 +38,7 @@ class ClaimedJob:
 class JobContext:
     job_id: uuid.UUID
     repository_id: uuid.UUID
+    installation_id: uuid.UUID
     github_installation_id: int
     owner: str
     name: str
@@ -51,6 +56,9 @@ class IndexingJobStore:
         self._max_attempts = settings.worker_max_attempts
         self._retry_base = settings.worker_retry_base_seconds
         self._retry_max = settings.worker_retry_max_seconds
+        self._embedding_model_identifier = settings.embedding_model_identifier
+        self._embedding_model_revision = settings.embedding_model_revision
+        self._embedding_dimension = settings.embedding_dimension
 
     async def claim(self, job_id: uuid.UUID, worker_id: str) -> ClaimedJob | None:
         now = datetime.now(UTC)
@@ -122,20 +130,27 @@ class IndexingJobStore:
                         GitHubInstallation.deleted_at.is_(None),
                         InstallationMember.verified_at >= cutoff,
                     )
+                    .with_for_update(of=IndexingJob)
                 )
             ).one_or_none()
-        if row is None:
-            return None
-        _, repository, installation = row
-        return JobContext(
-            job_id=claimed.id,
-            repository_id=repository.id,
-            github_installation_id=installation.github_installation_id,
-            owner=repository.github_owner,
-            name=repository.github_name,
-            default_branch=repository.default_branch,
-            index_version=repository.index_version + 1,
-        )
+            if row is None:
+                await session.rollback()
+                return None
+            job, repository, installation = row
+            if job.target_index_version is None:
+                job.target_index_version = repository.index_version + 1
+            context = JobContext(
+                job_id=claimed.id,
+                repository_id=repository.id,
+                installation_id=installation.id,
+                github_installation_id=installation.github_installation_id,
+                owner=repository.github_owner,
+                name=repository.github_name,
+                default_branch=repository.default_branch,
+                index_version=job.target_index_version,
+            )
+            await session.commit()
+            return context
 
     async def heartbeat(self, claimed: ClaimedJob, worker_id: str) -> None:
         async with self._database.session() as session:
@@ -193,7 +208,7 @@ class IndexingJobStore:
                 )
             await session.commit()
 
-    async def complete(
+    async def prepare_build(
         self,
         claimed: ClaimedJob,
         worker_id: str,
@@ -201,6 +216,7 @@ class IndexingJobStore:
         commit_sha: str,
         discovery: DiscoveryResult,
         processing: ProcessingResult,
+        preprocessing_fingerprint: str,
     ) -> None:
         if (
             processing.repository_id != claimed.repository_id
@@ -208,73 +224,329 @@ class IndexingJobStore:
             or processing.index_version < 1
         ):
             raise RuntimeError("processing_result_mismatch")
-        now = datetime.now(UTC)
         async with self._database.session() as session:
-            result = await session.execute(
-                update(IndexingJob)
+            row = (
+                await session.execute(
+                    select(IndexingJob, Repository)
+                    .join(Repository, Repository.id == IndexingJob.repository_id)
+                    .where(
+                        IndexingJob.id == claimed.id,
+                        IndexingJob.status == IndexingJobStatus.RUNNING,
+                        IndexingJob.locked_by == worker_id,
+                    )
+                    .with_for_update(of=(IndexingJob, Repository))
+                )
+            ).one_or_none()
+            if row is None:
+                raise self._activation_race()
+            job, repository = row
+            if (
+                job.target_index_version != processing.index_version
+                or processing.index_version != repository.index_version + 1
+            ):
+                raise self._activation_race()
+            build = await session.scalar(
+                select(RepositoryIndexBuild)
+                .where(
+                    RepositoryIndexBuild.repository_id == repository.id,
+                    RepositoryIndexBuild.index_version == processing.index_version,
+                )
+                .with_for_update()
+            )
+            if build is not None and build.job_id not in {None, claimed.id}:
+                raise self._activation_race()
+            if build is None:
+                build = RepositoryIndexBuild(
+                    repository_id=repository.id,
+                    job_id=claimed.id,
+                    index_version=processing.index_version,
+                    state=IndexBuildState.BUILDING,
+                    cleanup_status=IndexCleanupStatus.PENDING,
+                    commit_sha=commit_sha,
+                    embedding_model_identifier=self._embedding_model_identifier,
+                    embedding_model_revision=self._embedding_model_revision,
+                    embedding_dimension=self._embedding_dimension,
+                    preprocessing_fingerprint=preprocessing_fingerprint,
+                    expected_chunk_count=processing.chunk_count,
+                )
+                session.add(build)
+            else:
+                build.job_id = claimed.id
+                build.state = IndexBuildState.BUILDING
+                build.cleanup_status = IndexCleanupStatus.PENDING
+                build.commit_sha = commit_sha
+                build.embedding_model_identifier = self._embedding_model_identifier
+                build.embedding_model_revision = self._embedding_model_revision
+                build.embedding_dimension = self._embedding_dimension
+                build.preprocessing_fingerprint = preprocessing_fingerprint
+                build.expected_chunk_count = processing.chunk_count
+                build.embedded_chunk_count = 0
+                build.vector_count = 0
+                build.failed_chunk_count = 0
+                build.skipped_chunk_count = 0
+                build.activated_at = None
+                build.cleanup_completed_at = None
+            await session.execute(
+                delete(SymbolDefinition).where(
+                    SymbolDefinition.repository_id == repository.id,
+                    SymbolDefinition.index_version == processing.index_version,
+                )
+            )
+            session.add_all(
+                SymbolDefinition(
+                    repository_id=repository.id,
+                    index_version=processing.index_version,
+                    file_path=symbol.file_path,
+                    language=symbol.language,
+                    symbol_name=symbol.symbol_name,
+                    qualified_name=symbol.qualified_name,
+                    symbol_type=symbol.symbol_type,
+                    start_line=symbol.start_line,
+                    end_line=symbol.end_line,
+                    content_hash=symbol.content_hash,
+                    commit_sha=symbol.commit_sha,
+                )
+                for symbol in processing.symbols
+            )
+            job.source_commit_sha = commit_sha
+            job.discovered_file_count = len(discovery.files)
+            job.discovered_total_bytes = discovery.total_bytes
+            job.skipped_files_json = discovery.skipped
+            job.parsed_file_count = processing.parsed_file_count
+            job.partial_file_count = processing.partial_file_count
+            job.parser_skipped_file_count = processing.skipped_file_count
+            job.symbol_count = processing.symbol_count
+            job.chunk_count = processing.chunk_count
+            job.parser_warnings_json = processing.warning_counts
+            job.embedding_model_identifier = self._embedding_model_identifier
+            job.embedding_model_revision = self._embedding_model_revision
+            job.embedding_dimension = self._embedding_dimension
+            job.preprocessing_fingerprint = preprocessing_fingerprint
+            repository.current_remote_sha = commit_sha
+            repository.size_bytes = discovery.total_bytes
+            await session.commit()
+
+    async def record_vector_counts(
+        self,
+        claimed: ClaimedJob,
+        worker_id: str,
+        *,
+        embedded_chunk_count: int,
+        vector_count: int,
+    ) -> None:
+        async with self._database.session() as session:
+            job = await session.scalar(
+                select(IndexingJob)
                 .where(
                     IndexingJob.id == claimed.id,
                     IndexingJob.status == IndexingJobStatus.RUNNING,
                     IndexingJob.locked_by == worker_id,
                 )
-                .values(
-                    status=IndexingJobStatus.COMPLETE,
-                    progress=100,
-                    stage="chunking_complete",
-                    source_commit_sha=commit_sha,
-                    target_commit_sha=commit_sha,
-                    heartbeat_at=now,
-                    completed_at=now,
-                    locked_by=None,
-                    discovered_file_count=len(discovery.files),
-                    discovered_total_bytes=discovery.total_bytes,
-                    skipped_files_json=discovery.skipped,
-                    parsed_file_count=processing.parsed_file_count,
-                    partial_file_count=processing.partial_file_count,
-                    parser_skipped_file_count=processing.skipped_file_count,
-                    symbol_count=processing.symbol_count,
-                    chunk_count=processing.chunk_count,
-                    parser_warnings_json=processing.warning_counts,
-                )
-                .returning(IndexingJob.repository_id)
+                .with_for_update()
             )
-            repository_id = result.scalar_one_or_none()
-            if repository_id is not None:
+            if job is None or job.target_index_version is None:
+                raise self._activation_race()
+            build = await session.scalar(
+                select(RepositoryIndexBuild)
+                .where(
+                    RepositoryIndexBuild.repository_id == claimed.repository_id,
+                    RepositoryIndexBuild.index_version == job.target_index_version,
+                    RepositoryIndexBuild.job_id == claimed.id,
+                    RepositoryIndexBuild.state == IndexBuildState.BUILDING,
+                )
+                .with_for_update()
+            )
+            if build is None:
+                raise self._activation_race()
+            job.embedded_chunk_count = embedded_chunk_count
+            job.vector_count = vector_count
+            build.embedded_chunk_count = embedded_chunk_count
+            build.vector_count = vector_count
+            await session.commit()
+
+    async def mark_build_ready(self, claimed: ClaimedJob, worker_id: str) -> None:
+        async with self._database.session() as session:
+            job = await session.scalar(
+                select(IndexingJob).where(
+                    IndexingJob.id == claimed.id,
+                    IndexingJob.status == IndexingJobStatus.RUNNING,
+                    IndexingJob.locked_by == worker_id,
+                )
+            )
+            if job is None or job.target_index_version is None:
+                raise self._activation_race()
+            result = await session.execute(
+                update(RepositoryIndexBuild)
+                .where(
+                    RepositoryIndexBuild.repository_id == claimed.repository_id,
+                    RepositoryIndexBuild.index_version == job.target_index_version,
+                    RepositoryIndexBuild.job_id == claimed.id,
+                    RepositoryIndexBuild.state == IndexBuildState.BUILDING,
+                    RepositoryIndexBuild.expected_chunk_count
+                    == RepositoryIndexBuild.embedded_chunk_count,
+                    RepositoryIndexBuild.expected_chunk_count == RepositoryIndexBuild.vector_count,
+                )
+                .values(state=IndexBuildState.READY)
+                .returning(RepositoryIndexBuild.id)
+            )
+            if result.scalar_one_or_none() is None:
+                raise IndexingError(
+                    code="vector_count_mismatch",
+                    message="The inactive vector index failed count validation",
+                    retryable=False,
+                )
+            await session.commit()
+
+    async def activate(
+        self,
+        claimed: ClaimedJob,
+        worker_id: str,
+        *,
+        commit_sha: str,
+    ) -> int:
+        now = datetime.now(UTC)
+        async with self._database.session() as session:
+            row = (
                 await session.execute(
-                    delete(SymbolDefinition).where(
-                        SymbolDefinition.repository_id == repository_id,
-                        SymbolDefinition.index_version == processing.index_version,
+                    select(IndexingJob, Repository)
+                    .join(Repository, Repository.id == IndexingJob.repository_id)
+                    .where(
+                        IndexingJob.id == claimed.id,
+                        IndexingJob.status == IndexingJobStatus.RUNNING,
+                        IndexingJob.locked_by == worker_id,
                     )
+                    .with_for_update(of=(IndexingJob, Repository))
                 )
-                session.add_all(
-                    SymbolDefinition(
-                        repository_id=repository_id,
-                        index_version=processing.index_version,
-                        file_path=symbol.file_path,
-                        language=symbol.language,
-                        symbol_name=symbol.symbol_name,
-                        qualified_name=symbol.qualified_name,
-                        symbol_type=symbol.symbol_type,
-                        start_line=symbol.start_line,
-                        end_line=symbol.end_line,
-                        content_hash=symbol.content_hash,
-                        commit_sha=symbol.commit_sha,
+            ).one_or_none()
+            if row is None:
+                raise self._activation_race()
+            job, repository = row
+            target = job.target_index_version
+            if target is None or repository.index_version + 1 != target:
+                raise self._activation_race()
+            build = await session.scalar(
+                select(RepositoryIndexBuild)
+                .where(
+                    RepositoryIndexBuild.repository_id == repository.id,
+                    RepositoryIndexBuild.index_version == target,
+                    RepositoryIndexBuild.job_id == claimed.id,
+                    RepositoryIndexBuild.state == IndexBuildState.READY,
+                    RepositoryIndexBuild.commit_sha == commit_sha,
+                    RepositoryIndexBuild.expected_chunk_count
+                    == RepositoryIndexBuild.embedded_chunk_count,
+                    RepositoryIndexBuild.expected_chunk_count == RepositoryIndexBuild.vector_count,
+                )
+                .with_for_update()
+            )
+            if build is None:
+                raise self._activation_race()
+            previous_version = repository.index_version
+            if previous_version > 0:
+                previous = await session.scalar(
+                    select(RepositoryIndexBuild)
+                    .where(
+                        RepositoryIndexBuild.repository_id == repository.id,
+                        RepositoryIndexBuild.index_version == previous_version,
+                        RepositoryIndexBuild.state == IndexBuildState.ACTIVE,
                     )
-                    for symbol in processing.symbols
+                    .with_for_update()
                 )
-                await session.execute(
-                    update(Repository)
-                    .where(Repository.id == repository_id)
-                    .values(
-                        indexing_status=RepositoryIndexingStatus.NOT_INDEXED,
-                        indexing_progress=100,
-                        indexing_stage="chunking_complete",
-                        indexing_error_code=None,
-                        indexing_error_message=None,
-                        current_remote_sha=commit_sha,
-                        size_bytes=discovery.total_bytes,
+                if previous is None and repository.active_vector_count != 0:
+                    raise self._activation_race()
+                if previous is not None:
+                    previous.state = IndexBuildState.SUPERSEDED
+                    previous.cleanup_status = IndexCleanupStatus.PENDING
+                    # Keep the partial one-active-build invariant valid throughout
+                    # the flush while preserving transaction-level atomicity.
+                    await session.flush()
+            build.state = IndexBuildState.ACTIVE
+            build.cleanup_status = IndexCleanupStatus.NOT_REQUIRED
+            build.activated_at = now
+            repository.index_version = target
+            repository.last_indexed_commit_sha = commit_sha
+            repository.last_indexed_at = now
+            repository.active_vector_count = build.vector_count
+            repository.indexing_status = RepositoryIndexingStatus.COMPLETE
+            repository.indexing_progress = 100
+            repository.indexing_stage = "complete"
+            repository.indexing_error_code = None
+            repository.indexing_error_message = None
+            job.status = IndexingJobStatus.COMPLETE
+            job.progress = 100
+            job.stage = "complete"
+            job.target_commit_sha = commit_sha
+            job.heartbeat_at = now
+            job.completed_at = now
+            job.locked_by = None
+            await session.commit()
+            return int(previous_version)
+
+    async def can_cleanup_inactive(self, repository_id: uuid.UUID, index_version: int) -> bool:
+        async with self._database.session() as session:
+            repository = await session.get(Repository, repository_id)
+            return repository is not None and repository.index_version != index_version
+
+    async def record_failed_build_cleanup(
+        self,
+        repository_id: uuid.UUID,
+        index_version: int,
+        *,
+        cleanup_complete: bool,
+    ) -> None:
+        now = datetime.now(UTC)
+        async with self._database.session() as session:
+            build = await session.scalar(
+                select(RepositoryIndexBuild)
+                .where(
+                    RepositoryIndexBuild.repository_id == repository_id,
+                    RepositoryIndexBuild.index_version == index_version,
+                    RepositoryIndexBuild.state != IndexBuildState.ACTIVE,
+                )
+                .with_for_update()
+            )
+            if build is not None:
+                build.state = IndexBuildState.FAILED
+                build.cleanup_status = (
+                    IndexCleanupStatus.COMPLETE if cleanup_complete else IndexCleanupStatus.PENDING
+                )
+                build.cleanup_completed_at = now if cleanup_complete else None
+                if cleanup_complete:
+                    await session.execute(
+                        delete(SymbolDefinition).where(
+                            SymbolDefinition.repository_id == repository_id,
+                            SymbolDefinition.index_version == index_version,
+                        )
                     )
+            await session.commit()
+
+    async def complete_superseded_cleanup(
+        self, repository_id: uuid.UUID, index_version: int
+    ) -> None:
+        now = datetime.now(UTC)
+        async with self._database.session() as session:
+            repository = await session.get(Repository, repository_id, with_for_update=True)
+            if repository is None or repository.index_version == index_version:
+                raise self._activation_race()
+            build = await session.scalar(
+                select(RepositoryIndexBuild)
+                .where(
+                    RepositoryIndexBuild.repository_id == repository_id,
+                    RepositoryIndexBuild.index_version == index_version,
+                    RepositoryIndexBuild.state.in_(
+                        (IndexBuildState.SUPERSEDED, IndexBuildState.FAILED)
+                    ),
                 )
+                .with_for_update()
+            )
+            if build is not None:
+                build.cleanup_status = IndexCleanupStatus.COMPLETE
+                build.cleanup_completed_at = now
+            await session.execute(
+                delete(SymbolDefinition).where(
+                    SymbolDefinition.repository_id == repository_id,
+                    SymbolDefinition.index_version == index_version,
+                )
+            )
             await session.commit()
 
     async def cancel_revoked(self, claimed: ClaimedJob, worker_id: str) -> None:
@@ -443,3 +715,11 @@ class IndexingJobStore:
         base = min(self._retry_max, self._retry_base * (2 ** max(0, attempt - 1)))
         jitter_milliseconds = secrets.randbelow(base * 500 + 1)
         return timedelta(seconds=base, milliseconds=jitter_milliseconds)
+
+    @staticmethod
+    def _activation_race() -> IndexingError:
+        return IndexingError(
+            code="index_activation_race",
+            message="The inactive index is no longer eligible for activation",
+            retryable=False,
+        )

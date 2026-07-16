@@ -1,0 +1,10 @@
+# Temporary, version-scoped VEX-style suppression for CPython's html.parser DoS.
+# RepoLume does not import or execute html.parser in the API, worker, or embedding
+# service, and repository text remains inert data. Remove this rule as soon as a
+# Python 3.13 maintenance release containing the upstream fix is available.
+ignore:
+  - vulnerability: CVE-2026-15308
+    package:
+      name: python
+      version: 3.13.14
+      type: binary
