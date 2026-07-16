@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend quality, PostgreSQL, and Redis verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: repolume_test
+          POSTGRES_USER: repolume
+          POSTGRES_PASSWORD: ci-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U repolume -d repolume_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:8.8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://repolume:ci-only-password@127.0.0.1:5432/repolume_test
+      TEST_DATABASE_URL: postgresql+asyncpg://repolume:ci-only-password@127.0.0.1:5432/repolume_test
+      REDIS_URL: redis://127.0.0.1:6379/15
+      TEST_REDIS_URL: redis://127.0.0.1:6379/15
+      GITHUB_APP_ID: 1
+      GITHUB_CLIENT_ID: ci-test-client
+      GITHUB_CLIENT_SECRET: ci-only-client-secret-000000000000000
+      GITHUB_APP_PRIVATE_KEY: "-----BEGIN PRIVATE KEY----- ci-only -----END PRIVATE KEY-----"
+      GITHUB_WEBHOOK_SECRET: ci-only-webhook-secret-00000000000000
+      GITHUB_OAUTH_CALLBACK_URL: http://127.0.0.1/api/v1/auth/github/callback
+      ACCESS_TOKEN_SECRET: ci-only-access-token-secret-000000000000
+      TOKEN_HASH_SECRET: ci-only-token-hash-secret-00000000000000
+      CORS_ORIGINS: '["http://testserver"]'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.lock
+
+      - name: Install hashed dependencies
+        run: python -m pip install --require-hashes --requirement backend/requirements-dev.lock
+
+      - name: Verify dependency consistency
+        run: python -m pip check
+
+      - name: Check formatting
+        run: ruff format --check backend
+
+      - name: Lint
+        run: ruff check backend
+
+      - name: Type check
+        run: mypy backend/app backend/tests
+
+      - name: Apply clean-database migration
+        run: alembic -c backend/alembic.ini upgrade head
+
+      - name: Verify migration matches metadata
+        run: alembic -c backend/alembic.ini check
+
+      - name: Run backend tests
+        working-directory: backend
+        run: pytest
+
+      - name: Audit production dependencies
+        run: pip-audit --requirement backend/requirements.lock --disable-pip
+
+  backend-container:
+    name: Backend container build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Build backend image
+        run: docker build --tag repolume-api:ci backend
+
+      - name: Verify non-root runtime user
+        run: docker inspect --format='{{.Config.User}}' repolume-api:ci | grep --fixed-strings --line-regexp '10001:10001'
+
+      - name: Verify API and worker entry points
+        run: |
+          docker inspect --format='{{json .Config.Cmd}}' repolume-api:ci | grep --fixed-strings 'uvicorn'
+          docker run --rm --entrypoint python repolume-api:ci --version | grep --fixed-strings 'Python 3.13'
+          docker run --rm --entrypoint python repolume-api:ci -c 'import app.worker'
+          docker run --rm --entrypoint /usr/bin/git repolume-api:ci --version | grep --fixed-strings 'git version'
