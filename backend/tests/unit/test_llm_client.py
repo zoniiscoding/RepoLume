@@ -2,10 +2,12 @@
 
 import asyncio
 import json
+from collections.abc import Iterator
 
 import httpx
 import pytest
 
+from app.agent.models import AgentGenerationRequest, AgentToolName
 from app.llm.client import (
     DeterministicLLMProvider,
     DraftAnswerability,
@@ -114,7 +116,7 @@ async def test_openai_responses_rejects_invalid_provider_json_and_oversized_answ
         llm_max_attempts=1,
         llm_max_answer_characters=256,
     )
-    responses = iter(
+    responses: Iterator[httpx.Response] = iter(
         (
             httpx.Response(200, content=b"not-json"),
             httpx.Response(
@@ -364,3 +366,130 @@ async def test_provider_factory_selects_only_the_configured_implementation() -> 
     assert isinstance(deterministic, DeterministicLLMProvider)
     assert isinstance(hosted, OpenAIResponsesClient)
     await hosted.close()
+
+
+@pytest.mark.asyncio
+async def test_openai_agent_decision_uses_strict_schema_and_rejects_malformed_tool_calls() -> None:
+    settings = make_settings(llm_provider="openai", llm_max_attempts=1)
+    captured: dict[str, object] = {}
+    response_items: list[dict[str, object]] = [
+        {
+            "action": "tool",
+            "tool_name": "search_code",
+            "arguments": {"query": "validate"},
+            "answer": None,
+            "answerability": None,
+            "uncertainty": None,
+            "evidence_ids": [],
+        },
+        {
+            "action": "tool",
+            "tool_name": "shell",
+            "arguments": {"command": "id"},
+            "answer": None,
+            "answerability": None,
+            "uncertainty": None,
+            "evidence_ids": [],
+        },
+    ]
+    responses: Iterator[dict[str, object]] = iter(response_items)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json=provider_response(settings.llm_model, next(responses)),
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=str(settings.llm_api_url)
+    ) as http:
+        client = OpenAIResponsesClient(settings, client=http)
+        decision = await client.decide(
+            AgentGenerationRequest(instructions="fixed", context_payload='{"evidence":[]}')
+        )
+        with pytest.raises(LLMProviderError, match="llm_malformed_response"):
+            await client.decide(
+                AgentGenerationRequest(instructions="fixed", context_payload='{"evidence":[]}')
+            )
+
+    assert decision.tool_name is AgentToolName.SEARCH_CODE
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["store"] is False
+    assert payload["text"]["format"]["name"] == "repolume_agent_decision"
+    assert set(payload["text"]["format"]["schema"]["required"]) == {
+        "action",
+        "tool_name",
+        "arguments",
+        "answer",
+        "answerability",
+        "uncertainty",
+        "evidence_ids",
+    }
+
+
+@pytest.mark.asyncio
+async def test_deterministic_agent_selects_history_and_mixed_tools_before_final() -> None:
+    provider = DeterministicLLMProvider()
+    base = {
+        "question": "Show validation implementation and commit history",
+        "available_tools": ["search_code", "get_history"],
+        "failed_tools": [],
+        "remaining_tool_calls": 4,
+        "evidence": [],
+    }
+    first = await provider.decide(
+        AgentGenerationRequest(
+            instructions="fixed",
+            context_payload=json.dumps({**base, "completed_tools": []}),
+        )
+    )
+    second = await provider.decide(
+        AgentGenerationRequest(
+            instructions="fixed",
+            context_payload=json.dumps(
+                {
+                    **base,
+                    "completed_tools": ["search_code"],
+                    "evidence": [{"id": "T1-C1", "type": "code"}],
+                }
+            ),
+        )
+    )
+    final = await provider.decide(
+        AgentGenerationRequest(
+            instructions="fixed",
+            context_payload=json.dumps(
+                {
+                    **base,
+                    "completed_tools": ["search_code", "get_history"],
+                    "evidence": [
+                        {"id": "T1-C1", "type": "code"},
+                        {"id": "T2-H1", "type": "commit"},
+                    ],
+                }
+            ),
+        )
+    )
+
+    assert first.tool_name is AgentToolName.SEARCH_CODE
+    assert second.tool_name is AgentToolName.GET_HISTORY
+    assert final.action == "final"
+    assert final.evidence_ids == ["T1-C1", "T2-H1"]
+
+    partial = await provider.decide(
+        AgentGenerationRequest(
+            instructions="fixed",
+            context_payload=json.dumps(
+                {
+                    **base,
+                    "completed_tools": ["search_code"],
+                    "failed_tools": ["get_history"],
+                    "evidence": [{"id": "T1-C1", "type": "code"}],
+                }
+            ),
+        )
+    )
+    assert partial.action == "final"
+    assert partial.answerability == "partially_answered"

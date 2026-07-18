@@ -1,10 +1,12 @@
 # RepoLume Evaluation
 
-**Status:** Milestone 6 has a versioned 20-case retrieval/grounding corpus, a content-free metric aggregator, automated regressions, and one controlled two-pass local baseline. The baseline used the real PostgreSQL/Redis/Qdrant/private embedding/API path and deterministic test synthesis. It is not hosted-LLM answer-quality evidence and must not be presented as such.
+**Status:** The Milestone 6 20-case/two-pass baseline remains unchanged. Milestone 7 adds a separate versioned 27-case agent/history/security corpus, tool-selection and citation-type metrics, and automated direct-loop/history regressions. The Milestone 7 run used real PostgreSQL/Redis/Qdrant/private embeddings for the complete backend suite, mocked GitHub history, and deterministic provider decisions. It is not live-GitHub or hosted-LLM accuracy evidence.
 
 ## Controlled corpus
 
-`backend/evaluation/milestone6_cases.json` contains 20 cases over the committed Milestone 4 synthetic fixture and a separately scoped confusing repository. Each case records category, question, expected answerability, relevant paths/symbols/ranges where stable, forbidden evidence, and an unsupported category where applicable.
+`backend/evaluation/milestone6_cases.json` contains the original 20 cases over the committed Milestone 4 synthetic fixture and a separately scoped confusing repository. Its history case remains labelled unsupported because it records the Milestone 6 baseline and is not retroactively changed.
+
+`backend/evaluation/milestone7_cases.json` contains 27 contracts across code-only, history-only, mixed code/commit, pull request, merge commit, file changes, missing evidence, misleading commit messages, code/commit/patch/PR prompt injection, cross-repository commit/PR distractors, inactive-index code, fabricated commit/PR citations, history timeout, partial failure, repeated-call cap, unknown-tool prevention, revocation during tool work, Milestone 8 caller refusal, runtime refusal, cross-user denial, and suspended-installation denial. Cases add expected tool sequences and citation types without containing private repository data.
 
 Coverage includes exact/similar/nested symbols, semantic implementation, signatures/decorators, behavior answerable from code, Markdown/plain documentation, Unicode, malformed-file recovery, prompt-injection-shaped documentation, missing symbols, runtime/external state, Git history reserved for Milestone 7, caller analysis reserved for Milestone 8, static-analysis limits, and a cross-repository distractor. The controlled search index contains four active fixture chunks; separate scopes contain a confusing other-repository chunk and an inactive-version distractor.
 
@@ -24,14 +26,16 @@ This corpus is synthetic, redistributable with this repository, and deliberately
 | Unsupported-claim rate | Independently labelled unsupported material claims divided by material claims |
 | Deterministic consistency | Repeated observations for each case with one identical content-free response fingerprint |
 | Latency | Mean and maximum end-to-end API time in the documented local run |
+| Tool-selection accuracy | Observations whose ordered tool sequence matches the case contract |
+| Citation-type accuracy | Observations containing every expected code/commit/pull-request citation type |
 
-The evaluator fails on duplicate case IDs, observations for unknown cases, or an empty run. Retrieval/citation/security tests separately cover score/range ordering, threshold/scope filters, malformed payloads, overlaps, unknown citations, altered inline citations, authorization, stale builds, and provider failures.
+The evaluator fails on duplicate case IDs, observations for unknown cases, or an empty run. Retrieval/citation/security tests separately cover score/range ordering, threshold/scope filters, malformed payloads, overlaps, fabricated citations, authorization, stale builds, provider failures, repeated calls, four-call/eight-second bounds, cancellation, GitHub response identity, and mixed citation ordering.
 
 Run the aggregator from the repository root:
 
 ```sh
 PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
-  --cases backend/evaluation/milestone6_cases.json \
+  --cases backend/evaluation/milestone7_cases.json \
   --observations /path/to/content-free-observations.json
 ```
 
@@ -55,13 +59,20 @@ Each of 20 cases ran twice (40 observations):
 
 The API also returned HTTP 200 for liveness/readiness, an authenticated answer with a server-resolved citation, and HTTP 404 for a cross-user request. Qdrant contained four authorized active points and isolated distractors outside the trusted filter. Operational-log sentinel inspection passed.
 
-The first baseline exposed weak deterministic refusal behavior: no-answer accuracy was 0.5714 because lexical distractors were treated as answerable. The general deterministic test provider now requires meaningful question/evidence token overlap, while the centralized unsupported policy rejects runtime/current-production/history/caller/external-state classes before retrieval. Focused regressions passed and the unchanged 20-case/two-pass baseline reached 1.0000. This fixes local acceptance behavior; it says nothing about real hosted-model refusal quality.
+The first baseline exposed weak deterministic refusal behavior: no-answer accuracy was 0.5714 because lexical distractors were treated as answerable. The general deterministic test provider now requires meaningful question/evidence token overlap, while the Milestone 6 policy rejects runtime/current-production/history/caller/external-state classes before retrieval. Focused regressions passed and the unchanged 20-case/two-pass baseline reached 1.0000. This fixes local acceptance behavior; it says nothing about real hosted-model refusal quality.
+
+## Milestone 7 controlled verification
+
+Date: 2026-07-18. Runtime: Python 3.13.14 on local Apple Silicon. The complete backend run used PostgreSQL 18, Redis 8.8, standalone Qdrant 1.18.2, and the real private immutable embedding model. All 282 tests passed with 93.35% branch-aware coverage. Fourteen PostgreSQL-backed question tests included code retrieval, mocked on-demand GitHub commit/PR history, exact repository-token scoping, mixed response schemas, cross-user denial, suspension/deletion/stale-index behavior, malformed citations, and safe failures.
+
+The 27-case Milestone 7 file and its explicitly labelled `fixture_contract` observations are schema-tested in CI and exercise every metric without inventing latency. These fixtures are structural expected outcomes, not observations from a live GitHub App or hosted model. Unit/integration fixtures establish tool selection and citation validity; they do not establish universal answer accuracy, historical exhaustiveness, semantic causation, latency under GitHub load, or provider quality.
 
 ## Limits and next evaluation work
 
 - No real OpenAI request ran, so hosted answer faithfulness, refusal quality, token/cost behavior, provider latency, and rate-limit behavior remain pending.
-- Repeatable local container verification is blocked by contradictory Podman VM/socket state; hosted CI remains pending. This does not affect the host-run service baseline above.
+- Repeatable local container verification is blocked by contradictory Podman VM/socket state; a hosted CI run of the unpushed Milestone 7 commit remains pending. The successful baseline hosted run and host-run service evidence do not replace that pending gate.
 - The fixture is four active whole-file vectors plus isolated distractors, not a representative repository population or load test.
 - Citation precision and unsupported-claim labels are deterministic structural labels in this baseline; independent human/provider evaluation remains necessary before launch.
-- No MRR, p95/p99 latency, multilingual breadth, long-context capacity, freshness, history, caller/tool selection, or end-user usefulness score is claimed.
-- Milestone 7 must add history/tool cases without changing or retroactively relabelling this Milestone 6 baseline.
+- No MRR, p95/p99 latency, multilingual breadth, long-context capacity, freshness, caller quality, or end-user usefulness score is claimed.
+- A controlled live GitHub App plus hosted-model run must produce content-free Milestone 7 observations before launch; do not synthesize or hand-author performance observations.
+- Milestone 8 must add caller questions as a new corpus/version without relabelling the Milestone 6 or 7 records.

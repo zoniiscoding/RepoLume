@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -28,6 +29,7 @@ from app.db.models.repository_index_build import RepositoryIndexBuild
 from app.db.models.user import User
 from app.db.session import Database
 from app.embeddings.preprocessing import EmbeddingPreprocessor, PreparedEmbedding
+from app.github.schemas import GitHubHistoryBundle
 from app.llm.client import (
     DraftAnswerability,
     DraftUncertainty,
@@ -61,6 +63,62 @@ async def reset_database() -> None:
 
 
 class FakeGitHub:
+    def __init__(self) -> None:
+        self.repository_token_requests: list[tuple[int, int]] = []
+        self.history_requests: list[dict[str, object]] = []
+
+    async def create_repository_installation_token(
+        self, installation_id: int, *, repository_id: int
+    ) -> SecretStr:
+        self.repository_token_requests.append((installation_id, repository_id))
+        return SecretStr("ephemeral-history-token")
+
+    async def get_repository_history(
+        self, token: SecretStr, **kwargs: object
+    ) -> tuple[GitHubHistoryBundle, ...]:
+        assert token.get_secret_value() == "ephemeral-history-token"
+        self.history_requests.append(dict(kwargs))
+        return (
+            GitHubHistoryBundle.model_validate(
+                {
+                    "commit": {
+                        "sha": "d" * 40,
+                        "html_url": (f"https://github.com/owner/private-repo/commit/{'d' * 40}"),
+                        "commit": {
+                            "message": "Add validation",
+                            "author": {
+                                "name": "Developer",
+                                "date": "2026-01-01T00:00:00Z",
+                            },
+                            "committer": {
+                                "name": "Developer",
+                                "date": "2026-01-01T00:00:00Z",
+                            },
+                        },
+                        "parents": [{"sha": "c" * 40}],
+                        "files": [
+                            {
+                                "filename": "app/service.py",
+                                "status": "modified",
+                                "patch": "+def validate(response)",
+                            }
+                        ],
+                    },
+                    "pull_requests": [
+                        {
+                            "number": 42,
+                            "title": "Add validation",
+                            "state": "closed",
+                            "html_url": "https://github.com/owner/private-repo/pull/42",
+                            "user": {"login": "developer"},
+                            "merged_at": "2026-01-02T00:00:00Z",
+                            "merge_commit_sha": "e" * 40,
+                        }
+                    ],
+                }
+            ),
+        )
+
     async def close(self) -> None:
         return None
 
@@ -286,14 +344,31 @@ def test_repository_question_is_authorized_scoped_grounded_and_cited() -> None:
         )
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    assert body.pop("duration_ms") >= 0
+    trace = body.pop("trace")
+    assert len(trace) == 1
+    assert trace[0].pop("duration_ms") >= 0
+    assert trace == [
+        {
+            "step": 1,
+            "tool": "search_code",
+            "argument_fingerprint": trace[0]["argument_fingerprint"],
+            "status": "completed",
+            "result_count": 1,
+            "failure_code": None,
+            "contributed_evidence": True,
+        }
+    ]
+    assert body == {
         "repository_id": str(repository_id),
         "answer": "The validate function returns the response validity flag.",
         "answerability": "answered",
         "uncertainty": "low",
         "citations": [
             {
-                "evidence_id": "E1",
+                "source_type": "code",
+                "evidence_id": "T1-C1",
                 "file_path": "app/service.py",
                 "start_line": 10,
                 "end_line": 20,
@@ -307,6 +382,7 @@ def test_repository_question_is_authorized_scoped_grounded_and_cited() -> None:
         "indexed_commit_sha": "a" * 40,
         "active_index_version": 1,
         "retrieved_evidence_count": 1,
+        "tool_call_count": 1,
     }
     assert vectors.scopes == [VectorScope(vectors.scopes[0].installation_id, repository_id, 1)]
     assert len(embeddings.queries) == 1
@@ -350,6 +426,52 @@ def test_unsupported_question_skips_embedding_retrieval_and_llm() -> None:
     assert embeddings.queries == []
     assert vectors.scopes == []
     assert llm.requests == []
+
+
+def test_history_question_uses_authorized_github_scope_and_mixed_schema() -> None:
+    settings = make_settings()
+    owner_id, _, repository_id = asyncio.run(seed_active_repository())
+    github = FakeGitHub()
+    database = Database(
+        engine=create_async_engine(database_url(), pool_pre_ping=True),
+        ready_timeout_seconds=2,
+    )
+    app = create_app(
+        settings=settings,
+        database=database,
+        github_client=github,  # type: ignore[arg-type]
+        vector_store=FakeVectors(),
+        embedding_provider=FakeEmbeddings(),  # type: ignore[arg-type]
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/repositories/{repository_id}/questions",
+            headers={
+                "Authorization": (
+                    f"Bearer {TokenService(settings).issue_access_token(owner_id).value}"
+                )
+            },
+            json={"question": "Which commit introduced validation?"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answerability"] == "answered"
+    assert body["tool_call_count"] == 1
+    assert body["trace"][0]["tool"] == "get_history"
+    assert body["citations"][0]["source_type"] == "commit"
+    assert body["citations"][0]["commit_sha"] == "d" * 40
+    assert body["citations"][1]["source_type"] == "pull_request"
+    assert body["citations"][1]["number"] == 42
+    assert github.repository_token_requests == [(501, 9001)]
+    assert github.history_requests == [
+        {
+            "owner": "owner",
+            "repository": "private-repo",
+            "revision": "a" * 40,
+            "limit": 3,
+        }
+    ]
 
 
 @pytest.mark.parametrize("return_evidence", [False, True])

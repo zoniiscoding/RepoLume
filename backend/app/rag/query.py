@@ -9,9 +9,6 @@ from app.rag.models import NormalizedQuestion
 
 _TOKEN_PATTERN = re.compile(r"[\w]+|[^\w\s]", flags=re.UNICODE)
 _UNSUPPORTED_PATTERNS = (
-    re.compile(
-        r"\b(?:git\s+history|commit\s+history|pull\s+request|who\s+changed|why\s+was)\b", re.I
-    ),
     re.compile(r"\b(?:find\s+(?:all\s+)?callers|what\s+calls|who\s+calls|call\s+graph)\b", re.I),
     re.compile(
         r"\b(?:runtime|current\s+production|production\s+(?:logs?|traffic|state)|current\s+(?:database|network|memory|cpu))\b",
@@ -21,7 +18,7 @@ _UNSUPPORTED_PATTERNS = (
         r"\b(?:latest|today|current\s+(?:weather|price)|external\s+(?:service|system)|internet)\b",
         re.I,
     ),
-    re.compile(r"\b(?:commit\s+[0-9a-f]{7,40}|unindexed\s+commit|different\s+commit)\b", re.I),
+    re.compile(r"\b(?:unindexed\s+tree|arbitrary\s+revision)\b", re.I),
 )
 
 

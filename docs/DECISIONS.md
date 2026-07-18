@@ -329,3 +329,31 @@ Decisions are append-only. If a decision changes, add a superseding entry instea
 - **Decision:** Keep fixed versioned system instructions free of repository bytes; serialize the normalized question and bounded evidence as canonical untrusted user JSON; never log or persist questions, query vectors, prompts, evidence context, answers, or raw provider responses.
 - **Rationale:** Source and documentation can contain prompt-injection instructions and private data. Their only legitimate role is evidence for a scoped answer.
 - **Consequence:** There is no chat history, response replay, RAG analytics corpus, or durable audit transcript yet. Operational evidence is limited to opaque IDs, safe states/counts/timing, and content-free evaluation observations.
+
+## D-042 — Implement Milestone 7 as a bounded direct loop with an immutable tool registry
+
+- **Status:** Accepted and implemented in Milestone 7
+- **Decision:** Extend the application-owned provider boundary with one strict decision schema and implement the loop directly. Register exactly `search_code` and `get_history`; cap a request at four calls, eight seconds per tool, a validated total deadline, and explicit result/evidence/output budgets. Reject unknown, malformed, repeated, oversized, recursive, timed-out, or over-cap requests without dynamic imports or a general agent framework.
+- **Rationale:** The product needs transparent, testable orchestration, not framework-provided hidden retries, state, tools, or telemetry. A small loop makes every authority and stop condition reviewable.
+- **Consequence:** Milestone 8 must add caller analysis as a new reviewed tool and cannot smuggle it through `search_code`, history, provider output, or arbitrary networking.
+
+## D-043 — Acquire GitHub history on demand with repository-restricted ephemeral tokens
+
+- **Status:** Accepted and implemented in Milestone 7
+- **Decision:** Do not persist commit, patch, or pull-request bodies. After normal membership/repository authorization, mint an installation token restricted to that one repository and call only fixed GitHub commit and associated-pull-request paths. Anchor browsing at the active indexed SHA unless a syntactically valid SHA occurs in the original server-held user question. Bound commit count, changed paths, messages, patches, PR bodies, timeouts, and retries.
+- **Rationale:** On-demand acquisition avoids a new sensitive history store and keeps access revocation effective immediately while still supporting commit and PR evidence.
+- **Consequence:** GitHub outages may yield a partial or unavailable answer. Historical quality is limited to the bounded provider window; there is no claim of exhaustive repository history.
+
+## D-044 — Resolve mixed citations only from the current authorized tool trace
+
+- **Status:** Accepted and implemented in Milestone 7
+- **Decision:** Give code, commit, and pull-request evidence deterministic server IDs. Permit the provider to return only those IDs; resolve every path, line, SHA, message, patch, PR number, URL, and excerpt from immutable evidence held in the current request. Deduplicate and order citations by server evidence order, then repeat repository authorization and active-index validation before returning.
+- **Rationale:** Model-supplied citation metadata is untrusted and could fabricate or cross repository boundaries.
+- **Consequence:** Unknown commit/PR IDs, altered identities, or evidence from another trace fail closed to `insufficient_evidence`. The safe trace contains fingerprints/counts/status only, never private query or evidence text.
+
+## D-045 — Keep Milestone 7 history ephemeral and require no relational migration
+
+- **Status:** Accepted and implemented in Milestone 7
+- **Decision:** Add no history, trace, question, answer, or agent-step tables. PostgreSQL continues to own users, installation membership, repository authorization, and the active index; tool evidence exists only for the duration of one request.
+- **Rationale:** The product specification does not require history persistence at this milestone, and retaining private history would expand deletion, encryption, incident, and tenant-isolation obligations without product need.
+- **Consequence:** The existing Alembic head remains `d06a6455fcd7`; the full chain must still be verified from a clean PostgreSQL database.

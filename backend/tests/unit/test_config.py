@@ -65,6 +65,22 @@ def test_parser_limits_are_validated_as_a_consistent_set(
         make_settings(**overrides)
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"agent_max_tool_calls": 5},
+        {"agent_tool_timeout_seconds": 8.1},
+        {"agent_provider_timeout_seconds": 45, "agent_total_timeout_seconds": 45},
+        {"agent_max_tool_result_bytes": 2048, "agent_max_total_evidence_bytes": 1024},
+    ],
+)
+def test_agent_limits_are_validated_as_a_consistent_set(
+    overrides: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        make_settings(**overrides)
+
+
 @pytest.mark.parametrize("redis_url", ["http://redis.example", "redis://", "not-a-url"])
 def test_redis_url_rejects_unsupported_or_incomplete_values(redis_url: str) -> None:
     with pytest.raises(ValidationError):

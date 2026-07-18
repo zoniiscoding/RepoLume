@@ -154,6 +154,18 @@ class Settings(BaseSettings):
     llm_retry_base_seconds: float = Field(default=0.25, gt=0, le=5)
     llm_max_concurrent_requests: int = Field(default=8, ge=1, le=100)
 
+    agent_max_tool_calls: int = Field(default=4, ge=1, le=4)
+    agent_tool_timeout_seconds: float = Field(default=8.0, gt=0, le=8)
+    agent_provider_timeout_seconds: float = Field(default=20.0, gt=0, le=60)
+    agent_total_timeout_seconds: float = Field(default=45.0, gt=0, le=120)
+    agent_max_tool_result_bytes: int = Field(default=32 * 1024, ge=1024, le=128 * 1024)
+    agent_max_total_evidence_bytes: int = Field(default=64 * 1024, ge=1024, le=256 * 1024)
+    agent_history_commit_limit: int = Field(default=3, ge=1, le=10)
+    agent_history_max_message_bytes: int = Field(default=2048, ge=128, le=8192)
+    agent_history_max_patch_bytes: int = Field(default=8192, ge=256, le=32 * 1024)
+    agent_history_max_paths: int = Field(default=20, ge=1, le=100)
+    agent_max_final_output_tokens: int = Field(default=1200, ge=128, le=8192)
+
     cors_origins: list[AnyHttpUrl] = Field(default_factory=list)
     trusted_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
 
@@ -302,6 +314,14 @@ class Settings(BaseSettings):
             raise ValueError("RAG_MAX_EVIDENCE_ITEM_BYTES cannot exceed RAG_MAX_EVIDENCE_BYTES")
         if self.llm_read_timeout_seconds >= self.rag_total_timeout_seconds:
             raise ValueError("LLM_READ_TIMEOUT_SECONDS must be below RAG_TOTAL_TIMEOUT_SECONDS")
+        if self.agent_provider_timeout_seconds >= self.agent_total_timeout_seconds:
+            raise ValueError(
+                "AGENT_PROVIDER_TIMEOUT_SECONDS must be below AGENT_TOTAL_TIMEOUT_SECONDS"
+            )
+        if self.agent_max_tool_result_bytes > self.agent_max_total_evidence_bytes:
+            raise ValueError(
+                "AGENT_MAX_TOOL_RESULT_BYTES cannot exceed AGENT_MAX_TOTAL_EVIDENCE_BYTES"
+            )
         if (
             self.llm_provider is LLMProvider.DETERMINISTIC
             and self.app_env is not AppEnvironment.TEST
@@ -341,6 +361,9 @@ class Settings(BaseSettings):
             "llm_provider": self.llm_provider.value,
             "llm_model": self.llm_model,
             "llm_prompt_version": self.llm_prompt_version,
+            "agent_max_tool_calls": self.agent_max_tool_calls,
+            "agent_tool_timeout_seconds": self.agent_tool_timeout_seconds,
+            "agent_total_timeout_seconds": self.agent_total_timeout_seconds,
         }
 
 

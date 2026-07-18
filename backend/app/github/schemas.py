@@ -3,7 +3,9 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+
+_ASCII_CONTROL_LIMIT = 32
 
 
 class GitHubUser(BaseModel):
@@ -81,3 +83,84 @@ class GitHubInstallationToken(BaseModel):
 
     token: SecretStr
     expires_at: datetime
+
+
+class GitHubCommitIdentity(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(min_length=1, max_length=255)
+    email: str | None = Field(default=None, max_length=320)
+    date: datetime
+
+
+class GitHubCommitPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    message: str = Field(min_length=1, max_length=64_000)
+    author: GitHubCommitIdentity | None = None
+    committer: GitHubCommitIdentity | None = None
+
+
+class GitHubCommitParent(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
+class GitHubCommitFile(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    filename: str = Field(min_length=1, max_length=4096)
+    status: str = Field(min_length=1, max_length=32)
+    patch: str | None = Field(default=None, max_length=256_000)
+
+    @field_validator("filename")
+    @classmethod
+    def validate_repository_path(cls, value: str) -> str:
+        if (
+            value.startswith(("/", "\\"))
+            or "\\" in value
+            or any(part in {"", ".", ".."} for part in value.split("/"))
+            or any(ord(character) < _ASCII_CONTROL_LIMIT for character in value)
+        ):
+            raise ValueError("invalid_repository_path")
+        return value
+
+
+class GitHubCommit(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    html_url: str = Field(pattern=r"^https://github\.com/")
+    commit: GitHubCommitPayload
+    parents: list[GitHubCommitParent] = Field(default_factory=list, max_length=20)
+    files: list[GitHubCommitFile] = Field(default_factory=list, max_length=300)
+    author: GitHubUser | None = None
+
+
+class GitHubPullRequestUser(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    login: str = Field(min_length=1, max_length=255)
+
+
+class GitHubPullRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    number: int = Field(gt=0)
+    title: str = Field(min_length=1, max_length=4096)
+    body: str | None = Field(default=None, max_length=256_000)
+    state: Literal["open", "closed"]
+    html_url: str = Field(pattern=r"^https://github\.com/")
+    user: GitHubPullRequestUser | None = None
+    merged_at: datetime | None = None
+    merge_commit_sha: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+
+
+class GitHubHistoryBundle(BaseModel):
+    """One bounded commit and its directly associated pull requests."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    commit: GitHubCommit
+    pull_requests: list[GitHubPullRequest] = Field(default_factory=list, max_length=10)

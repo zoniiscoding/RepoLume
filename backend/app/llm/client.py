@@ -10,8 +10,10 @@ from typing import Protocol
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.agent.models import AgentDecision, AgentGenerationRequest, AgentToolName
 from app.core.config import MINIMUM_SECRET_LENGTH, LLMProvider, Settings
 from app.core.request_context import get_request_id
+from app.rag.models import Answerability, AnswerUncertainty
 
 _HTTP_OK = 200
 _DETERMINISTIC_STOPWORDS = {
@@ -122,6 +124,7 @@ class OpenAIResponsesClient:
         if len(self._api_key) < MINIMUM_SECRET_LENGTH:
             raise LLMProviderError("llm_configuration_invalid", retryable=False)
         self._max_output_tokens = settings.llm_max_output_tokens
+        self._agent_max_output_tokens = settings.agent_max_final_output_tokens
         self._max_answer_characters = settings.llm_max_answer_characters
         self._max_attempts = settings.llm_max_attempts
         self._retry_base = settings.llm_retry_base_seconds
@@ -185,6 +188,43 @@ class OpenAIResponsesClient:
             raise LLMProviderError("llm_answer_too_large", retryable=False)
         return draft
 
+    async def decide(self, request: AgentGenerationRequest) -> AgentDecision:
+        """Select one typed tool call or final response through the same hosted boundary."""
+        payload = {
+            "model": self._model,
+            "instructions": request.instructions,
+            "input": [{"role": "user", "content": request.context_payload}],
+            "max_output_tokens": self._agent_max_output_tokens,
+            "store": False,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "repolume_agent_decision",
+                    "strict": True,
+                    "schema": self._agent_decision_schema(),
+                }
+            },
+        }
+        async with self._semaphore:
+            response = await self._request_with_retry(payload)
+        output_text = self._validated_output_text(response)
+        try:
+            decision = AgentDecision.model_validate_json(output_text)
+        except (ValueError, ValidationError) as error:
+            raise LLMProviderError("llm_malformed_response", retryable=False) from error
+        if decision.answer is not None and len(decision.answer) > self._max_answer_characters:
+            raise LLMProviderError("llm_answer_too_large", retryable=False)
+        return decision
+
+    @staticmethod
+    def _agent_decision_schema() -> dict[str, object]:
+        schema = AgentDecision.model_json_schema()
+        properties = schema.get("properties")
+        if not isinstance(properties, dict):
+            raise LLMProviderError("llm_schema_invalid", retryable=False)
+        schema["required"] = list(properties)
+        return schema
+
     async def close(self) -> None:
         if self._owns_client:
             await self._client.aclose()
@@ -216,6 +256,30 @@ class OpenAIResponsesClient:
                 raise LLMProviderError("llm_authentication_failed", retryable=False)
             raise LLMProviderError("llm_request_failed", retryable=retryable)
         raise AssertionError("retry_exhausted")
+
+    def _validated_output_text(self, response: httpx.Response) -> str:
+        try:
+            parsed = _ResponsesPayload.model_validate(response.json())
+        except (ValueError, ValidationError) as error:
+            raise LLMProviderError("llm_malformed_response", retryable=False) from error
+        if parsed.status != "completed" or parsed.model != self._model:
+            raise LLMProviderError("llm_response_mismatch", retryable=False)
+        output_texts = [
+            item.text
+            for output in parsed.output
+            if output.type == "message" and output.status in {None, "completed"}
+            for item in output.content
+            if item.type == "output_text" and item.text is not None
+        ]
+        refusals = [
+            item.refusal
+            for output in parsed.output
+            for item in output.content
+            if item.type == "refusal" and item.refusal is not None
+        ]
+        if refusals or len(output_texts) != 1:
+            raise LLMProviderError("llm_unusable_response", retryable=False)
+        return output_texts[0]
 
     async def _backoff(self, attempt: int) -> None:
         ceiling = self._retry_base * (2 ** (attempt - 1))
@@ -252,6 +316,68 @@ class DeterministicLLMProvider:
             answerability=DraftAnswerability.ANSWERED,
             uncertainty=DraftUncertainty.MEDIUM,
             evidence_ids=[first["id"]],
+        )
+
+    async def decide(self, request: AgentGenerationRequest) -> AgentDecision:
+        payload = json.loads(request.context_payload)
+        question = payload.get("question")
+        evidence = payload.get("evidence")
+        completed = payload.get("completed_tools")
+        failed = payload.get("failed_tools")
+        if not isinstance(question, str) or not isinstance(evidence, list):
+            raise LLMProviderError("llm_malformed_input", retryable=False)
+        completed_names = set(completed) if isinstance(completed, list) else set()
+        failed_names = set(failed) if isinstance(failed, list) else set()
+        attempted_names = completed_names | failed_names
+        wants_history = bool(
+            re.search(r"\b(?:history|commit|pull request|changed|introduced)\b", question, re.I)
+        )
+        wants_code = not wants_history or bool(
+            re.search(r"\b(?:code|implementation|function|class|method)\b", question, re.I)
+        )
+        if wants_code and AgentToolName.SEARCH_CODE.value not in attempted_names:
+            return AgentDecision(
+                action="tool",
+                tool_name=AgentToolName.SEARCH_CODE,
+                arguments={"query": question},
+            )
+        if wants_history and AgentToolName.GET_HISTORY.value not in attempted_names:
+            return AgentDecision(
+                action="tool",
+                tool_name=AgentToolName.GET_HISTORY,
+                arguments={"query": question},
+            )
+        ids = [item.get("id") for item in evidence if isinstance(item, dict)]
+        valid_ids = [item for item in ids if isinstance(item, str)]
+        if not valid_ids:
+            return AgentDecision(
+                action="final",
+                answer=(
+                    "Repository analysis is temporarily unavailable."
+                    if failed_names
+                    else "The available evidence is insufficient to answer this question."
+                ),
+                answerability=(
+                    Answerability.TEMPORARILY_UNAVAILABLE
+                    if failed_names
+                    else Answerability.INSUFFICIENT_EVIDENCE
+                ),
+                uncertainty=(
+                    AnswerUncertainty.NOT_APPLICABLE if failed_names else AnswerUncertainty.HIGH
+                ),
+                evidence_ids=[],
+            )
+        return AgentDecision(
+            action="final",
+            answer=(
+                "The authorized repository evidence contains relevant implementation "
+                "or history records."
+            ),
+            answerability=(
+                Answerability.PARTIALLY_ANSWERED if failed_names else Answerability.ANSWERED
+            ),
+            uncertainty=AnswerUncertainty.MEDIUM,
+            evidence_ids=valid_ids[:2],
         )
 
     async def close(self) -> None:

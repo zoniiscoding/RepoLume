@@ -2,7 +2,7 @@
 
 RepoLume is a multi-tenant, read-only developer SaaS for understanding authorized GitHub repositories through evidence-backed answers.
 
-This repository is at **Milestone 6: plain grounded RAG**. It implements the FastAPI/PostgreSQL foundation, GitHub App authentication and access controls, durable indexing, private ONNX embeddings, atomically activated Qdrant indexes, and an authenticated single-pass question endpoint with repository/version-scoped retrieval, structured hosted-LLM synthesis, server-resolved citations, explicit non-answer states, and a deterministic evaluation harness. There is no tool-calling agent, history retrieval, call graph, chat persistence, or frontend functionality yet.
+This repository is at **Milestone 7: GitHub history and bounded agent orchestration**. It implements the FastAPI/PostgreSQL foundation, GitHub App authentication and access controls, durable indexing, private ONNX embeddings, atomically activated Qdrant indexes, and an authenticated direct agent loop with exactly two read-only tools: `search_code` and `get_history`. Code, commit, and pull-request citations are resolved only from evidence produced during the current authorized request. There is no caller tool, call graph, chat persistence, or frontend functionality yet.
 
 Read [the product specification](docs/PRODUCT_SPEC.md), [current build status](docs/BUILD_STATUS.md), [security posture](docs/SECURITY.md), and [engineering rules](AGENTS.md) before changing code.
 
@@ -16,7 +16,7 @@ Read [the product specification](docs/PRODUCT_SPEC.md), [current build status](d
 - The reviewed `jinaai/jina-embeddings-v2-base-code` model at immutable revision `516f4baf13dec4ddddda8631e019b5737c8bc250` (Apache-2.0, 768 dimensions, 8,192-token model limit).
 - Git available at the absolute path configured by `CLONE_GIT_EXECUTABLE` (the container uses `/usr/bin/git`).
 - A GitHub App is required only for live OAuth, installation, and webhook verification; automated tests use mocked GitHub responses.
-- An OpenAI API credential is required for production answer synthesis. Automated and local acceptance tests use a deterministic provider and never require or fabricate a hosted-model result.
+- An OpenAI API credential is required for production agent decisions and answer synthesis. Automated and local acceptance tests use a deterministic provider and never require or fabricate a hosted-model result.
 - Docker Compose or Podman/Docker is optional for containerized local startup.
 
 ## Local setup
@@ -32,7 +32,7 @@ cp .env.example .env
 
 Fill the untracked `.env` with disposable/local PostgreSQL, Redis, Qdrant, and private embedding-service settings plus local-only authentication values. Secret fields must be independent values of at least 32 characters. Never commit `.env`.
 
-For the question API, set `LLM_PROVIDER=openai`, place `LLM_API_KEY` only in the API secret store, and keep the pinned `LLM_MODEL=gpt-5.4-mini-2026-03-17` plus `LLM_PROMPT_VERSION=repolume-grounded-v1` unless an intentional compatibility review changes them. `LLM_PROVIDER=deterministic` is accepted only in development/test and is not a production model substitute.
+For the question API, set `LLM_PROVIDER=openai`, place `LLM_API_KEY` only in the API secret store, and keep the pinned `LLM_MODEL=gpt-5.4-mini-2026-03-17` unless an intentional compatibility review changes it. `LLM_PROVIDER=deterministic` is accepted only in tests and is not a production model substitute. Agent defaults cap each question at four tool calls, eight seconds per tool, 45 seconds total, 32 KiB per tool result, 64 KiB total evidence, and 1,200 output tokens.
 
 ## GitHub App configuration
 
@@ -99,7 +99,7 @@ curl --fail-with-body --request POST \
   http://127.0.0.1:8000/api/v1/repositories/<repository-id>/questions
 ```
 
-The API controls every retrieval limit and filter. It returns `answered`, `insufficient_evidence`, `unsupported_question`, or `temporarily_unavailable`, and citations use server-owned path, line, symbol, commit, and bounded excerpt data. Questions, prompts, answers, evidence, and query vectors are not persisted.
+The API controls every tool, retrieval limit, history bound, and filter. It returns `answered`, `partially_answered`, `insufficient_evidence`, `unsupported_question`, or `temporarily_unavailable`. Citations are discriminated as `code`, `commit`, or `pull_request`; their metadata comes from current-request server evidence, never model output. The response also contains a content-free trace with tool name, argument fingerprint, status, duration, result count, and safe failure category. Questions, prompts, answers, evidence, patches, commit/PR bodies, and query vectors are not persisted.
 
 ## Quality checks
 
@@ -122,7 +122,7 @@ cd ..
 .venv/bin/pip-audit --requirement backend/requirements.lock --disable-pip
 .venv/bin/pip-audit --requirement embedding_service/requirements.lock --disable-pip
 PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
-  --cases backend/evaluation/milestone6_cases.json \
+  --cases backend/evaluation/milestone7_cases.json \
   --observations /path/to/content-free-observations.json
 ```
 
@@ -130,4 +130,4 @@ Integration tests truncate PostgreSQL, flush Redis, and delete the configured Qd
 
 ## Security boundary
 
-Connected repository code is untrusted data. RepoLume never executes, imports, installs, builds, tests, or invokes it. The worker clones only a validated `github.com/<owner>/<repository>.git` identity with fixed arguments, disabled hooks/submodules/config, an askpass credential outside argv, process/filesystem limits, and guaranteed temporary cleanup. Tree-sitter consumes bounded UTF-8 bytes as inert syntax in an isolated, killable process. The embedding service receives only bounded preprocessed text over authenticated private HTTP, has no GitHub/Redis/database credentials, loads a fixed ONNX model without remote code, and never logs source or vectors. Qdrant reads include server-derived installation, repository, active-version, commit, model, and preprocessing scope. Retrieved text remains untrusted user evidence, is never placed in system instructions, and cannot select filters, tools, network destinations, or citation metadata. Milestone 6 performs one bounded embedding request, search, and structured synthesis request; the model has no tools or agent loop.
+Connected repositories, GitHub history, user questions, and model output are untrusted data. RepoLume never executes, imports, installs, builds, tests, or invokes connected code. The agent registry is immutable and contains only `search_code` and `get_history`; neither exposes shell, arbitrary network, secrets, writes, raw filters, repository IDs, or URLs. GitHub history uses fixed API paths and an ephemeral token restricted to the already authorized repository. Qdrant reads retain server-derived installation/repository/active-version/commit/model scope. The model may select a typed tool and reference evidence IDs, but the server owns scope and citation metadata and reauthorizes before returning. Milestone 8 caller analysis remains explicitly unsupported.

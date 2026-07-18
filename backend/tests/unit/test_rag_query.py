@@ -34,16 +34,27 @@ def test_question_limits_fail_closed(question: str, overrides: dict[str, object]
 @pytest.mark.parametrize(
     "question",
     [
-        "Why was this changed in commit history?",
         "Find all callers of process_job",
         "What is the current production runtime state?",
         "What is the latest Python release on the internet?",
-        "What does commit abcdef123456 contain?",
     ],
 )
 def test_questions_requiring_later_milestones_are_classified_unsupported(question: str) -> None:
     processor = QuestionPreprocessor(make_settings())
     assert processor.is_unsupported(processor.prepare(question))
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Why was this changed in commit history?",
+        "What does commit abcdef123456 contain?",
+        "Which pull request introduced validate?",
+    ],
+)
+def test_history_questions_are_supported_in_milestone_7(question: str) -> None:
+    processor = QuestionPreprocessor(make_settings())
+    assert not processor.is_unsupported(processor.prepare(question))
 
 
 def test_static_implementation_question_is_supported() -> None:

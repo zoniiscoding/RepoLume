@@ -5,18 +5,26 @@ from typing import cast
 
 from fastapi import APIRouter, Request, status
 
+from app.agent.models import CommitEvidence, PullRequestEvidence
+from app.agent.provider import resolve_agent_provider
+from app.agent.service import AgentQuestionService
+from app.agent.tools import AgentToolRegistry, GetHistoryTool, SearchCodeTool
 from app.auth.dependencies import CurrentUser
 from app.core.config import Settings
 from app.core.errors import APIError
 from app.db.session import Database
 from app.embeddings.client import EmbeddingProviderProtocol
-from app.github.client import GitHubClientProtocol
+from app.github.client import GitHubClientProtocol, GitHubHistoryClientProtocol
 from app.llm.client import LLMProviderProtocol
+from app.rag.models import Evidence
 from app.rag.query import QuestionValidationError
-from app.rag.service import QuestionService
 from app.schemas.errors import ErrorCode
 from app.schemas.questions import (
+    AgentTraceStepResponse,
     RepositoryCitationResponse,
+    RepositoryCodeCitationResponse,
+    RepositoryCommitCitationResponse,
+    RepositoryPullRequestCitationResponse,
     RepositoryQuestionRequest,
     RepositoryQuestionResponse,
 )
@@ -26,7 +34,7 @@ from app.vector.qdrant import VectorStoreProtocol
 router = APIRouter()
 
 
-def _service(request: Request) -> QuestionService:
+def _service(request: Request) -> AgentQuestionService:
     database = cast(Database, request.app.state.database)
     settings = cast(Settings, request.app.state.settings)
     installations = InstallationService(
@@ -34,12 +42,23 @@ def _service(request: Request) -> QuestionService:
         github=cast(GitHubClientProtocol, request.app.state.github_client),
         settings=settings,
     )
-    return QuestionService(
+    embeddings = cast(EmbeddingProviderProtocol, request.app.state.embedding_provider)
+    vectors = cast(VectorStoreProtocol, request.app.state.vector_store)
+    history_github = cast(GitHubHistoryClientProtocol, request.app.state.github_client)
+    return AgentQuestionService(
         database=database,
         installations=installations,
-        embeddings=cast(EmbeddingProviderProtocol, request.app.state.embedding_provider),
-        vectors=cast(VectorStoreProtocol, request.app.state.vector_store),
-        llm=cast(LLMProviderProtocol, request.app.state.llm_provider),
+        provider=resolve_agent_provider(cast(LLMProviderProtocol, request.app.state.llm_provider)),
+        registry=AgentToolRegistry(
+            (
+                SearchCodeTool(embeddings=embeddings, vectors=vectors, settings=settings),
+                GetHistoryTool(
+                    installations=installations,
+                    github=history_github,
+                    settings=settings,
+                ),
+            )
+        ),
         settings=settings,
     )
 
@@ -71,26 +90,75 @@ async def ask_repository_question(
             code=ErrorCode.NOT_FOUND,
             message="Repository was not found",
         ) from error
+    by_id = {item.evidence_id: item for item in result.evidence}
+    citations: list[RepositoryCitationResponse] = []
+    for evidence_id in result.cited_evidence_ids:
+        item = by_id[evidence_id]
+        if isinstance(item, Evidence):
+            citations.append(
+                RepositoryCodeCitationResponse(
+                    evidence_id=item.evidence_id,
+                    file_path=item.file_path,
+                    start_line=item.start_line,
+                    end_line=item.end_line,
+                    symbol_name=item.symbol_name,
+                    qualified_symbol_name=item.qualified_symbol_name,
+                    chunk_type=item.chunk_type,
+                    commit_sha=result.commit_sha or "",
+                    supporting_excerpt=item.content,
+                )
+            )
+        elif isinstance(item, CommitEvidence):
+            citations.append(
+                RepositoryCommitCitationResponse(
+                    evidence_id=item.evidence_id,
+                    commit_sha=item.commit_sha,
+                    message=item.message,
+                    committed_at=item.committed_at.isoformat(),
+                    author_login=item.author_login,
+                    parent_shas=list(item.parent_shas),
+                    changed_paths=list(item.changed_paths),
+                    patch_excerpt=item.patch_excerpt,
+                    html_url=item.html_url,
+                )
+            )
+        elif isinstance(item, PullRequestEvidence):
+            citations.append(
+                RepositoryPullRequestCitationResponse(
+                    evidence_id=item.evidence_id,
+                    number=item.number,
+                    title=item.title,
+                    state=item.state,
+                    author_login=item.author_login,
+                    merged_at=item.merged_at.isoformat() if item.merged_at else None,
+                    merge_commit_sha=item.merge_commit_sha,
+                    changed_paths=list(item.changed_paths),
+                    body_excerpt=item.body_excerpt,
+                    html_url=item.html_url,
+                )
+            )
     return RepositoryQuestionResponse(
         repository_id=result.repository_id,
         answer=result.answer,
         answerability=result.answerability,
         uncertainty=result.uncertainty,
-        citations=[
-            RepositoryCitationResponse(
-                evidence_id=item.evidence_id,
-                file_path=item.file_path,
-                start_line=item.start_line,
-                end_line=item.end_line,
-                symbol_name=item.symbol_name,
-                qualified_symbol_name=item.qualified_symbol_name,
-                chunk_type=item.chunk_type,
-                commit_sha=item.commit_sha,
-                supporting_excerpt=item.supporting_excerpt,
-            )
-            for item in result.citations
-        ],
+        citations=citations,
         indexed_commit_sha=result.commit_sha,
         active_index_version=result.index_version,
         retrieved_evidence_count=result.retrieved_evidence_count,
+        tool_call_count=len(result.trace),
+        duration_ms=result.duration_ms,
+        trace=[
+            AgentTraceStepResponse(
+                step=item.step,
+                tool=item.tool.value,
+                argument_fingerprint=item.argument_fingerprint,
+                status=item.status.value,
+                duration_ms=item.duration_ms,
+                result_count=item.result_count,
+                failure_code=item.failure_code,
+                contributed_evidence=item.contributed_evidence,
+            )
+            for item in result.trace
+        ],
     )

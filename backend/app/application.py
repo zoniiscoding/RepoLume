@@ -74,7 +74,7 @@ def create_app(
     openapi_url = "/openapi.json" if resolved_settings.docs_enabled else None
     app = FastAPI(
         title=resolved_settings.app_name,
-        version="0.6.0",
+        version="0.7.0",
         docs_url=docs_url,
         redoc_url=None,
         openapi_url=openapi_url,

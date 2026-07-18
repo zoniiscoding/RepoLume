@@ -7,6 +7,7 @@ from enum import StrEnum
 
 class Answerability(StrEnum):
     ANSWERED = "answered"
+    PARTIALLY_ANSWERED = "partially_answered"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
     UNSUPPORTED_QUESTION = "unsupported_question"
     TEMPORARILY_UNAVAILABLE = "temporarily_unavailable"

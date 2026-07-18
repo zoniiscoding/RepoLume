@@ -1,19 +1,19 @@
 # RepoLume Operations
 
-**Status:** Milestone 6 local API/worker/PostgreSQL/Redis/Qdrant/private-embedding/grounded-question operations are implemented and verified with mocked GitHub responses, a controlled indexed fixture, and deterministic synthesis. No live GitHub App, real hosted-LLM acceptance, hosted environment, dashboard, alert, backup, or production runbook has been verified.
+**Status:** Milestone 7 local API/worker/PostgreSQL/Redis/Qdrant/private-embedding/bounded-agent operations are implemented and verified with mocked GitHub history and deterministic decisions. No live GitHub history, real hosted-LLM acceptance, Milestone 7 hosted CI run, hosted environment, dashboard, alert, backup, or production runbook has been verified.
 
 ## Service inventory
 
 | Service | Exposure | Planned owner responsibility | Current state |
 | --- | --- | --- | --- |
 | React frontend | Public via Vercel | User interface and safe rendering | Not created |
-| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status/questions, health | Milestone 6 grounded questions and three-dependency readiness verified locally; not deployed |
+| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status/questions, bounded two-tool agent, health | Milestone 7 code/history questions and three-dependency readiness verified locally; not deployed |
 | Indexing worker | Railway private service | Durable jobs, safe static ingestion, embedding/vector validation, atomic activation, cleanup | Implemented and locally verified; not deployed |
 | Embedding service | Railway private service | Authenticated bounded fixed-model embeddings | Implemented, real pinned model verified, UID 10002 image built; not deployed |
 | PostgreSQL | Neon private credentials | Durable identity, access, delivery, job/build/count/activation/cleanup truth, symbols | Five-revision schema verified on disposable PostgreSQL 18; managed production instance not provisioned |
 | Redis | Private managed service | Opaque job-ID Stream delivery; later cache/rate-limit support | Redis 8.8 locally verified; managed authenticated TLS service not provisioned |
 | Qdrant | Qdrant Cloud authenticated | Installation/repository/version-scoped vectors and private citation chunks | Qdrant 1.18.2 locally verified; managed authenticated service not provisioned |
-| Hosted LLM | Server-side provider API | One-shot structured grounded synthesis | OpenAI adapter/pinned model configured in code; no real credential or hosted acceptance run |
+| Hosted LLM | Server-side provider API | Strict structured tool/final decisions | OpenAI adapter/pinned model configured in code; no real credential or hosted acceptance run |
 | GitHub App | GitHub | Authentication, installation tokens, webhooks | Adapter and mocked tests complete; real App not configured or verified |
 
 ## Health contract
@@ -27,11 +27,11 @@ API responses include a generated or validated `X-Request-ID` and security heade
 
 ## Logging and metrics contract
 
-Structured logs include request IDs plus safe startup/HTTP metadata and worker job/repository IDs, attempt, stage, counts, model identity, and safe error code. The embedding service logs request ID, document/query kind, count, duration, and safe model state only. Question processing logs only repository ID and safe timeout/provider categories. Logs do not include questions, answers, prompts, repository owner/name/path/content, evidence, or vectors.
+Structured logs include request IDs plus safe startup/HTTP metadata and worker job/repository IDs, attempt, stage, counts, model identity, and safe error code. The embedding service logs request ID, document/query kind, count, duration, and safe model state only. Agent processing logs only repository ID, tool name, argument fingerprint, safe counts/timing/status, and timeout/provider category. Logs do not include questions, answers, prompts, repository owner/name/path/content, commit/PR bodies, patches, evidence, or vectors.
 
 Logs must exclude tokens, cookies, secrets, clone credential material, full repository chunks, full prompts/responses, private file contents, and complete chat messages.
 
-Uvicorn access logging is disabled because its raw target can include OAuth codes and unbounded query data. `httpx`, `httpx2`, and `httpcore` INFO logs are suppressed. Milestone 6 tests and final verification inspect logs for complete questions/answers/prompts, evidence/source/vectors, database/Redis/Qdrant URLs or keys, GitHub/browser/service/LLM credentials, parser/model internals, askpass values, and provider bodies. Only allowlisted operational metadata is permitted.
+Uvicorn access logging is disabled because its raw target can include OAuth codes and unbounded query data. `httpx`, `httpx2`, and `httpcore` INFO logs are suppressed. Milestone 7 tests and final verification inspect logs for complete questions/answers/prompts, history bodies/patches, evidence/source/vectors, database/Redis/Qdrant URLs or keys, GitHub/browser/service/LLM credentials, parser/model internals, askpass values, and provider bodies. Only allowlisted operational metadata is permitted.
 
 Metrics remain planned: request and tool latency/error rates, job queue age/duration, worker heartbeat/stuck jobs, embedding throughput, vector operations, model token/cost usage, indexing stages, webhook outcomes, and deletion backlog. Names, cardinality limits, alert thresholds, and retention require deployed telemetry.
 
@@ -131,6 +131,14 @@ Implemented local recovery procedure:
 4. Check provider status, API-only secret injection, pinned model availability, bounded concurrency, and retry/rate-limit telemetry. Do not switch to the deterministic test provider in production.
 5. Keep liveness/readiness semantics unchanged and prevent retry storms. Verify recovery with a controlled authorized repository before resuming full traffic.
 
+### GitHub history outage or rate limiting
+
+1. Confirm the question route remains authorized and that `search_code` still works for the active index. Do not copy installation tokens, question text, commit messages, PR bodies, or patches into incident notes.
+2. Inspect only the safe `github_history_unavailable` category, tool timing, result count, and request ID. History HTTP retries are limited to transient transport, 429, and selected 5xx failures.
+3. Expect history-only questions to return a safe non-answer, and mixed questions to return `partially_answered` only when code evidence independently supports the returned claims.
+4. Do not add a personal access token, widen repository permissions, bypass the repository-restricted token, or cache installation tokens/history bodies as a workaround.
+5. After recovery, run the mocked history client/tool/API tests and a controlled live GitHub App acceptance on a non-sensitive fixture before enabling private traffic.
+
 ### Embedding-service outage
 
 1. Do not activate the in-progress index version.
@@ -165,7 +173,7 @@ The API never runs Alembic during application startup. From the repository root,
 
 Review generated SQL and backup/restore compatibility before any future production migration. The initial migration downgrade was exercised by the integration suite against a disposable database; that does not make production downgrades universally safe.
 
-## Local Milestone 6 procedure
+## Local Milestone 7 procedure
 
 Use Python 3.13 for the reproducible baseline. Install the hashed development lock:
 
@@ -238,11 +246,11 @@ curl --fail-with-body http://127.0.0.1:8000/api/v1/health/live
 curl --fail-with-body http://127.0.0.1:8000/api/v1/health/ready
 ```
 
-Use `LLM_PROVIDER=deterministic` only for automated/development acceptance when no hosted credential is available. It verifies protocol, retrieval, citation, refusal, isolation, and operational behavior; it is not a quality or production substitute. Run the content-free evaluation aggregator with observations produced by the controlled harness:
+Use `LLM_PROVIDER=deterministic` only for automated acceptance under `APP_ENV=test` when no hosted credential is available. It verifies protocol, retrieval, citation, refusal, isolation, and operational behavior; it is not a quality or production substitute. Run the content-free evaluation aggregator with observations produced by the controlled harness:
 
 ```sh
 PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
-  --cases backend/evaluation/milestone6_cases.json \
+  --cases backend/evaluation/milestone7_cases.json \
   --observations /path/to/content-free-observations.json
 ```
 
@@ -250,7 +258,7 @@ Stop processes with `Ctrl-C`; shutdown closes database, GitHub, Redis, embedding
 
 For live GitHub verification, configure the App callback and webhook URLs to the public HTTPS API; grant read-only Metadata, Contents, and Pull requests permissions; subscribe to Installation, Installation repositories, Push, and Repository events; then install it on a controlled test account/organization. Automated tests require no real credentials and use injected mocked responses.
 
-## Milestone 6 verification commands
+## Milestone 7 verification commands
 
 ```sh
 .venv/bin/ruff format --check backend
@@ -269,14 +277,10 @@ cd ..
 HF_HUB_OFFLINE=1 REPOLUME_TEST_MODEL_CACHE=/tmp/repolume-models .venv/bin/pytest embedding_service
 .venv/bin/pip-audit --requirement backend/requirements.lock --disable-pip
 .venv/bin/pip-audit --requirement embedding_service/requirements.lock --disable-pip
-PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation --cases backend/evaluation/milestone6_cases.json --observations /path/to/content-free-observations.json
-podman build --tag repolume-api:milestone6 backend
-podman build --tag repolume-embedding-service:milestone6 embedding_service
-podman image inspect --format '{{.Config.User}}' repolume-api:milestone6
-podman image inspect --format '{{.Config.User}}' repolume-embedding-service:milestone6
+PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation --cases backend/evaluation/milestone7_cases.json --observations /path/to/content-free-observations.json
 ```
 
-The actual Milestone 6 results, including controlled retrieval/evaluation, Qdrant/private-model pipeline, coverage, local Podman blockage, and failures/fixes, are recorded in `docs/BUILD_STATUS.md`. GitHub Actions repeats strict quality, PostgreSQL 18, Redis, Qdrant 1.18.2, the exact real embedding model, deterministic synthesis, migrations, complete suites, audits, both builds/non-root checks, and immutable-action image scans on Python 3.13. Hosted CI has not run because no remote workflow run exists. Local Podman reports contradictory VM/socket state and must not be treated as a repeatable container gate.
+The actual Milestone 7 results, including the clean migration, complete dependency-backed suite, coverage, mocked history boundary, health requests, and external live-provider limits, are recorded in `docs/BUILD_STATUS.md`. GitHub Actions is configured to repeat strict quality, PostgreSQL 18, Redis, Qdrant 1.18.2, the exact real embedding model, deterministic agent behavior, migrations, complete suites, audits, builds/non-root checks, and immutable-action image scans on Python 3.13. The baseline commit `28c02a9` has a successful hosted run; the local Milestone 7 commit has not been pushed, so no Milestone 7 hosted run exists. Local container verification was not retried; the prior contradictory Podman VM/socket block remains documented.
 
 ## Incident evidence policy
 

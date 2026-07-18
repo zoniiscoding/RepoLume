@@ -166,3 +166,157 @@ async def test_github_client_maps_http_and_schema_failures_to_safe_error() -> No
 
     owned_client = GitHubClient(settings)
     await owned_client.close()
+
+
+@pytest.mark.asyncio
+async def test_repository_history_uses_fixed_paths_and_repository_scoped_token() -> None:
+    requests: list[httpx.Request] = []
+    sha = "a" * 40
+
+    def commit_payload(*, files: bool) -> dict[str, object]:
+        result: dict[str, object] = {
+            "sha": sha,
+            "html_url": f"https://github.com/owner/repo/commit/{sha}",
+            "commit": {
+                "message": "Add validation",
+                "author": {"name": "Dev", "date": "2026-01-01T00:00:00Z"},
+                "committer": {"name": "Dev", "date": "2026-01-01T00:00:00Z"},
+            },
+            "parents": [{"sha": "b" * 40}],
+        }
+        if files:
+            result["files"] = [
+                {
+                    "filename": "app/service.py",
+                    "status": "modified",
+                    "patch": "+def validate(value): return bool(value)",
+                }
+            ]
+        return result
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/app/installations/10/access_tokens":
+            return httpx.Response(
+                201,
+                json={
+                    "token": "ephemeral-repository-token",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                },
+            )
+        if request.url.path == "/repos/owner/repo/commits":
+            return httpx.Response(200, json=[commit_payload(files=False)])
+        if request.url.path == f"/repos/owner/repo/commits/{sha}":
+            return httpx.Response(200, json=commit_payload(files=True))
+        if request.url.path == f"/repos/owner/repo/commits/{sha}/pulls":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "number": 7,
+                        "title": "Add validation",
+                        "body": "Bounded untrusted description",
+                        "state": "closed",
+                        "html_url": "https://github.com/owner/repo/pull/7",
+                        "user": {"login": "developer"},
+                        "merged_at": "2026-01-02T00:00:00Z",
+                        "merge_commit_sha": "c" * 40,
+                    }
+                ],
+            )
+        return httpx.Response(404)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = GitHubClient(make_settings(github_app_private_key=_private_key()), http_client)
+
+    token = await client.create_repository_installation_token(10, repository_id=100)
+    history = await client.get_repository_history(
+        token,
+        owner="owner",
+        repository="repo",
+        revision=sha,
+        limit=3,
+    )
+
+    token_request = requests[0]
+    assert json.loads(token_request.content)["repository_ids"] == [100]
+    assert [request.url.path for request in requests[1:]] == [
+        "/repos/owner/repo/commits",
+        f"/repos/owner/repo/commits/{sha}",
+        f"/repos/owner/repo/commits/{sha}/pulls",
+    ]
+    assert dict(requests[1].url.params) == {"sha": sha, "per_page": "3", "page": "1"}
+    assert history[0].commit.files[0].filename == "app/service.py"
+    assert history[0].pull_requests[0].number == 7
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_repository_history_rejects_invalid_scope_malformed_data_and_timeout() -> None:
+    settings = make_settings(github_app_private_key=_private_key())
+    token = SecretStr("ephemeral")
+    malformed_http = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=[{"sha": "bad"}]))
+    )
+    malformed = GitHubClient(settings, malformed_http)
+    with pytest.raises(GitHubAPIError):
+        await malformed.get_repository_history(
+            token, owner="owner", repository="repo", revision="a" * 40, limit=1
+        )
+    with pytest.raises(GitHubAPIError):
+        await malformed.get_repository_history(
+            token,
+            owner="../attacker",
+            repository="repo",
+            revision="a" * 40,
+            limit=1,
+        )
+    await malformed_http.aclose()
+
+    def timeout_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("test timeout", request=request)
+
+    timeout_http = httpx.AsyncClient(transport=httpx.MockTransport(timeout_handler))
+    timed_out = GitHubClient(settings, timeout_http)
+    with pytest.raises(GitHubAPIError):
+        await timed_out.get_repository_history(
+            token, owner="owner", repository="repo", revision="a" * 40, limit=1
+        )
+    await timeout_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_repository_history_retries_rate_limit_but_not_authentication_failure() -> None:
+    settings = make_settings(github_app_private_key=_private_key())
+    token = SecretStr("ephemeral")
+    rate_attempts = 0
+
+    def rate_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal rate_attempts
+        rate_attempts += 1
+        return httpx.Response(429, request=request)
+
+    rate_http = httpx.AsyncClient(transport=httpx.MockTransport(rate_handler))
+    rate_client = GitHubClient(settings, rate_http)
+    with pytest.raises(GitHubAPIError):
+        await rate_client.get_repository_history(
+            token, owner="owner", repository="repo", revision="a" * 40, limit=1
+        )
+    assert rate_attempts == 2
+    await rate_http.aclose()
+
+    auth_attempts = 0
+
+    def auth_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal auth_attempts
+        auth_attempts += 1
+        return httpx.Response(401, request=request)
+
+    auth_http = httpx.AsyncClient(transport=httpx.MockTransport(auth_handler))
+    auth_client = GitHubClient(settings, auth_http)
+    with pytest.raises(GitHubAPIError):
+        await auth_client.get_repository_history(
+            token, owner="owner", repository="repo", revision="a" * 40, limit=1
+        )
+    assert auth_attempts == 1
+    await auth_http.aclose()
