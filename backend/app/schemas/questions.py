@@ -60,10 +60,34 @@ class RepositoryPullRequestCitationResponse(BaseModel):
     html_url: str
 
 
+class RepositoryCallerCitationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_type: Literal["caller"] = "caller"
+    evidence_id: str
+    target_symbol_name: str
+    target_qualified_name: str
+    target_file_path: str
+    caller_symbol_name: str
+    caller_qualified_name: str
+    caller_file_path: str
+    caller_start_line: int
+    caller_end_line: int
+    call_line: int
+    call_end_line: int
+    call_expression: str
+    resolution_type: str
+    confidence: str
+    commit_sha: str
+    index_version: int
+    limitation: str
+
+
 RepositoryCitationResponse = Annotated[
     RepositoryCodeCitationResponse
     | RepositoryCommitCitationResponse
-    | RepositoryPullRequestCitationResponse,
+    | RepositoryPullRequestCitationResponse
+    | RepositoryCallerCitationResponse,
     Field(discriminator="source_type"),
 ]
 

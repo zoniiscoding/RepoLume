@@ -1,6 +1,6 @@
 # RepoLume Security
 
-**Status:** Milestone 7 adds a bounded direct agent, two immutable read-only tools, repository-restricted on-demand GitHub history, mixed citation validation, safe traces, and explicit partial/failure behavior to the verified Milestone 6 data plane. Live GitHub history, real hosted-LLM behavior, and hosted production controls remain unverified.
+**Status:** Milestone 8 adds isolated static call extraction, validated version-scoped graph persistence, a third immutable read-only `find_callers` tool, and caller-citation integrity to the verified Milestone 7 boundary. Live GitHub history, real hosted-LLM behavior, runtime call completeness, and hosted production controls remain unverified.
 
 ## Security invariants
 
@@ -12,7 +12,7 @@
 6. Revocation blocks use immediately; deletion is a verified asynchronous purge.
 7. Production readiness cannot be claimed until controls have implementation and executed evidence.
 
-Milestone 7 keeps the authenticated repository question route and derives every scope from authorization and PostgreSQL active state. The model may select only `search_code` or `get_history`; server context supplies all tenant, repository, version, token, destination, limit, and filter authority. The system treats questions, source, commits, patches, PRs, and model output as untrusted and accepts only current-trace server-resolved citations. It does not execute/import connected code, expose raw filters, resolve callers, persist question/history artifacts, or provide a frontend.
+Milestone 8 keeps the authenticated repository question route and derives every scope from authorization and PostgreSQL active state. The model may select only `search_code`, `get_history`, or `find_callers`; server context supplies all tenant, repository, version, commit, token, destination, limit, filter, SQL, and citation authority. Questions, source, call expressions, commits, patches, PRs, and model output are untrusted. Connected code is never imported/executed and question/history/agent artifacts remain ephemeral.
 
 ## Primary assets
 
@@ -60,7 +60,7 @@ Legend: **Verified M7** means the implemented subset passed local automated/manu
 | Error safety | Stable envelope, sanitized validation issues, hidden internal messages, request correlation | Verified foundation | `test_http_foundation.py` |
 | Output safety | Sanitized Markdown and safe links/attributes | Planned | Milestone 10 |
 | Secrets | Secret-valued config, digest-only auth state, ephemeral GitHub tokens, askpass token outside argv/storage/logs | Verified M3 | Config/token/log/persistence/clone-argv tests; final log scan recorded in build report |
-| Agent/tool boundary | Immutable two-tool registry; strict arguments/decisions; four-call, eight-second/tool, total-time, byte, and output ceilings; no shell/arbitrary network/write/secret tools | Verified M7 | Agent schema, orchestration, timeout, cancellation, repetition, cap, and prompt-injection tests |
+| Agent/tool boundary | Immutable three-tool registry; strict arguments/decisions; four-call, eight-second/tool, total-time, byte, caller-result, and output ceilings; no shell/arbitrary network/write/secret/SQL tools | Verified M8 | Agent schema, graph authorization, timeout, cancellation, repetition, cap, and prompt-injection tests |
 | GitHub history | One-repository ephemeral token, fixed API paths, bounded retries/data, validated GitHub/repository identity, no persistence | Mock-verified M7 | GitHub client/tool/API integration tests; live GitHub App still pending |
 | Observability | Structured IDs/fingerprints/timing/status/counts without questions, commit/PR bodies, patches, prompts, answers, provider bodies, paths/content, vectors, or secrets | Verified M7 | Backend/service logging tests plus actual API/model log inspection |
 | Containers | Hashed install, supported Debian 13/Python 3.13.14, non-root API/worker/model runtime, fixed High/Critical scan | Verified M5 subset | Local Podman builds/inspection and socket-free Grype archive scans; hosted hardening later |
@@ -68,7 +68,7 @@ Legend: **Verified M7** means the implemented subset passed local automated/manu
 | Deletion | Durable retryable purge across all stores | Planned | Milestone 9 |
 | Supply chain | Locked dependencies, Dependabot, audit, minimal workflow permissions | Verified foundation | Hashed locks, `pip-audit`, CI inspection; hosted CI run pending |
 
-## Implemented controls through Milestone 7
+## Implemented controls through Milestone 8
 
 - `DATABASE_URL` is a Pydantic `SecretStr`; safe configuration summaries never contain it.
 - Configuration accepts only `postgresql+asyncpg` plus Redis/Redis-TLS URLs and applies stricter production validation: non-local credentialed database, authenticated `rediss://`, JSON logs, disabled interactive docs, explicit trusted hosts, HTTPS CORS/callback origins, minimum authentication-secret lengths, absolute Git path, and PEM-shaped GitHub App key material.
@@ -110,14 +110,14 @@ Legend: **Verified M7** means the implemented subset passed local automated/manu
 - Repository questions repeat the full server-side authorization and matching-active-build check after external I/O, so revocation or version replacement during synthesis fails closed.
 - Qdrant search can only be called through a typed scope and exact commit/model/preprocessing filters. Results must contain finite scores, safe relative paths, valid ranges/hashes, and nonempty citation content/metadata before use.
 - Code-evidence selection has deterministic tie-breaking, duplicate/overlap removal, per-file/item/total context bounds, and current-step evidence identifiers. The client and model cannot choose `k`, thresholds, context size, or filters.
-- Prompt `repolume-agent-v1` places no repository or history content in system instructions. Canonical JSON identifies the question and all tool evidence as untrusted; provider requests contain no GitHub, database, Redis, Qdrant, or embedding credentials.
+- Prompt `repolume-agent-v2` places no repository, call-expression, or history content in system instructions. Canonical JSON identifies the question and all tool evidence as untrusted; provider requests contain no GitHub, database, Redis, Qdrant, or embedding credentials.
 - The OpenAI Responses adapter pins `gpt-5.4-mini-2026-03-17`, disables provider storage and redirects, uses strict JSON Schema tool/final decisions, and enforces bounded timeouts, retries, concurrency, and output. It exposes no provider-native tools; its API key exists only in the API process.
-- Model output can select one allowlisted internal tool with a bounded query or name current evidence IDs in a final response. Unknown, missing, duplicated, or fabricated IDs fail closed; code, commit, and pull-request citation metadata always comes from trusted tool evidence.
-- Runtime/external/caller questions are explicitly unsupported. History questions use bounded GitHub evidence; absent/low-quality evidence returns `insufficient_evidence`; one-tool failure may return `partially_answered`; dependency failure returns `temporarily_unavailable`. No-answer responses contain no citations.
-- Agent decisions are strict and extra-forbidden. The only registry entries are `search_code` and `get_history`; unknown names, scope fields, endpoints, tokens, filters, revisions, repeated calls, and oversized results are rejected. The loop is capped at four calls, eight seconds per tool, and a validated total deadline. Cancellation is not converted into success.
+- Model output can select one allowlisted internal tool with bounded typed arguments or name current evidence IDs in a final response. Unknown, missing, duplicated, or fabricated IDs fail closed; code, commit, pull-request, and caller citation metadata always comes from trusted tool evidence.
+- Runtime/external questions are explicitly unsupported. Static caller and history questions use bounded authorized evidence; absent/ambiguous targets return `insufficient_evidence`; dependency/scope failure returns `temporarily_unavailable`. No-answer responses contain no citations.
+- Agent decisions are strict and extra-forbidden. The only registry entries are `search_code`, `get_history`, and `find_callers`; unknown names, scope fields, endpoints, tokens, filters, revisions, repeated calls, and oversized results are rejected. The loop is capped at four calls, eight seconds per tool, and a validated total deadline. Cancellation is not converted into success.
 - `search_code` preserves the Milestone 6 active-version/model/preprocessing Qdrant scope. `get_history` ignores model attempts to choose scope, reauthorizes through the server-held user/repository context, mints a token restricted to the GitHub repository ID, and calls only fixed GitHub commit and associated-PR paths.
 - GitHub commit and PR URLs are rebound to the authorized owner/repository; commit SHAs, repository paths, parent identities, and untrusted response shapes are validated. Rate-limit/transient retries are bounded, and provider bodies are not logged.
-- Code, commit, and PR evidence IDs are server-generated for the current request. The model cannot create metadata. Fabricated commit/PR citations, cross-trace IDs, duplicates, and changed active scope fail closed; final citations follow deterministic server evidence order.
+- Code, commit, PR, and caller evidence IDs are server-generated for the current request. The model cannot create metadata. Fabricated relationship/history citations, cross-trace IDs, duplicates, and changed active scope fail closed; final citations follow deterministic server evidence order.
 - Both production images use Python 3.13.14 on supported Debian 13 and non-root users. Fixed High/Critical archive scanning is in CI. The exact, version-scoped `CVE-2026-15308` rule documents that the affected standard-library HTML parser is outside RepoLume's execution path and must be removed on the first patched Python 3.13 release.
 
 ## Connected-repository sandbox rules
@@ -130,7 +130,7 @@ Git clone credentials use a short-lived askpass helper. Credentials do not appea
 
 ## Prompt-injection boundary
 
-Source, documentation, commit messages, patches, and pull-request fields remain inert through parsing, retrieval, and synthesis. Fixed `repolume-agent-v1` instructions contain none of those bytes. The question and bounded evidence are canonical JSON explicitly labelled as untrusted data even when they say “ignore previous instructions,” request secrets/external calls, or demand false citations. The model sees the names and typed query arguments of two tools, but has no executable tool object, shell, network selector, secret access, repository selector, raw filter, or citation-metadata authority. Caller tooling is not implemented.
+Source, documentation, call expressions, commit messages, patches, and pull-request fields remain inert through parsing, retrieval, and synthesis. Fixed `repolume-agent-v2` instructions contain none of those bytes. The question and bounded evidence are canonical JSON explicitly labelled as untrusted data even when they say “ignore previous instructions,” request secrets/external calls, or demand false citations. The model sees three typed tools but has no executable tool object, shell, network selector, secret access, repository/version selector, raw filter, SQL, or citation-metadata authority.
 
 ## Data classification and logging
 
@@ -144,4 +144,14 @@ Every milestone updates this file with implementation and executed evidence. Mil
 
 ## Current security posture
 
-The verified Milestone 7 subset provides authentication, authorization, durable ingestion, private embeddings, scoped active-version retrieval, bounded code/history orchestration, prompt separation, mixed citation integrity, refusal behavior, and content-minimizing traces/logs. It is not a complete public SaaS boundary: real hosted-LLM behavior, live GitHub App history/cloning, hosted browser/deployment/private networking, plan/rate/usage limits, backup/restore, alerting, deletion, and caller/data-plane controls remain absent or unverified. Production GitHub credentials and private repository traffic must wait for those launch gates.
+The verified Milestone 8 subset provides authentication, authorization, durable full ingestion, private embeddings, scoped active-version retrieval, validated static caller persistence, bounded code/history/caller orchestration, prompt separation, mixed citation integrity, refusal behavior, and content-minimizing traces/logs. It is not a complete public SaaS boundary: static calls are not runtime truth; hosted LLM/GitHub behavior, deployment/private networking, rate/usage controls, backup/restore, alerting, deletion, and incremental freshness remain absent or unverified.
+
+## Milestone 8 call-graph controls and limits
+
+- Call extraction runs inside the existing resource-limited child and uses Tree-sitter only. It never imports, evaluates, tests, builds, or invokes connected code.
+- Per-file call sites, repository call sites, call-expression bytes, process CPU/memory, and wall time are validated. Exceeding a repository bound fails safely; oversized/unsupported file-level data is classified without logging source.
+- Deterministic identities and composite foreign keys bind caller/callee symbols to the same repository and index version. Call edges also carry commit, call-site fingerprint, resolution, and confidence.
+- Inactive graph counts and fingerprint are re-read from PostgreSQL before activation. `find_callers` requires the active build's exact repository/version/commit and `graph_validated=true`; old pre-graph and inactive versions cannot leak.
+- Every caller lookup repeats repository/installation membership authorization. Cross-user, cross-installation, revoked, suspended, deleted, changed-version, unavailable-graph, and query-failure paths fail closed.
+- Tool arguments cannot carry repository IDs, installation IDs, index versions, commits, SQL, URLs, filters, tokens, or result limits. Results are deterministically ordered and server-capped.
+- Caller evidence states its static limitation. Dynamic dispatch, reflection, monkey patching, generated code, decorators, callbacks, and polymorphism may be missing or unresolved; ambiguous methods never receive high confidence.

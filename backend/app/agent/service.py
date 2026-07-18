@@ -96,7 +96,7 @@ class AgentQuestionService:
                 started=started,
             )
 
-    async def _run(
+    async def _run(  # noqa: PLR0915 -- bounded loop keeps trace state in one place
         self,
         *,
         user_id: uuid.UUID,
@@ -135,6 +135,7 @@ class AgentQuestionService:
         trace: list[AgentTraceStep] = []
         completed: list[AgentToolName] = []
         failed: list[AgentToolName] = []
+        failure_codes: list[str] = []
         fingerprints: set[str] = set()
         total_evidence_bytes = 0
 
@@ -147,6 +148,7 @@ class AgentQuestionService:
                             evidence=evidence,
                             completed_tools=completed,
                             failed_tools=failed,
+                            failed_tool_codes=failure_codes,
                             remaining_calls=self._settings.agent_max_tool_calls - len(trace),
                         )
                     )
@@ -191,7 +193,9 @@ class AgentQuestionService:
                 )
             step = len(trace) + 1
             arguments = (
-                {"query": decision.arguments.query} if decision.arguments is not None else {}
+                decision.arguments.model_dump(exclude_none=True)
+                if decision.arguments is not None
+                else {}
             )
             fingerprint = safe_argument_fingerprint(tool_name, arguments)
             if fingerprint in fingerprints:
@@ -227,6 +231,7 @@ class AgentQuestionService:
                 self._validate_evidence_size(encoded_size, total_evidence_bytes)
             except TimeoutError:
                 failed.append(tool_name)
+                failure_codes.append("tool_timeout")
                 trace.append(
                     self._trace_step(
                         step,
@@ -241,6 +246,7 @@ class AgentQuestionService:
             except (AgentToolError, IndexingError) as error:
                 failed.append(tool_name)
                 failure_code = error.code
+                failure_codes.append(failure_code)
                 trace.append(
                     self._trace_step(
                         step,
@@ -266,9 +272,20 @@ class AgentQuestionService:
                     contributed=bool(result),
                 )
             )
+        unavailable_codes = {
+            "tool_timeout",
+            "call_graph_unavailable",
+            "caller_query_unavailable",
+            "caller_scope_changed",
+            "caller_scope_revoked",
+        }
         return self._no_answer(
             repository_id=repository_id,
-            state=Answerability.INSUFFICIENT_EVIDENCE,
+            state=(
+                Answerability.TEMPORARILY_UNAVAILABLE
+                if unavailable_codes.intersection(failure_codes)
+                else Answerability.INSUFFICIENT_EVIDENCE
+            ),
             started=started,
             active=active,
             evidence_count=len(evidence),

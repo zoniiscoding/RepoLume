@@ -5,26 +5,36 @@ import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Protocol
+from typing import Protocol, cast
 
 from pydantic import ValidationError
+from sqlalchemy import or_, select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import aliased
 
 from app.agent.models import (
     AgentEvidence,
     AgentToolName,
+    CallerEvidence,
     CommitEvidence,
+    FindCallersArguments,
     GetHistoryArguments,
     PullRequestEvidence,
     SearchCodeArguments,
 )
 from app.core.config import Settings
+from app.db.models.call_edge import CallEdge
+from app.db.models.enums import IndexBuildState
 from app.db.models.repository import Repository
+from app.db.models.repository_index_build import RepositoryIndexBuild
+from app.db.models.symbol_definition import SymbolDefinition
+from app.db.session import Database
 from app.embeddings.client import EmbeddingProviderProtocol
 from app.embeddings.preprocessing import EmbeddingPreprocessor
 from app.github.client import GitHubAPIError, GitHubHistoryClientProtocol
 from app.github.schemas import GitHubHistoryBundle
 from app.rag.evidence import EvidenceSelector
-from app.services.installations import InstallationService
+from app.services.installations import InstallationAccessError, InstallationService
 from app.vector.qdrant import VectorScope, VectorStoreProtocol, embedding_model_fingerprint
 
 _WORD_PATTERN = re.compile(r"[A-Za-z0-9_./-]+")
@@ -85,7 +95,8 @@ class SearchCodeTool:
     ) -> tuple[AgentEvidence, ...]:
         try:
             parsed = SearchCodeArguments.model_validate(arguments)
-            prepared = self._preprocessor.prepare_query(parsed.query)
+            query = cast(str, parsed.query)
+            prepared = self._preprocessor.prepare_query(query)
             query_vector = await self._embeddings.embed_query(prepared)
             hits = await self._vectors.search(
                 VectorScope(
@@ -232,6 +243,145 @@ class GetHistoryTool:
         if len(encoded) <= maximum_bytes:
             return value
         return encoded[:maximum_bytes].decode("utf-8", errors="ignore")
+
+
+class FindCallersTool:
+    """Read validated caller evidence from the authorized active index only."""
+
+    name = AgentToolName.FIND_CALLERS
+
+    def __init__(
+        self,
+        *,
+        database: Database,
+        installations: InstallationService,
+        settings: Settings,
+    ) -> None:
+        self._database = database
+        self._installations = installations
+        self._limit = settings.agent_caller_result_limit
+
+    async def execute(
+        self,
+        context: ActiveRepositoryContext,
+        arguments: Mapping[str, str],
+        *,
+        step: int,
+    ) -> tuple[AgentEvidence, ...]:
+        try:
+            parsed = FindCallersArguments.model_validate(arguments)
+            symbol_name = cast(str, parsed.symbol_name)
+        except (ValidationError, ValueError) as error:
+            raise AgentToolError("invalid_find_callers_arguments") from error
+        try:
+            repository = await self._installations.get_authorized_repository(
+                user_id=context.user_id,
+                repository_id=context.repository.id,
+            )
+        except InstallationAccessError as error:
+            raise AgentToolError("caller_scope_revoked") from error
+        if (
+            repository.id != context.repository.id
+            or repository.installation_id != context.repository.installation_id
+            or repository.index_version != context.index_version
+            or repository.last_indexed_commit_sha != context.commit_sha
+        ):
+            raise AgentToolError("caller_scope_changed")
+        try:
+            async with self._database.session() as session:
+                build = await session.scalar(
+                    select(RepositoryIndexBuild).where(
+                        RepositoryIndexBuild.repository_id == repository.id,
+                        RepositoryIndexBuild.index_version == context.index_version,
+                        RepositoryIndexBuild.commit_sha == context.commit_sha,
+                        RepositoryIndexBuild.state == IndexBuildState.ACTIVE,
+                        RepositoryIndexBuild.graph_validated.is_(True),
+                        RepositoryIndexBuild.graph_fingerprint.is_not(None),
+                    )
+                )
+                if build is None:
+                    raise AgentToolError("call_graph_unavailable")  # noqa: TRY301
+                target_query = select(SymbolDefinition).where(
+                    SymbolDefinition.repository_id == repository.id,
+                    SymbolDefinition.index_version == context.index_version,
+                    SymbolDefinition.commit_sha == context.commit_sha,
+                    or_(
+                        SymbolDefinition.symbol_name == symbol_name,
+                        SymbolDefinition.qualified_name == symbol_name,
+                    ),
+                )
+                if parsed.file_path is not None:
+                    target_query = target_query.where(
+                        SymbolDefinition.file_path == parsed.file_path
+                    )
+                targets = tuple(
+                    (
+                        await session.scalars(
+                            target_query.order_by(
+                                SymbolDefinition.file_path,
+                                SymbolDefinition.start_line,
+                                SymbolDefinition.qualified_name,
+                            ).limit(2)
+                        )
+                    ).all()
+                )
+                if not targets:
+                    return ()
+                if len(targets) != 1:
+                    raise AgentToolError("caller_target_ambiguous")  # noqa: TRY301
+                target = targets[0]
+                caller = aliased(SymbolDefinition)
+                rows = (
+                    await session.execute(
+                        select(CallEdge, caller)
+                        .join(
+                            caller,
+                            caller.id == CallEdge.caller_symbol_id,
+                        )
+                        .where(
+                            CallEdge.repository_id == repository.id,
+                            CallEdge.index_version == context.index_version,
+                            CallEdge.commit_sha == context.commit_sha,
+                            CallEdge.callee_symbol_id == target.id,
+                            caller.repository_id == repository.id,
+                            caller.index_version == context.index_version,
+                            caller.commit_sha == context.commit_sha,
+                        )
+                        .order_by(
+                            caller.file_path,
+                            CallEdge.call_line,
+                            CallEdge.call_end_line,
+                            caller.qualified_name,
+                            CallEdge.call_site_fingerprint,
+                        )
+                        .limit(self._limit)
+                    )
+                ).all()
+        except AgentToolError:
+            raise
+        except SQLAlchemyError as error:
+            raise AgentToolError("caller_query_unavailable") from error
+        return tuple(
+            CallerEvidence(
+                evidence_id=f"T{step}-G{position}",
+                target_symbol_name=target.symbol_name,
+                target_qualified_name=target.qualified_name,
+                target_file_path=target.file_path,
+                caller_symbol_name=caller_symbol.symbol_name,
+                caller_qualified_name=caller_symbol.qualified_name,
+                caller_file_path=caller_symbol.file_path,
+                caller_start_line=caller_symbol.start_line,
+                caller_end_line=caller_symbol.end_line,
+                call_line=edge.call_line,
+                call_end_line=edge.call_end_line,
+                call_expression=edge.call_expression,
+                resolution_type=edge.resolution_type.value,
+                confidence=edge.confidence.value,
+                commit_sha=edge.commit_sha,
+                index_version=context.index_version,
+            )
+            for position, (edge, caller_symbol) in enumerate(rows, start=1)
+        )
 
 
 class AgentToolRegistry:

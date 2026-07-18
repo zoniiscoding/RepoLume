@@ -1,4 +1,4 @@
-"""Behavior and trust-boundary tests for the two Milestone 7 tools."""
+"""Behavior and trust-boundary tests for the fixed repository-agent tool registry."""
 
 import uuid
 
@@ -219,7 +219,7 @@ async def test_get_history_uses_exact_repository_token_scope_and_typed_evidence(
     assert result[1].changed_paths == ("app/service.py",)
 
 
-def test_registry_requires_exactly_the_two_milestone_7_tools() -> None:
+def test_registry_requires_exactly_the_three_milestone_8_tools() -> None:
     with pytest.raises(ValueError, match="agent_tool_registry_mismatch"):
         AgentToolRegistry(())
 

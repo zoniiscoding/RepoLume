@@ -9,6 +9,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -43,6 +44,7 @@ class CallEdge(UUIDPrimaryKeyMixin, Base):
         ),
         CheckConstraint("index_version >= 1", name="index_version_positive"),
         CheckConstraint("call_line >= 1", name="call_line_positive"),
+        CheckConstraint("call_end_line >= call_line", name="call_line_range_ordered"),
         CheckConstraint(
             "callee_symbol_id IS NOT NULL OR unresolved_callee_name IS NOT NULL",
             name="callee_or_unresolved_required",
@@ -52,6 +54,12 @@ class CallEdge(UUIDPrimaryKeyMixin, Base):
             "repository_id",
             "index_version",
             "callee_symbol_id",
+        ),
+        UniqueConstraint(
+            "repository_id",
+            "index_version",
+            "call_site_fingerprint",
+            name="uq_call_edges_repository_version_site",
         ),
         Index(
             "ix_call_edges_repository_version_caller",
@@ -71,6 +79,9 @@ class CallEdge(UUIDPrimaryKeyMixin, Base):
     unresolved_callee_name: Mapped[str | None] = mapped_column(String(1024))
     file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
     call_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    call_end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    call_expression: Mapped[str] = mapped_column(String(2048), nullable=False)
+    call_site_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     resolution_type: Mapped[ResolutionType] = mapped_column(
         database_enum(ResolutionType, name="call_resolution_type"),
         nullable=False,

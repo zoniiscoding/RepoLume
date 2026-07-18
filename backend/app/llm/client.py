@@ -10,7 +10,12 @@ from typing import Protocol
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.agent.models import AgentDecision, AgentGenerationRequest, AgentToolName
+from app.agent.models import (
+    AgentDecision,
+    AgentGenerationRequest,
+    AgentToolArguments,
+    AgentToolName,
+)
 from app.core.config import MINIMUM_SECRET_LENGTH, LLMProvider, Settings
 from app.core.request_context import get_request_id
 from app.rag.models import Answerability, AnswerUncertainty
@@ -324,28 +329,46 @@ class DeterministicLLMProvider:
         evidence = payload.get("evidence")
         completed = payload.get("completed_tools")
         failed = payload.get("failed_tools")
+        failure_codes = payload.get("failed_tool_codes")
         if not isinstance(question, str) or not isinstance(evidence, list):
             raise LLMProviderError("llm_malformed_input", retryable=False)
         completed_names = set(completed) if isinstance(completed, list) else set()
         failed_names = set(failed) if isinstance(failed, list) else set()
         attempted_names = completed_names | failed_names
+        failed_code_names = set(failure_codes) if isinstance(failure_codes, list) else set()
+        wants_callers = bool(
+            re.search(
+                r"\b(?:callers?|calls|called by|depends on|impact|breaks? if|"
+                r"instantiat(?:e|es|ed))\b",
+                question,
+                re.I,
+            )
+        )
         wants_history = bool(
             re.search(r"\b(?:history|commit|pull request|changed|introduced)\b", question, re.I)
         )
-        wants_code = not wants_history or bool(
+        wants_code = (not wants_history and not wants_callers) or bool(
             re.search(r"\b(?:code|implementation|function|class|method)\b", question, re.I)
         )
+        if wants_callers and AgentToolName.FIND_CALLERS.value not in attempted_names:
+            symbol = self._caller_symbol(question)
+            if symbol is not None:
+                return AgentDecision(
+                    action="tool",
+                    tool_name=AgentToolName.FIND_CALLERS,
+                    arguments=AgentToolArguments(symbol_name=symbol),
+                )
         if wants_code and AgentToolName.SEARCH_CODE.value not in attempted_names:
             return AgentDecision(
                 action="tool",
                 tool_name=AgentToolName.SEARCH_CODE,
-                arguments={"query": question},
+                arguments=AgentToolArguments(query=question),
             )
         if wants_history and AgentToolName.GET_HISTORY.value not in attempted_names:
             return AgentDecision(
                 action="tool",
                 tool_name=AgentToolName.GET_HISTORY,
-                arguments={"query": question},
+                arguments=AgentToolArguments(query=question),
             )
         ids = [item.get("id") for item in evidence if isinstance(item, dict)]
         valid_ids = [item for item in ids if isinstance(item, str)]
@@ -354,16 +377,21 @@ class DeterministicLLMProvider:
                 action="final",
                 answer=(
                     "Repository analysis is temporarily unavailable."
-                    if failed_names
+                    if failed_code_names
+                    and not failed_code_names.issubset({"caller_target_ambiguous"})
                     else "The available evidence is insufficient to answer this question."
                 ),
                 answerability=(
                     Answerability.TEMPORARILY_UNAVAILABLE
-                    if failed_names
+                    if failed_code_names
+                    and not failed_code_names.issubset({"caller_target_ambiguous"})
                     else Answerability.INSUFFICIENT_EVIDENCE
                 ),
                 uncertainty=(
-                    AnswerUncertainty.NOT_APPLICABLE if failed_names else AnswerUncertainty.HIGH
+                    AnswerUncertainty.NOT_APPLICABLE
+                    if failed_code_names
+                    and not failed_code_names.issubset({"caller_target_ambiguous"})
+                    else AnswerUncertainty.HIGH
                 ),
                 evidence_ids=[],
             )
@@ -403,12 +431,33 @@ class DeterministicLLMProvider:
                     "symbol_name",
                     "qualified_symbol_name",
                     "chunk_type",
+                    "target_symbol_name",
+                    "target_qualified_name",
+                    "caller_symbol_name",
+                    "caller_qualified_name",
+                    "call_expression",
                 )
             )
         searchable = "\n".join(searchable_parts).casefold()
         if {"prompt", "injection"}.issubset(question_tokens) and "ignore all prior" in searchable:
             return True
         return any(token in searchable for token in question_tokens)
+
+    @staticmethod
+    def _caller_symbol(question: str) -> str | None:
+        quoted = re.search(r"`([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)`", question)
+        if quoted is not None:
+            return quoted.group(1)
+        patterns = (
+            r"(?:callers?\s+(?:of|for)|calls?|called\s+by|depends\s+on|instantiates?)\s+"
+            r"([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)",
+            r"(?:breaks?|impact)\s+if\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, question, re.I)
+            if match is not None:
+                return match.group(1)
+        return None
 
 
 def create_llm_provider(settings: Settings) -> LLMProviderProtocol:

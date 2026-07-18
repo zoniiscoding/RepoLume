@@ -7,6 +7,7 @@ from app.agent.models import (
     AgentDecision,
     AgentGenerationRequest,
     AgentProviderProtocol,
+    AgentToolArguments,
     AgentToolName,
 )
 from app.llm.client import GroundedGenerationRequest, LLMProviderProtocol
@@ -29,7 +30,7 @@ class LegacyGenerationAgentAdapter:
             return AgentDecision(
                 action="tool",
                 tool_name=AgentToolName.SEARCH_CODE,
-                arguments={"query": question},
+                arguments=AgentToolArguments(query=question),
             )
         draft = await self._provider.generate(
             GroundedGenerationRequest(

@@ -5,10 +5,10 @@ from typing import cast
 
 from fastapi import APIRouter, Request, status
 
-from app.agent.models import CommitEvidence, PullRequestEvidence
+from app.agent.models import CallerEvidence, CommitEvidence, PullRequestEvidence
 from app.agent.provider import resolve_agent_provider
 from app.agent.service import AgentQuestionService
-from app.agent.tools import AgentToolRegistry, GetHistoryTool, SearchCodeTool
+from app.agent.tools import AgentToolRegistry, FindCallersTool, GetHistoryTool, SearchCodeTool
 from app.auth.dependencies import CurrentUser
 from app.core.config import Settings
 from app.core.errors import APIError
@@ -21,6 +21,7 @@ from app.rag.query import QuestionValidationError
 from app.schemas.errors import ErrorCode
 from app.schemas.questions import (
     AgentTraceStepResponse,
+    RepositoryCallerCitationResponse,
     RepositoryCitationResponse,
     RepositoryCodeCitationResponse,
     RepositoryCommitCitationResponse,
@@ -55,6 +56,11 @@ def _service(request: Request) -> AgentQuestionService:
                 GetHistoryTool(
                     installations=installations,
                     github=history_github,
+                    settings=settings,
+                ),
+                FindCallersTool(
+                    database=database,
+                    installations=installations,
                     settings=settings,
                 ),
             )
@@ -120,6 +126,28 @@ async def ask_repository_question(
                     changed_paths=list(item.changed_paths),
                     patch_excerpt=item.patch_excerpt,
                     html_url=item.html_url,
+                )
+            )
+        elif isinstance(item, CallerEvidence):
+            citations.append(
+                RepositoryCallerCitationResponse(
+                    evidence_id=item.evidence_id,
+                    target_symbol_name=item.target_symbol_name,
+                    target_qualified_name=item.target_qualified_name,
+                    target_file_path=item.target_file_path,
+                    caller_symbol_name=item.caller_symbol_name,
+                    caller_qualified_name=item.caller_qualified_name,
+                    caller_file_path=item.caller_file_path,
+                    caller_start_line=item.caller_start_line,
+                    caller_end_line=item.caller_end_line,
+                    call_line=item.call_line,
+                    call_end_line=item.call_end_line,
+                    call_expression=item.call_expression,
+                    resolution_type=item.resolution_type,
+                    confidence=item.confidence,
+                    commit_sha=item.commit_sha,
+                    index_version=item.index_version,
+                    limitation=item.limitation,
                 )
             )
         elif isinstance(item, PullRequestEvidence):

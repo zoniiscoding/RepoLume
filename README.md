@@ -2,7 +2,7 @@
 
 RepoLume is a multi-tenant, read-only developer SaaS for understanding authorized GitHub repositories through evidence-backed answers.
 
-This repository is at **Milestone 7: GitHub history and bounded agent orchestration**. It implements the FastAPI/PostgreSQL foundation, GitHub App authentication and access controls, durable indexing, private ONNX embeddings, atomically activated Qdrant indexes, and an authenticated direct agent loop with exactly two read-only tools: `search_code` and `get_history`. Code, commit, and pull-request citations are resolved only from evidence produced during the current authorized request. There is no caller tool, call graph, chat persistence, or frontend functionality yet.
+This repository is at **Milestone 8: static call graph and caller analysis**. It implements the FastAPI/PostgreSQL foundation, GitHub App authentication and access controls, durable full indexing, private ONNX embeddings, atomically activated Qdrant indexes, and an authenticated direct agent loop with exactly three read-only tools: `search_code`, `get_history`, and `find_callers`. Python calls are extracted with Tree-sitter without executing connected code, resolved conservatively, stored by repository/index version/commit, and returned as explicitly best-effort static caller citations. Incremental indexing, chat persistence, and frontend functionality are not implemented.
 
 Read [the product specification](docs/PRODUCT_SPEC.md), [current build status](docs/BUILD_STATUS.md), [security posture](docs/SECURITY.md), and [engineering rules](AGENTS.md) before changing code.
 
@@ -32,7 +32,7 @@ cp .env.example .env
 
 Fill the untracked `.env` with disposable/local PostgreSQL, Redis, Qdrant, and private embedding-service settings plus local-only authentication values. Secret fields must be independent values of at least 32 characters. Never commit `.env`.
 
-For the question API, set `LLM_PROVIDER=openai`, place `LLM_API_KEY` only in the API secret store, and keep the pinned `LLM_MODEL=gpt-5.4-mini-2026-03-17` unless an intentional compatibility review changes it. `LLM_PROVIDER=deterministic` is accepted only in tests and is not a production model substitute. Agent defaults cap each question at four tool calls, eight seconds per tool, 45 seconds total, 32 KiB per tool result, 64 KiB total evidence, and 1,200 output tokens.
+For the question API, set `LLM_PROVIDER=openai`, place `LLM_API_KEY` only in the API secret store, and keep the pinned `LLM_MODEL=gpt-5.4-mini-2026-03-17` unless an intentional compatibility review changes it. `LLM_PROVIDER=deterministic` is accepted only in tests and is not a production model substitute. Agent defaults cap each question at four tool calls, eight seconds per tool, 45 seconds total, 32 KiB per tool result, 64 KiB total evidence, 20 caller results, and 1,200 output tokens.
 
 ## GitHub App configuration
 
@@ -99,7 +99,7 @@ curl --fail-with-body --request POST \
   http://127.0.0.1:8000/api/v1/repositories/<repository-id>/questions
 ```
 
-The API controls every tool, retrieval limit, history bound, and filter. It returns `answered`, `partially_answered`, `insufficient_evidence`, `unsupported_question`, or `temporarily_unavailable`. Citations are discriminated as `code`, `commit`, or `pull_request`; their metadata comes from current-request server evidence, never model output. The response also contains a content-free trace with tool name, argument fingerprint, status, duration, result count, and safe failure category. Questions, prompts, answers, evidence, patches, commit/PR bodies, and query vectors are not persisted.
+The API controls every tool, retrieval limit, history/caller bound, and filter. It returns `answered`, `partially_answered`, `insufficient_evidence`, `unsupported_question`, or `temporarily_unavailable`. Citations are discriminated as `code`, `commit`, `pull_request`, or `caller`; their metadata comes from current-request server evidence, never model output. Caller citations include target/caller symbols, call location/expression, resolution type, confidence, active commit/version, and the static-analysis limitation. The response also contains a content-free trace with tool name, argument fingerprint, status, duration, result count, and safe failure category. Questions, prompts, answers, evidence, patches, commit/PR bodies, and query vectors are not persisted.
 
 ## Quality checks
 
@@ -124,10 +124,13 @@ cd ..
 PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
   --cases backend/evaluation/milestone7_cases.json \
   --observations /path/to/content-free-observations.json
+PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
+  --cases backend/evaluation/milestone8_cases.json \
+  --observations backend/evaluation/milestone8_fixture_observations.json
 ```
 
 Integration tests truncate PostgreSQL, flush Redis, and delete the configured Qdrant test collection; they fail rather than silently using SQLite, an in-process queue, or an in-memory vector store. Never point a test URL at development, staging, or production data.
 
 ## Security boundary
 
-Connected repositories, GitHub history, user questions, and model output are untrusted data. RepoLume never executes, imports, installs, builds, tests, or invokes connected code. The agent registry is immutable and contains only `search_code` and `get_history`; neither exposes shell, arbitrary network, secrets, writes, raw filters, repository IDs, or URLs. GitHub history uses fixed API paths and an ephemeral token restricted to the already authorized repository. Qdrant reads retain server-derived installation/repository/active-version/commit/model scope. The model may select a typed tool and reference evidence IDs, but the server owns scope and citation metadata and reauthorizes before returning. Milestone 8 caller analysis remains explicitly unsupported.
+Connected repositories, GitHub history, user questions, and model output are untrusted data. RepoLume never executes, imports, installs, builds, tests, or invokes connected code. The immutable registry contains only `search_code`, `get_history`, and `find_callers`; none exposes shell, arbitrary network, secrets, writes, raw filters, repository/installation/version/commit selectors, URLs, or limits. GitHub history uses fixed API paths and an ephemeral token restricted to the already authorized repository. Qdrant and caller reads retain server-derived installation/repository/active-version/commit scope. The model may select a typed tool and reference evidence IDs, but the server owns scope and citation metadata and reauthorizes before returning. Static caller results can miss dynamic dispatch, monkey patching, reflection, generated code, decorators, and unresolved polymorphism; they are evidence, not runtime truth.

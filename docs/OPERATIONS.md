@@ -1,16 +1,16 @@
 # RepoLume Operations
 
-**Status:** Milestone 7 local API/worker/PostgreSQL/Redis/Qdrant/private-embedding/bounded-agent operations are implemented and verified with mocked GitHub history and deterministic decisions. No live GitHub history, real hosted-LLM acceptance, Milestone 7 hosted CI run, hosted environment, dashboard, alert, backup, or production runbook has been verified.
+**Status:** Milestone 8 local full-index graph construction, graph validation, caller queries, API/worker/PostgreSQL/Redis/Qdrant/private-embedding operations, mocked GitHub history, and deterministic decisions are implemented. No live GitHub/hosted-LLM acceptance, Milestone 8 hosted CI run, hosted environment, dashboard, alert, backup, or production runbook has been verified.
 
 ## Service inventory
 
 | Service | Exposure | Planned owner responsibility | Current state |
 | --- | --- | --- | --- |
 | React frontend | Public via Vercel | User interface and safe rendering | Not created |
-| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status/questions, bounded two-tool agent, health | Milestone 7 code/history questions and three-dependency readiness verified locally; not deployed |
+| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status/questions, bounded three-tool agent, health | Milestone 8 code/history/static-caller questions and three-dependency readiness verified locally; not deployed |
 | Indexing worker | Railway private service | Durable jobs, safe static ingestion, embedding/vector validation, atomic activation, cleanup | Implemented and locally verified; not deployed |
 | Embedding service | Railway private service | Authenticated bounded fixed-model embeddings | Implemented, real pinned model verified, UID 10002 image built; not deployed |
-| PostgreSQL | Neon private credentials | Durable identity, access, delivery, job/build/count/activation/cleanup truth, symbols | Five-revision schema verified on disposable PostgreSQL 18; managed production instance not provisioned |
+| PostgreSQL | Neon private credentials | Durable identity, access, delivery, job/build/count/activation/cleanup truth, symbols and call edges | Six-revision schema verified on disposable PostgreSQL 18; managed production instance not provisioned |
 | Redis | Private managed service | Opaque job-ID Stream delivery; later cache/rate-limit support | Redis 8.8 locally verified; managed authenticated TLS service not provisioned |
 | Qdrant | Qdrant Cloud authenticated | Installation/repository/version-scoped vectors and private citation chunks | Qdrant 1.18.2 locally verified; managed authenticated service not provisioned |
 | Hosted LLM | Server-side provider API | Strict structured tool/final decisions | OpenAI adapter/pinned model configured in code; no real credential or hosted acceptance run |
@@ -31,7 +31,7 @@ Structured logs include request IDs plus safe startup/HTTP metadata and worker j
 
 Logs must exclude tokens, cookies, secrets, clone credential material, full repository chunks, full prompts/responses, private file contents, and complete chat messages.
 
-Uvicorn access logging is disabled because its raw target can include OAuth codes and unbounded query data. `httpx`, `httpx2`, and `httpcore` INFO logs are suppressed. Milestone 7 tests and final verification inspect logs for complete questions/answers/prompts, history bodies/patches, evidence/source/vectors, database/Redis/Qdrant URLs or keys, GitHub/browser/service/LLM credentials, parser/model internals, askpass values, and provider bodies. Only allowlisted operational metadata is permitted.
+Uvicorn access logging is disabled because its raw target can include OAuth codes and unbounded query data. `httpx`, `httpx2`, and `httpcore` INFO logs are suppressed. Milestone 8 verification inspects logs for complete questions/answers/prompts, call expressions, history bodies/patches, evidence/source/vectors, infrastructure URLs or keys, credentials, parser/model internals, askpass values, and provider bodies. Only allowlisted operational metadata is permitted.
 
 Metrics remain planned: request and tool latency/error rates, job queue age/duration, worker heartbeat/stuck jobs, embedding throughput, vector operations, model token/cost usage, indexing stages, webhook outcomes, and deletion backlog. Names, cardinality limits, alert thresholds, and retention require deployed telemetry.
 
@@ -55,7 +55,7 @@ Implemented state behavior:
 - Retry uses bounded exponential backoff plus jitter. Do not manually change attempts or mark a job complete.
 - Duplicate Redis delivery is acknowledged after a conditional PostgreSQL claim fails; it does not start another clone.
 - Access-revoked work becomes `cancelled` before token minting or clone.
-- Static processing exposes `parsing` and `chunking` durable stages. File-local malformed/oversized/unsupported cases increment safe categories; repository chunk overflow and unsafe paths fail closed.
+- Static processing exposes `parsing`, `chunking`, and `building_graph` durable stages. File-local malformed/oversized/unsupported cases increment safe categories; repository chunk/call-site overflow and unsafe paths fail closed.
 - `parser_timeout` and `internal_parser_failure` are nonretryable for the same immutable commit/config. Operators must inspect capacity/configuration without collecting source or raw parser exceptions before submitting fresh work.
 - M5 additionally exposes `embedding`, `storing_vectors`, `validating_index`, and `activating_index`. Do not mark a build ready/active unless expected, embedded, and vector counts match exactly with zero failed/skipped chunks.
 - Before activation, failed inactive vectors are deleted only by trusted installation/repository/version scope and the previous active build remains untouched. After activation, a failed superseded cleanup is recorded as pending and must be retried with that exact scope.
@@ -173,7 +173,7 @@ The API never runs Alembic during application startup. From the repository root,
 
 Review generated SQL and backup/restore compatibility before any future production migration. The initial migration downgrade was exercised by the integration suite against a disposable database; that does not make production downgrades universally safe.
 
-## Local Milestone 7 procedure
+## Local Milestone 8 procedure
 
 Use Python 3.13 for the reproducible baseline. Install the hashed development lock:
 
@@ -258,7 +258,7 @@ Stop processes with `Ctrl-C`; shutdown closes database, GitHub, Redis, embedding
 
 For live GitHub verification, configure the App callback and webhook URLs to the public HTTPS API; grant read-only Metadata, Contents, and Pull requests permissions; subscribe to Installation, Installation repositories, Push, and Repository events; then install it on a controlled test account/organization. Automated tests require no real credentials and use injected mocked responses.
 
-## Milestone 7 verification commands
+## Milestone 8 verification commands
 
 ```sh
 .venv/bin/ruff format --check backend
@@ -278,9 +278,24 @@ HF_HUB_OFFLINE=1 REPOLUME_TEST_MODEL_CACHE=/tmp/repolume-models .venv/bin/pytest
 .venv/bin/pip-audit --requirement backend/requirements.lock --disable-pip
 .venv/bin/pip-audit --requirement embedding_service/requirements.lock --disable-pip
 PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation --cases backend/evaluation/milestone7_cases.json --observations /path/to/content-free-observations.json
+PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation --cases backend/evaluation/milestone8_cases.json --observations backend/evaluation/milestone8_fixture_observations.json
 ```
 
-The actual Milestone 7 results, including the clean migration, complete dependency-backed suite, coverage, mocked history boundary, health requests, and external live-provider limits, are recorded in `docs/BUILD_STATUS.md`. GitHub Actions is configured to repeat strict quality, PostgreSQL 18, Redis, Qdrant 1.18.2, the exact real embedding model, deterministic agent behavior, migrations, complete suites, audits, builds/non-root checks, and immutable-action image scans on Python 3.13. The baseline commit `28c02a9` has a successful hosted run; the local Milestone 7 commit has not been pushed, so no Milestone 7 hosted run exists. Local container verification was not retried; the prior contradictory Podman VM/socket block remains documented.
+The actual Milestone 8 results, including migration downgrade/re-upgrade, dependency-backed tests, coverage, graph/caller isolation, health requests, and external-provider limits, are recorded in `docs/BUILD_STATUS.md`. GitHub Actions is configured to repeat Python 3.13 quality gates, PostgreSQL/Redis/Qdrant/private-model integration, migrations, complete suites, audits, image builds/non-root checks, and immutable-action scans. Baseline Milestone 7 commit `54f847c` has successful hosted run `29650105386`; the local Milestone 8 commit is intentionally not pushed, so no Milestone 8 hosted run exists. Local container verification is not retried because the prior contradictory Podman VM/socket state remains a host-runtime block.
+
+### Call-graph validation failure
+
+1. Inspect only repository/job/build IDs, version, stage, graph counts, fingerprint mismatch category, and safe timing. Do not print source, call expressions, questions, or credentials.
+2. Keep the prior active build queryable. A failed graph must never be marked ready or active; verify `graph_validated=false` and inactive symbol/edge cleanup state.
+3. Confirm parser call-site and process bounds, deterministic symbol IDs, edge counts, commit identity, and migration head. Do not bypass validation or set the flag manually.
+4. Retry only through the normal full re-index path after fixing the deterministic cause. Milestone 9 incremental repair does not exist.
+
+### Caller-query outage or semantic non-answer
+
+1. `caller_target_ambiguous` or an empty target/result is a semantic insufficient-evidence result. `call_graph_unavailable`, `caller_query_unavailable`, `caller_scope_changed`, and `caller_scope_revoked` are operational/unavailable states.
+2. Verify current membership, installation/repository status, repository active version/SHA, active build state, graph fingerprint, and `graph_validated` without widening access or querying another version.
+3. Never copy a private call expression or full question into logs/incident notes. Use safe trace failure code, result count, opaque IDs, and request ID only.
+4. A pre-Milestone-8 active build intentionally has no validated graph; schedule a normal full re-index rather than fabricating/backfilling caller readiness.
 
 ## Incident evidence policy
 

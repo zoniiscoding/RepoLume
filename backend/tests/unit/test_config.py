@@ -55,6 +55,7 @@ def test_pool_limits_are_validated() -> None:
         {"clone_max_file_bytes": 1024, "parser_max_input_bytes": 2048},
         {"parser_max_symbol_bytes": 1024, "parser_max_chunk_bytes": 2048},
         {"parser_max_document_section_bytes": 1024, "parser_max_chunk_bytes": 2048},
+        {"parser_max_total_call_sites": 10, "parser_max_call_sites_per_file": 11},
         {"parser_timeout_seconds": 5, "parser_process_cpu_seconds": 6},
     ],
 )

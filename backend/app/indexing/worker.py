@@ -259,6 +259,16 @@ class IndexingWorker:
                 commit_sha=cloned.commit_sha,
             )
 
+        async def mark_graphing() -> None:
+            await self._store.stage(
+                claimed,
+                self._worker_id,
+                status=RepositoryIndexingStatus.BUILDING_GRAPH,
+                stage="building_graph",
+                progress=87,
+                commit_sha=cloned.commit_sha,
+            )
+
         processing = await self._analyzer.analyze(
             checkout=cloned.checkout,
             discovery=discovery,
@@ -266,6 +276,7 @@ class IndexingWorker:
             index_version=context.index_version,
             commit_sha=cloned.commit_sha,
             on_chunking=mark_chunking,
+            on_graphing=mark_graphing,
         )
         return discovery, processing
 
@@ -351,6 +362,7 @@ class IndexingWorker:
                 self._settings, self._preprocessor.policy_fingerprint
             ),
         )
+        await self._store.validate_graph(claimed, self._worker_id)
         await self._store.mark_build_ready(claimed, self._worker_id)
         reauthorized = await self._store.authorized_context(claimed)
         if reauthorized is None:
@@ -398,6 +410,11 @@ class IndexingWorker:
             symbol_count=processing.symbol_count,
             chunk_count=processing.chunk_count,
             vector_count=vector_count,
+            call_site_count=processing.call_site_count,
+            exact_edge_count=processing.exact_edge_count,
+            ambiguous_edge_count=processing.ambiguous_edge_count,
+            unresolved_call_count=processing.unresolved_call_count,
+            graph_warning_count=processing.graph_warning_count,
             index_version=context.index_version,
         )
 

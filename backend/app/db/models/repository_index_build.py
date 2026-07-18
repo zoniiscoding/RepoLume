@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -37,6 +38,11 @@ class RepositoryIndexBuild(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         CheckConstraint("vector_count >= 0", name="vector_count_nonnegative"),
         CheckConstraint("failed_chunk_count >= 0", name="failed_chunk_count_nonnegative"),
         CheckConstraint("skipped_chunk_count >= 0", name="skipped_chunk_count_nonnegative"),
+        CheckConstraint("call_site_count >= 0", name="call_site_count_nonnegative"),
+        CheckConstraint("exact_edge_count >= 0", name="exact_edge_count_nonnegative"),
+        CheckConstraint("ambiguous_edge_count >= 0", name="ambiguous_edge_count_nonnegative"),
+        CheckConstraint("unresolved_call_count >= 0", name="unresolved_call_count_nonnegative"),
+        CheckConstraint("graph_warning_count >= 0", name="graph_warning_count_nonnegative"),
         CheckConstraint(
             "state NOT IN ('ready', 'active') OR "
             "(expected_chunk_count = embedded_chunk_count AND "
@@ -95,6 +101,25 @@ class RepositoryIndexBuild(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     skipped_chunk_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
+    )
+    call_site_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    exact_edge_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    ambiguous_edge_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    unresolved_call_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    graph_warning_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    graph_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    graph_validated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
     )
     activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cleanup_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

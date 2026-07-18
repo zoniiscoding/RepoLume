@@ -34,7 +34,6 @@ def test_question_limits_fail_closed(question: str, overrides: dict[str, object]
 @pytest.mark.parametrize(
     "question",
     [
-        "Find all callers of process_job",
         "What is the current production runtime state?",
         "What is the latest Python release on the internet?",
     ],
@@ -42,6 +41,11 @@ def test_question_limits_fail_closed(question: str, overrides: dict[str, object]
 def test_questions_requiring_later_milestones_are_classified_unsupported(question: str) -> None:
     processor = QuestionPreprocessor(make_settings())
     assert processor.is_unsupported(processor.prepare(question))
+
+
+def test_static_caller_questions_are_supported_in_milestone_8() -> None:
+    processor = QuestionPreprocessor(make_settings())
+    assert not processor.is_unsupported(processor.prepare("Find all callers of process_job"))
 
 
 @pytest.mark.parametrize(

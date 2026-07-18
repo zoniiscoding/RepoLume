@@ -12,6 +12,7 @@ from app.agent.models import (
     AgentDecision,
     AgentGenerationRequest,
     AgentStepStatus,
+    AgentToolArguments,
     AgentToolName,
     CommitEvidence,
     PullRequestEvidence,
@@ -155,7 +156,12 @@ def commit_evidence(evidence_id: str = "T2-H1") -> CommitEvidence:
 
 
 def tool_decision(name: AgentToolName, query: str = "validate") -> AgentDecision:
-    return AgentDecision(action="tool", tool_name=name, arguments={"query": query})
+    arguments = (
+        AgentToolArguments(symbol_name=query)
+        if name is AgentToolName.FIND_CALLERS
+        else AgentToolArguments(query=query)
+    )
+    return AgentDecision(action="tool", tool_name=name, arguments=arguments)
 
 
 def final_decision(ids: list[str], state: Answerability = Answerability.ANSWERED) -> AgentDecision:
@@ -181,7 +187,7 @@ def make_service(
         database=object(),  # type: ignore[arg-type]
         installations=installations,  # type: ignore[arg-type]
         provider=provider,
-        registry=AgentToolRegistry((search, history)),
+        registry=AgentToolRegistry((search, history, FakeTool(AgentToolName.FIND_CALLERS))),
         settings=make_settings(**setting_overrides),
     )
 
@@ -463,10 +469,15 @@ async def test_total_timeout_bounds_multiple_slow_steps(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
-async def test_milestone_8_caller_question_skips_provider_and_tools(
+async def test_milestone_8_caller_question_is_dispatched_to_the_bounded_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = ScriptedProvider([tool_decision(AgentToolName.SEARCH_CODE)])
+    provider = ScriptedProvider(
+        [
+            tool_decision(AgentToolName.FIND_CALLERS),
+            final_decision([], Answerability.INSUFFICIENT_EVIDENCE),
+        ]
+    )
     search = FakeTool(AgentToolName.SEARCH_CODE)
     service, _, current = make_service(
         monkeypatch,
@@ -481,8 +492,8 @@ async def test_milestone_8_caller_question_skips_provider_and_tools(
         question=service.prepare_question("Find all callers of validate"),
     )
 
-    assert result.answerability is Answerability.UNSUPPORTED_QUESTION
-    assert provider.requests == []
+    assert result.answerability is Answerability.INSUFFICIENT_EVIDENCE
+    assert len(provider.requests) == 2
     assert search.calls == []
 
 

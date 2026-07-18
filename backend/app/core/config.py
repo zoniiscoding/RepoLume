@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     parser_max_total_chunk_bytes: int = Field(default=64 * 1024 * 1024, ge=1024)
     parser_max_document_section_bytes: int = Field(default=256 * 1024, ge=1024)
     parser_max_warnings_per_file: int = Field(default=50, ge=1, le=1_000)
+    parser_max_call_sites_per_file: int = Field(default=10_000, ge=1, le=200_000)
+    parser_max_total_call_sites: int = Field(default=100_000, ge=1, le=2_000_000)
+    parser_max_call_expression_bytes: int = Field(default=2048, ge=32, le=16_384)
     parser_timeout_seconds: float = Field(default=180.0, gt=0, le=900)
     parser_process_memory_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=64 * 1024 * 1024)
     parser_process_cpu_seconds: int = Field(default=120, ge=5, le=900)
@@ -164,6 +167,7 @@ class Settings(BaseSettings):
     agent_history_max_message_bytes: int = Field(default=2048, ge=128, le=8192)
     agent_history_max_patch_bytes: int = Field(default=8192, ge=256, le=32 * 1024)
     agent_history_max_paths: int = Field(default=20, ge=1, le=100)
+    agent_caller_result_limit: int = Field(default=20, ge=1, le=100)
     agent_max_final_output_tokens: int = Field(default=1200, ge=128, le=8192)
 
     cors_origins: list[AnyHttpUrl] = Field(default_factory=list)
@@ -298,6 +302,7 @@ class Settings(BaseSettings):
             raise ValueError("PARSER_MAX_INPUT_BYTES cannot exceed CLONE_MAX_FILE_BYTES")
         if self.parser_max_chunk_bytes > self.parser_max_symbol_bytes:
             raise ValueError("PARSER_MAX_CHUNK_BYTES cannot exceed PARSER_MAX_SYMBOL_BYTES")
+        self._validate_call_graph_limits()
         if self.parser_max_chunk_bytes > self.parser_max_document_section_bytes:
             raise ValueError(
                 "PARSER_MAX_CHUNK_BYTES cannot exceed PARSER_MAX_DOCUMENT_SECTION_BYTES"
@@ -328,6 +333,12 @@ class Settings(BaseSettings):
         ):
             raise ValueError("The deterministic LLM provider is allowed only in test")
         return self
+
+    def _validate_call_graph_limits(self) -> None:
+        if self.parser_max_call_sites_per_file > self.parser_max_total_call_sites:
+            raise ValueError(
+                "PARSER_MAX_CALL_SITES_PER_FILE cannot exceed PARSER_MAX_TOTAL_CALL_SITES"
+            )
 
     @property
     def is_production(self) -> bool:

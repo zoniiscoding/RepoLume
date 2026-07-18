@@ -107,6 +107,7 @@ class ResolutionType(StrEnum):
     EXACT_DIRECT_IMPORT = "exact_direct_import"
     QUALIFIED_MODULE = "qualified_module"
     PROBABLE_METHOD = "probable_method"
+    AMBIGUOUS = "ambiguous"
     UNRESOLVED = "unresolved"
 
 

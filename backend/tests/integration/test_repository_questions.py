@@ -3,8 +3,9 @@
 import asyncio
 import os
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Coroutine, Iterator
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,7 +15,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.application import create_app
 from app.auth.tokens import TokenService
+from app.db.models.call_edge import CallEdge
 from app.db.models.enums import (
+    Confidence,
     GitHubAccountType,
     IndexBuildState,
     IndexCleanupStatus,
@@ -22,10 +25,13 @@ from app.db.models.enums import (
     InstallationStatus,
     RepositoryIndexingStatus,
     RepositorySelection,
+    ResolutionType,
+    SymbolType,
 )
 from app.db.models.github_installation import GitHubInstallation, InstallationMember
 from app.db.models.repository import Repository
 from app.db.models.repository_index_build import RepositoryIndexBuild
+from app.db.models.symbol_definition import SymbolDefinition
 from app.db.models.user import User
 from app.db.session import Database
 from app.embeddings.preprocessing import EmbeddingPreprocessor, PreparedEmbedding
@@ -260,7 +266,59 @@ async def seed_active_repository() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
                 vector_count=1,
                 failed_chunk_count=0,
                 skipped_chunk_count=0,
+                call_site_count=1,
+                exact_edge_count=1,
+                ambiguous_edge_count=0,
+                unresolved_call_count=0,
+                graph_warning_count=0,
+                graph_fingerprint="f" * 64,
+                graph_validated=True,
                 activated_at=datetime.now(UTC),
+            )
+        )
+        target = SymbolDefinition(
+            repository_id=repository.id,
+            index_version=1,
+            file_path="app/service.py",
+            language="python",
+            symbol_name="validate",
+            qualified_name="app.service.validate",
+            symbol_type=SymbolType.FUNCTION,
+            start_line=10,
+            end_line=20,
+            content_hash="1" * 64,
+            commit_sha="a" * 40,
+        )
+        caller = SymbolDefinition(
+            repository_id=repository.id,
+            index_version=1,
+            file_path="app/api.py",
+            language="python",
+            symbol_name="handle_request",
+            qualified_name="app.api.handle_request",
+            symbol_type=SymbolType.FUNCTION,
+            start_line=30,
+            end_line=40,
+            content_hash="2" * 64,
+            commit_sha="a" * 40,
+        )
+        session.add_all((target, caller))
+        await session.flush()
+        session.add(
+            CallEdge(
+                repository_id=repository.id,
+                index_version=1,
+                caller_symbol_id=caller.id,
+                callee_symbol_id=target.id,
+                unresolved_callee_name=None,
+                file_path=caller.file_path,
+                call_line=35,
+                call_end_line=35,
+                call_expression="validate",
+                call_site_fingerprint="3" * 64,
+                resolution_type=ResolutionType.EXACT_DIRECT_IMPORT,
+                confidence=Confidence.HIGH,
+                commit_sha="a" * 40,
             )
         )
         await session.commit()
@@ -301,6 +359,166 @@ async def mutate_repository_state(repository_id: uuid.UUID, state: str) -> None:
             build.embedding_model_revision = "different"
         else:
             raise AssertionError("unknown_test_state")
+        await session.commit()
+    await database.dispose()
+
+
+async def add_ambiguous_target(repository_id: uuid.UUID) -> None:
+    database = Database(
+        engine=create_async_engine(database_url(), pool_pre_ping=True),
+        ready_timeout_seconds=2,
+    )
+    async with database.session() as session:
+        session.add(
+            SymbolDefinition(
+                repository_id=repository_id,
+                index_version=1,
+                file_path="other/service.py",
+                language="python",
+                symbol_name="validate",
+                qualified_name="other.service.validate",
+                symbol_type=SymbolType.FUNCTION,
+                start_line=1,
+                end_line=2,
+                content_hash="4" * 64,
+                commit_sha="a" * 40,
+            )
+        )
+        await session.commit()
+    await database.dispose()
+
+
+async def invalidate_graph(repository_id: uuid.UUID) -> None:
+    engine = create_async_engine(database_url())
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE repository_index_builds SET graph_validated = false "
+                "WHERE repository_id = :repository_id"
+            ),
+            {"repository_id": repository_id},
+        )
+    await engine.dispose()
+
+
+async def add_scoped_graph_distractors(repository_id: uuid.UUID) -> None:
+    database = Database(
+        engine=create_async_engine(database_url(), pool_pre_ping=True),
+        ready_timeout_seconds=2,
+    )
+    async with database.session() as session:
+        repository = await session.get(Repository, repository_id)
+        assert repository is not None
+        other_repository = Repository(
+            installation_id=repository.installation_id,
+            github_repository_id=9002,
+            github_owner="owner",
+            github_name="other-private-repo",
+            github_full_name="owner/other-private-repo",
+            github_url="https://github.com/owner/other-private-repo",
+            is_private=True,
+            default_branch="main",
+            last_indexed_commit_sha="b" * 40,
+            index_version=1,
+            indexing_status=RepositoryIndexingStatus.COMPLETE,
+            indexing_progress=100,
+            indexing_stage="complete",
+            active_vector_count=1,
+        )
+        session.add(other_repository)
+        await session.flush()
+
+        symbols = (
+            SymbolDefinition(
+                repository_id=repository.id,
+                index_version=2,
+                file_path="inactive/service.py",
+                language="python",
+                symbol_name="validate",
+                qualified_name="inactive.service.validate",
+                symbol_type=SymbolType.FUNCTION,
+                start_line=1,
+                end_line=2,
+                content_hash="5" * 64,
+                commit_sha="c" * 40,
+            ),
+            SymbolDefinition(
+                repository_id=repository.id,
+                index_version=2,
+                file_path="inactive/caller.py",
+                language="python",
+                symbol_name="stale_caller",
+                qualified_name="inactive.caller.stale_caller",
+                symbol_type=SymbolType.FUNCTION,
+                start_line=1,
+                end_line=3,
+                content_hash="6" * 64,
+                commit_sha="c" * 40,
+            ),
+            SymbolDefinition(
+                repository_id=other_repository.id,
+                index_version=1,
+                file_path="other/service.py",
+                language="python",
+                symbol_name="validate",
+                qualified_name="other.service.validate",
+                symbol_type=SymbolType.FUNCTION,
+                start_line=1,
+                end_line=2,
+                content_hash="7" * 64,
+                commit_sha="b" * 40,
+            ),
+            SymbolDefinition(
+                repository_id=other_repository.id,
+                index_version=1,
+                file_path="other/private.py",
+                language="python",
+                symbol_name="private_caller",
+                qualified_name="other.private.private_caller",
+                symbol_type=SymbolType.FUNCTION,
+                start_line=1,
+                end_line=3,
+                content_hash="8" * 64,
+                commit_sha="b" * 40,
+            ),
+        )
+        session.add_all(symbols)
+        await session.flush()
+        inactive_target, inactive_caller, other_target, other_caller = symbols
+        session.add_all(
+            (
+                CallEdge(
+                    repository_id=repository.id,
+                    index_version=2,
+                    caller_symbol_id=inactive_caller.id,
+                    callee_symbol_id=inactive_target.id,
+                    unresolved_callee_name=None,
+                    file_path=inactive_caller.file_path,
+                    call_line=2,
+                    call_end_line=2,
+                    call_expression="validate",
+                    call_site_fingerprint="9" * 64,
+                    resolution_type=ResolutionType.EXACT_SAME_FILE,
+                    confidence=Confidence.HIGH,
+                    commit_sha="c" * 40,
+                ),
+                CallEdge(
+                    repository_id=other_repository.id,
+                    index_version=1,
+                    caller_symbol_id=other_caller.id,
+                    callee_symbol_id=other_target.id,
+                    unresolved_callee_name=None,
+                    file_path=other_caller.file_path,
+                    call_line=2,
+                    call_end_line=2,
+                    call_expression="validate",
+                    call_site_fingerprint="a" * 64,
+                    resolution_type=ResolutionType.EXACT_SAME_FILE,
+                    confidence=Confidence.HIGH,
+                    commit_sha="b" * 40,
+                ),
+            )
+        )
         await session.commit()
     await database.dispose()
 
@@ -426,6 +644,190 @@ def test_unsupported_question_skips_embedding_retrieval_and_llm() -> None:
     assert embeddings.queries == []
     assert vectors.scopes == []
     assert llm.requests == []
+
+
+def test_caller_question_is_tenant_scoped_and_returns_static_graph_citation() -> None:
+    settings = make_settings()
+    owner_id, other_id, repository_id = asyncio.run(seed_active_repository())
+    database = Database(
+        engine=create_async_engine(database_url(), pool_pre_ping=True),
+        ready_timeout_seconds=2,
+    )
+    app = create_app(
+        settings=settings,
+        database=database,
+        github_client=FakeGitHub(),  # type: ignore[arg-type]
+        vector_store=FakeVectors(),
+        embedding_provider=FakeEmbeddings(),  # type: ignore[arg-type]
+    )
+    tokens = TokenService(settings)
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/repositories/{repository_id}/questions",
+            headers={"Authorization": f"Bearer {tokens.issue_access_token(owner_id).value}"},
+            json={"question": "What calls validate?"},
+        )
+        denied = client.post(
+            f"/api/v1/repositories/{repository_id}/questions",
+            headers={"Authorization": f"Bearer {tokens.issue_access_token(other_id).value}"},
+            json={"question": "What calls validate?"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answerability"] == "answered"
+    assert body["trace"][0]["tool"] == "find_callers"
+    assert body["citations"] == [
+        {
+            "source_type": "caller",
+            "evidence_id": "T1-G1",
+            "target_symbol_name": "validate",
+            "target_qualified_name": "app.service.validate",
+            "target_file_path": "app/service.py",
+            "caller_symbol_name": "handle_request",
+            "caller_qualified_name": "app.api.handle_request",
+            "caller_file_path": "app/api.py",
+            "caller_start_line": 30,
+            "caller_end_line": 40,
+            "call_line": 35,
+            "call_end_line": 35,
+            "call_expression": "validate",
+            "resolution_type": "exact_direct_import",
+            "confidence": "high",
+            "commit_sha": "a" * 40,
+            "index_version": 1,
+            "limitation": "Static Python analysis; runtime-dispatched calls may be absent.",
+        }
+    ]
+    assert denied.status_code == 404
+    assert "handle_request" not in denied.text
+
+
+def test_caller_lookup_excludes_other_repository_and_inactive_version_edges() -> None:
+    settings = make_settings()
+    owner_id, _, repository_id = asyncio.run(seed_active_repository())
+    asyncio.run(add_scoped_graph_distractors(repository_id))
+    database = Database(
+        engine=create_async_engine(database_url(), pool_pre_ping=True),
+        ready_timeout_seconds=2,
+    )
+    app = create_app(
+        settings=settings,
+        database=database,
+        github_client=FakeGitHub(),  # type: ignore[arg-type]
+        vector_store=FakeVectors(),
+        embedding_provider=FakeEmbeddings(),  # type: ignore[arg-type]
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/repositories/{repository_id}/questions",
+            headers={
+                "Authorization": (
+                    f"Bearer {TokenService(settings).issue_access_token(owner_id).value}"
+                )
+            },
+            json={"question": "What calls validate?"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["caller_file_path"] for item in body["citations"]] == ["app/api.py"]
+    assert "inactive/caller.py" not in response.text
+    assert "other/private.py" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_tools", "expected_citation_types"),
+    [
+        (
+            "Show the implementation and callers of validate",
+            ["find_callers", "search_code"],
+            ["caller", "code"],
+        ),
+        (
+            "What calls validate and which commit introduced it?",
+            ["find_callers", "get_history"],
+            ["caller", "commit"],
+        ),
+    ],
+)
+def test_caller_questions_combine_only_the_required_bounded_tools(
+    question: str,
+    expected_tools: list[str],
+    expected_citation_types: list[str],
+) -> None:
+    settings = make_settings()
+    owner_id, _, repository_id = asyncio.run(seed_active_repository())
+    database = Database(
+        engine=create_async_engine(database_url(), pool_pre_ping=True),
+        ready_timeout_seconds=2,
+    )
+    app = create_app(
+        settings=settings,
+        database=database,
+        github_client=FakeGitHub(),  # type: ignore[arg-type]
+        vector_store=FakeVectors(),
+        embedding_provider=FakeEmbeddings(),  # type: ignore[arg-type]
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/repositories/{repository_id}/questions",
+            headers={
+                "Authorization": (
+                    f"Bearer {TokenService(settings).issue_access_token(owner_id).value}"
+                )
+            },
+            json={"question": question},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tool_call_count"] == 2
+    assert [item["tool"] for item in body["trace"]] == expected_tools
+    assert [item["source_type"] for item in body["citations"]] == expected_citation_types
+
+
+@pytest.mark.parametrize(
+    ("mutation", "answerability", "failure_code"),
+    [
+        (add_ambiguous_target, "insufficient_evidence", "caller_target_ambiguous"),
+        (invalidate_graph, "temporarily_unavailable", "call_graph_unavailable"),
+    ],
+)
+def test_ambiguous_target_and_unavailable_graph_are_distinguished(
+    mutation: Callable[[uuid.UUID], Coroutine[Any, Any, None]],
+    answerability: str,
+    failure_code: str,
+) -> None:
+    settings = make_settings()
+    owner_id, _, repository_id = asyncio.run(seed_active_repository())
+    asyncio.run(mutation(repository_id))
+    database = Database(
+        engine=create_async_engine(database_url(), pool_pre_ping=True),
+        ready_timeout_seconds=2,
+    )
+    app = create_app(
+        settings=settings,
+        database=database,
+        github_client=FakeGitHub(),  # type: ignore[arg-type]
+        vector_store=FakeVectors(),
+        embedding_provider=FakeEmbeddings(),  # type: ignore[arg-type]
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/repositories/{repository_id}/questions",
+            headers={
+                "Authorization": (
+                    f"Bearer {TokenService(settings).issue_access_token(owner_id).value}"
+                )
+            },
+            json={"question": "What calls validate?"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["answerability"] == answerability
+    assert response.json()["citations"] == []
+    assert response.json()["trace"][0]["failure_code"] == failure_code
 
 
 def test_history_question_uses_authorized_github_scope_and_mixed_schema() -> None:

@@ -14,20 +14,43 @@ from app.rag.models import Answerability, AnswerUncertainty, Evidence
 class AgentToolName(StrEnum):
     SEARCH_CODE = "search_code"
     GET_HISTORY = "get_history"
+    FIND_CALLERS = "find_callers"
 
 
 class AgentToolArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    query: str = Field(min_length=1, max_length=4096)
+    query: str | None = Field(default=None, min_length=1, max_length=4096)
+    symbol_name: str | None = Field(default=None, min_length=1, max_length=1024)
+    file_path: str | None = Field(default=None, min_length=1, max_length=1024)
 
 
 class SearchCodeArguments(AgentToolArguments):
-    pass
+    @model_validator(mode="after")
+    def validate_search(self) -> "SearchCodeArguments":
+        if self.query is None or self.symbol_name is not None or self.file_path is not None:
+            raise ValueError("invalid_search_code_arguments")
+        return self
 
 
 class GetHistoryArguments(AgentToolArguments):
-    pass
+    @model_validator(mode="after")
+    def validate_history(self) -> "GetHistoryArguments":
+        if self.query is None or self.symbol_name is not None or self.file_path is not None:
+            raise ValueError("invalid_get_history_arguments")
+        return self
+
+
+class FindCallersArguments(AgentToolArguments):
+    @model_validator(mode="after")
+    def validate_callers(self) -> "FindCallersArguments":
+        if self.query is not None or self.symbol_name is None:
+            raise ValueError("invalid_find_callers_arguments")
+        if self.file_path is not None and (
+            self.file_path.startswith("/") or ".." in self.file_path.split("/")
+        ):
+            raise ValueError("invalid_find_callers_arguments")
+        return self
 
 
 class AgentDecision(BaseModel):
@@ -104,7 +127,28 @@ class PullRequestEvidence:
     html_url: str
 
 
-AgentEvidence = Evidence | CommitEvidence | PullRequestEvidence
+@dataclass(frozen=True, slots=True)
+class CallerEvidence:
+    evidence_id: str
+    target_symbol_name: str
+    target_qualified_name: str
+    target_file_path: str
+    caller_symbol_name: str
+    caller_qualified_name: str
+    caller_file_path: str
+    caller_start_line: int
+    caller_end_line: int
+    call_line: int
+    call_end_line: int
+    call_expression: str
+    resolution_type: str
+    confidence: str
+    commit_sha: str
+    index_version: int
+    limitation: str = "Static Python analysis; runtime-dispatched calls may be absent."
+
+
+AgentEvidence = Evidence | CommitEvidence | PullRequestEvidence | CallerEvidence
 
 
 class AgentStepStatus(StrEnum):

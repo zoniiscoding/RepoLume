@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.db.models.enums import SymbolType
+from app.db.models.enums import Confidence, ResolutionType, SymbolType
 
 
 class ParseStatus(StrEnum):
@@ -90,6 +90,16 @@ class ParsedSymbol:
 
 
 @dataclass(frozen=True, slots=True)
+class ParsedCallSite:
+    file_path: str
+    module_name: str
+    caller_qualified_name: str
+    expression: str
+    start_line: int
+    end_line: int
+
+
+@dataclass(frozen=True, slots=True)
 class ParsedFile:
     file_path: str
     language: str
@@ -99,6 +109,7 @@ class ParsedFile:
     module_docstring: str | None
     module_segments: tuple[SourceSegment, ...]
     symbols: tuple[ParsedSymbol, ...]
+    call_sites: tuple[ParsedCallSite, ...]
     commit_sha: str
     parse_status: ParseStatus
     warnings: tuple[str, ...]
@@ -152,6 +163,22 @@ class ChunkFingerprint:
 
 
 @dataclass(frozen=True, slots=True)
+class CallEdgeRecord:
+    id: uuid.UUID
+    caller_symbol_id: uuid.UUID
+    callee_symbol_id: uuid.UUID | None
+    unresolved_callee_name: str | None
+    file_path: str
+    call_line: int
+    call_end_line: int
+    call_expression: str
+    call_site_fingerprint: str
+    resolution_type: ResolutionType
+    confidence: Confidence
+    commit_sha: str
+
+
+@dataclass(frozen=True, slots=True)
 class ProcessingResult:
     repository_id: uuid.UUID
     index_version: int
@@ -165,3 +192,10 @@ class ProcessingResult:
     symbols: tuple[SymbolRecord, ...]
     chunk_fingerprints: tuple[ChunkFingerprint, ...]
     chunks: tuple[ContentChunk, ...]
+    call_site_count: int = 0
+    exact_edge_count: int = 0
+    ambiguous_edge_count: int = 0
+    unresolved_call_count: int = 0
+    graph_warning_count: int = 0
+    graph_fingerprint: str = ""
+    call_edges: tuple[CallEdgeRecord, ...] = ()

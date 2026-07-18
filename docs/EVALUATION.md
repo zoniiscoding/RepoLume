@@ -1,12 +1,12 @@
 # RepoLume Evaluation
 
-**Status:** The Milestone 6 20-case/two-pass baseline remains unchanged. Milestone 7 adds a separate versioned 27-case agent/history/security corpus, tool-selection and citation-type metrics, and automated direct-loop/history regressions. The Milestone 7 run used real PostgreSQL/Redis/Qdrant/private embeddings for the complete backend suite, mocked GitHub history, and deterministic provider decisions. It is not live-GitHub or hosted-LLM accuracy evidence.
+**Status:** The Milestone 6 and 7 baselines remain unchanged. Milestone 8 adds a separate static-caller corpus, caller/exact/ambiguity/unresolved/isolation metrics, and graph/caller regressions. Fixture-contract observations are structural expectations with `null` latency; they are not live GitHub, hosted-LLM, runtime-call, or representative accuracy evidence.
 
 ## Controlled corpus
 
 `backend/evaluation/milestone6_cases.json` contains the original 20 cases over the committed Milestone 4 synthetic fixture and a separately scoped confusing repository. Its history case remains labelled unsupported because it records the Milestone 6 baseline and is not retroactively changed.
 
-`backend/evaluation/milestone7_cases.json` contains 27 contracts across code-only, history-only, mixed code/commit, pull request, merge commit, file changes, missing evidence, misleading commit messages, code/commit/patch/PR prompt injection, cross-repository commit/PR distractors, inactive-index code, fabricated commit/PR citations, history timeout, partial failure, repeated-call cap, unknown-tool prevention, revocation during tool work, Milestone 8 caller refusal, runtime refusal, cross-user denial, and suspended-installation denial. Cases add expected tool sequences and citation types without containing private repository data.
+`backend/evaluation/milestone7_cases.json` remains the unchanged 27-case code/history baseline. `backend/evaluation/milestone8_cases.json` adds 20 contracts spanning same-file/direct/aliased/qualified/nested/constructor/method calls; probable, unresolved, duplicate-target, not-found, inactive-version, and cross-repository behavior; caller+code/history, impact wording, injection-shaped evidence, tool-loop resistance, runtime refusal, and fabricated citations. Cases contain expected paths/symbols/tool/citation types and caller identities without private repository content.
 
 Coverage includes exact/similar/nested symbols, semantic implementation, signatures/decorators, behavior answerable from code, Markdown/plain documentation, Unicode, malformed-file recovery, prompt-injection-shaped documentation, missing symbols, runtime/external state, Git history reserved for Milestone 7, caller analysis reserved for Milestone 8, static-analysis limits, and a cross-repository distractor. The controlled search index contains four active fixture chunks; separate scopes contain a confusing other-repository chunk and an inactive-version distractor.
 
@@ -27,7 +27,12 @@ This corpus is synthetic, redistributable with this repository, and deliberately
 | Deterministic consistency | Repeated observations for each case with one identical content-free response fingerprint |
 | Latency | Mean and maximum end-to-end API time in the documented local run |
 | Tool-selection accuracy | Observations whose ordered tool sequence matches the case contract |
-| Citation-type accuracy | Observations containing every expected code/commit/pull-request citation type |
+| Citation-type accuracy | Observations containing every expected code/commit/pull-request/caller citation type |
+| Caller precision / recall | Correct expected caller identities divided by retrieved / expected caller identities |
+| Exact-edge precision | Correct exact static edges divided by exact edges returned |
+| Ambiguity / unresolved accuracy | Explicitly labelled ambiguous or unresolved cases classified safely |
+| Inactive graph leakage | Observation flags for any caller evidence from a non-active version; target zero |
+| Fabricated caller citations | Caller citations not backed by current server evidence; target zero |
 
 The evaluator fails on duplicate case IDs, observations for unknown cases, or an empty run. Retrieval/citation/security tests separately cover score/range ordering, threshold/scope filters, malformed payloads, overlaps, fabricated citations, authorization, stale builds, provider failures, repeated calls, four-call/eight-second bounds, cancellation, GitHub response identity, and mixed citation ordering.
 
@@ -37,6 +42,9 @@ Run the aggregator from the repository root:
 PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
   --cases backend/evaluation/milestone7_cases.json \
   --observations /path/to/content-free-observations.json
+PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
+  --cases backend/evaluation/milestone8_cases.json \
+  --observations backend/evaluation/milestone8_fixture_observations.json
 ```
 
 ## Milestone 6 controlled baseline
@@ -69,10 +77,12 @@ The 27-case Milestone 7 file and its explicitly labelled `fixture_contract` obse
 
 ## Limits and next evaluation work
 
+Milestone 8's 20 explicitly labelled `fixture_contract` observations exercise caller precision/recall, exact-edge precision, ambiguity/unresolved classifications, repository/active-version isolation, mixed tool selection, runtime refusal, loop bounds, injection resistance, and fabricated-citation rejection. All fixture metrics are deterministic structural labels; latency is intentionally `null`. Unit/integration tests independently exercise Tree-sitter extraction, conservative resolution, PostgreSQL graph lifecycle, authorization, active-version filtering, and API citations.
+
 - No real OpenAI request ran, so hosted answer faithfulness, refusal quality, token/cost behavior, provider latency, and rate-limit behavior remain pending.
-- Repeatable local container verification is blocked by contradictory Podman VM/socket state; a hosted CI run of the unpushed Milestone 7 commit remains pending. The successful baseline hosted run and host-run service evidence do not replace that pending gate.
+- Repeatable local container verification remains blocked by contradictory Podman VM/socket state. Milestone 7 hosted run `29650105386` passed for `54f847c`; no Milestone 8 hosted run exists because this local commit is not pushed.
 - The fixture is four active whole-file vectors plus isolated distractors, not a representative repository population or load test.
 - Citation precision and unsupported-claim labels are deterministic structural labels in this baseline; independent human/provider evaluation remains necessary before launch.
-- No MRR, p95/p99 latency, multilingual breadth, long-context capacity, freshness, caller quality, or end-user usefulness score is claimed.
+- No runtime-call recall, MRR, p95/p99 latency, multilingual breadth, long-context capacity, freshness, representative caller quality, or end-user usefulness score is claimed.
 - A controlled live GitHub App plus hosted-model run must produce content-free Milestone 7 observations before launch; do not synthesize or hand-author performance observations.
-- Milestone 8 must add caller questions as a new corpus/version without relabelling the Milestone 6 or 7 records.
+- Milestone 9 must evaluate incremental graph freshness and active-version transitions without relabelling Milestone 6–8 records; Milestone 9 is not implemented.

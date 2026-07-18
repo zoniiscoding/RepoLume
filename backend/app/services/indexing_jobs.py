@@ -1,5 +1,6 @@
 """Atomic PostgreSQL state transitions for durable indexing workers."""
 
+import hashlib
 import secrets
 import uuid
 from collections.abc import Sequence
@@ -9,12 +10,14 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import and_, delete, or_, select, update
 
 from app.core.config import Settings
+from app.db.models.call_edge import CallEdge
 from app.db.models.enums import (
     IndexBuildState,
     IndexCleanupStatus,
     IndexingJobStatus,
     InstallationStatus,
     RepositoryIndexingStatus,
+    ResolutionType,
 )
 from app.db.models.github_installation import GitHubInstallation, InstallationMember
 from app.db.models.indexing_job import IndexingJob
@@ -22,6 +25,7 @@ from app.db.models.repository import Repository
 from app.db.models.repository_index_build import RepositoryIndexBuild
 from app.db.models.symbol_definition import SymbolDefinition
 from app.db.session import Database
+from app.indexing.call_graph import deterministic_symbol_id
 from app.indexing.discovery import DiscoveryResult
 from app.indexing.failures import IndexingError
 from app.indexing.models import ProcessingResult
@@ -208,7 +212,7 @@ class IndexingJobStore:
                 )
             await session.commit()
 
-    async def prepare_build(
+    async def prepare_build(  # noqa: PLR0915 -- one atomic persistence transaction
         self,
         claimed: ClaimedJob,
         worker_id: str,
@@ -268,6 +272,13 @@ class IndexingJobStore:
                     embedding_dimension=self._embedding_dimension,
                     preprocessing_fingerprint=preprocessing_fingerprint,
                     expected_chunk_count=processing.chunk_count,
+                    call_site_count=processing.call_site_count,
+                    exact_edge_count=processing.exact_edge_count,
+                    ambiguous_edge_count=processing.ambiguous_edge_count,
+                    unresolved_call_count=processing.unresolved_call_count,
+                    graph_warning_count=processing.graph_warning_count,
+                    graph_fingerprint=processing.graph_fingerprint,
+                    graph_validated=False,
                 )
                 session.add(build)
             else:
@@ -284,6 +295,13 @@ class IndexingJobStore:
                 build.vector_count = 0
                 build.failed_chunk_count = 0
                 build.skipped_chunk_count = 0
+                build.call_site_count = processing.call_site_count
+                build.exact_edge_count = processing.exact_edge_count
+                build.ambiguous_edge_count = processing.ambiguous_edge_count
+                build.unresolved_call_count = processing.unresolved_call_count
+                build.graph_warning_count = processing.graph_warning_count
+                build.graph_fingerprint = processing.graph_fingerprint
+                build.graph_validated = False
                 build.activated_at = None
                 build.cleanup_completed_at = None
             await session.execute(
@@ -294,6 +312,7 @@ class IndexingJobStore:
             )
             session.add_all(
                 SymbolDefinition(
+                    id=deterministic_symbol_id(repository.id, processing.index_version, symbol),
                     repository_id=repository.id,
                     index_version=processing.index_version,
                     file_path=symbol.file_path,
@@ -307,6 +326,26 @@ class IndexingJobStore:
                     commit_sha=symbol.commit_sha,
                 )
                 for symbol in processing.symbols
+            )
+            await session.flush()
+            session.add_all(
+                CallEdge(
+                    id=edge.id,
+                    repository_id=repository.id,
+                    index_version=processing.index_version,
+                    caller_symbol_id=edge.caller_symbol_id,
+                    callee_symbol_id=edge.callee_symbol_id,
+                    unresolved_callee_name=edge.unresolved_callee_name,
+                    file_path=edge.file_path,
+                    call_line=edge.call_line,
+                    call_end_line=edge.call_end_line,
+                    call_expression=edge.call_expression,
+                    call_site_fingerprint=edge.call_site_fingerprint,
+                    resolution_type=edge.resolution_type,
+                    confidence=edge.confidence,
+                    commit_sha=edge.commit_sha,
+                )
+                for edge in processing.call_edges
             )
             job.source_commit_sha = commit_sha
             job.discovered_file_count = len(discovery.files)
@@ -322,8 +361,89 @@ class IndexingJobStore:
             job.embedding_model_revision = self._embedding_model_revision
             job.embedding_dimension = self._embedding_dimension
             job.preprocessing_fingerprint = preprocessing_fingerprint
+            job.call_site_count = processing.call_site_count
+            job.exact_edge_count = processing.exact_edge_count
+            job.ambiguous_edge_count = processing.ambiguous_edge_count
+            job.unresolved_call_count = processing.unresolved_call_count
+            job.graph_warning_count = processing.graph_warning_count
             repository.current_remote_sha = commit_sha
             repository.size_bytes = discovery.total_bytes
+            await session.commit()
+
+    async def validate_graph(self, claimed: ClaimedJob, worker_id: str) -> None:
+        """Validate persisted graph counts before an inactive build can become ready."""
+        async with self._database.session() as session:
+            job = await session.scalar(
+                select(IndexingJob).where(
+                    IndexingJob.id == claimed.id,
+                    IndexingJob.status == IndexingJobStatus.RUNNING,
+                    IndexingJob.locked_by == worker_id,
+                )
+            )
+            if job is None or job.target_index_version is None:
+                raise self._activation_race()
+            build = await session.scalar(
+                select(RepositoryIndexBuild)
+                .where(
+                    RepositoryIndexBuild.repository_id == claimed.repository_id,
+                    RepositoryIndexBuild.index_version == job.target_index_version,
+                    RepositoryIndexBuild.job_id == claimed.id,
+                    RepositoryIndexBuild.state == IndexBuildState.BUILDING,
+                )
+                .with_for_update()
+            )
+            if build is None or not build.graph_fingerprint:
+                raise self._graph_validation_error()
+            edges = tuple(
+                (
+                    await session.scalars(
+                        select(CallEdge)
+                        .where(
+                            CallEdge.repository_id == claimed.repository_id,
+                            CallEdge.index_version == job.target_index_version,
+                            CallEdge.commit_sha == build.commit_sha,
+                        )
+                        .order_by(
+                            CallEdge.file_path,
+                            CallEdge.call_line,
+                            CallEdge.call_end_line,
+                            CallEdge.caller_symbol_id,
+                            CallEdge.call_expression,
+                        )
+                    )
+                ).all()
+            )
+            exact = sum(
+                edge.callee_symbol_id is not None
+                and edge.resolution_type is not ResolutionType.PROBABLE_METHOD
+                for edge in edges
+            )
+            ambiguous = sum(edge.resolution_type is ResolutionType.AMBIGUOUS for edge in edges)
+            unresolved = sum(edge.resolution_type is ResolutionType.UNRESOLVED for edge in edges)
+            fingerprint = hashlib.sha256(
+                "\n".join(
+                    "\x1f".join(
+                        (
+                            str(edge.id),
+                            str(edge.caller_symbol_id),
+                            str(edge.callee_symbol_id or ""),
+                            edge.call_site_fingerprint,
+                            edge.resolution_type.value,
+                            edge.confidence.value,
+                        )
+                    )
+                    for edge in edges
+                ).encode()
+            ).hexdigest()
+            if (
+                len(edges) != build.call_site_count
+                or exact != build.exact_edge_count
+                or ambiguous != build.ambiguous_edge_count
+                or unresolved != build.unresolved_call_count
+                or fingerprint != build.graph_fingerprint
+            ):
+                raise self._graph_validation_error()
+            build.graph_validated = True
             await session.commit()
 
     async def record_vector_counts(
@@ -385,6 +505,8 @@ class IndexingJobStore:
                     RepositoryIndexBuild.expected_chunk_count
                     == RepositoryIndexBuild.embedded_chunk_count,
                     RepositoryIndexBuild.expected_chunk_count == RepositoryIndexBuild.vector_count,
+                    RepositoryIndexBuild.graph_validated.is_(True),
+                    RepositoryIndexBuild.graph_fingerprint.is_not(None),
                 )
                 .values(state=IndexBuildState.READY)
                 .returning(RepositoryIndexBuild.id)
@@ -435,6 +557,8 @@ class IndexingJobStore:
                     RepositoryIndexBuild.expected_chunk_count
                     == RepositoryIndexBuild.embedded_chunk_count,
                     RepositoryIndexBuild.expected_chunk_count == RepositoryIndexBuild.vector_count,
+                    RepositoryIndexBuild.graph_validated.is_(True),
+                    RepositoryIndexBuild.graph_fingerprint.is_not(None),
                 )
                 .with_for_update()
             )
@@ -721,5 +845,13 @@ class IndexingJobStore:
         return IndexingError(
             code="index_activation_race",
             message="The inactive index is no longer eligible for activation",
+            retryable=False,
+        )
+
+    @staticmethod
+    def _graph_validation_error() -> IndexingError:
+        return IndexingError(
+            code="call_graph_validation_failed",
+            message="The inactive static call graph failed validation",
             retryable=False,
         )

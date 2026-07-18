@@ -11,6 +11,7 @@ from app.db.models.enums import SymbolType
 from app.indexing.models import (
     ImportAlias,
     ParameterKind,
+    ParsedCallSite,
     ParsedFile,
     ParsedImport,
     ParsedParameter,
@@ -30,9 +31,18 @@ def content_hash(value: str) -> str:
 class PythonStaticParser:
     """Extract structure from UTF-8 Python text using Tree-sitter only."""
 
-    def __init__(self, *, max_symbols: int, max_warnings: int) -> None:
+    def __init__(
+        self,
+        *,
+        max_symbols: int,
+        max_warnings: int,
+        max_call_sites: int = 10_000,
+        max_call_expression_bytes: int = 2048,
+    ) -> None:
         self._max_symbols = max_symbols
         self._max_warnings = max_warnings
+        self._max_call_sites = max_call_sites
+        self._max_call_expression_bytes = max_call_expression_bytes
         self._parser = Parser(PYTHON_LANGUAGE)
 
     def parse(self, *, file_path: str, source_text: str, commit_sha: str) -> ParsedFile:
@@ -64,6 +74,7 @@ class PythonStaticParser:
                 module_docstring=None,
                 module_segments=(),
                 symbols=(),
+                call_sites=(),
                 commit_sha=commit_sha,
                 parse_status=ParseStatus.SKIPPED,
                 warnings=("symbol_count_exceeded",),
@@ -80,6 +91,14 @@ class PythonStaticParser:
                 source,
             )
         )
+        call_sites, call_warnings = self._extract_call_sites(
+            root=root,
+            source=source,
+            file_path=file_path,
+            module_name=module_name,
+            symbols=symbols,
+        )
+        warnings.extend(call_warnings)
         status = ParseStatus.COMPLETE
         if root.has_error:
             status = (
@@ -101,9 +120,76 @@ class PythonStaticParser:
                     key=lambda item: (item.start_line, item.end_line, item.qualified_name),
                 )
             ),
+            call_sites=call_sites,
             commit_sha=commit_sha,
             parse_status=status,
             warnings=tuple(warnings[: self._max_warnings]),
+        )
+
+    def _extract_call_sites(
+        self,
+        *,
+        root: Node,
+        source: bytes,
+        file_path: str,
+        module_name: str,
+        symbols: list[ParsedSymbol],
+    ) -> tuple[tuple[ParsedCallSite, ...], list[str]]:
+        callable_symbols = tuple(
+            symbol
+            for symbol in symbols
+            if symbol.symbol_type
+            in {SymbolType.FUNCTION, SymbolType.ASYNC_FUNCTION, SymbolType.METHOD}
+        )
+        pending = [root]
+        result: list[ParsedCallSite] = []
+        warnings: list[str] = []
+        while pending:
+            node = pending.pop()
+            if node.type == "call":
+                function = node.child_by_field_name("function")
+                line = node.start_point.row + 1
+                containing = [
+                    symbol
+                    for symbol in callable_symbols
+                    if symbol.header_end_line <= line <= symbol.end_line
+                ]
+                caller = min(
+                    containing,
+                    key=lambda item: (item.end_line - item.start_line, -item.start_line),
+                    default=None,
+                )
+                if function is not None and caller is not None:
+                    expression = self._text(function, source)
+                    if len(expression.encode("utf-8")) <= self._max_call_expression_bytes:
+                        result.append(
+                            ParsedCallSite(
+                                file_path=file_path,
+                                module_name=module_name,
+                                caller_qualified_name=caller.qualified_name,
+                                expression=expression,
+                                start_line=line,
+                                end_line=node.end_point.row + 1,
+                            )
+                        )
+                    else:
+                        warnings.append("call_expression_too_large")
+            pending.extend(reversed(node.named_children))
+            if len(result) > self._max_call_sites:
+                return (), ["call_site_count_exceeded"]
+        return (
+            tuple(
+                sorted(
+                    result,
+                    key=lambda item: (
+                        item.start_line,
+                        item.end_line,
+                        item.caller_qualified_name,
+                        item.expression,
+                    ),
+                )
+            ),
+            warnings,
         )
 
     def _walk_definitions(

@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.application import create_app
 from app.auth.tokens import TokenService
 from app.core.config import Settings
+from app.db.models.call_edge import CallEdge
 from app.db.models.enums import (
     GitHubAccountType,
     IndexBuildState,
@@ -276,7 +277,9 @@ def create_git_fixture(root: Path, marker: Path) -> Path:
         ["/usr/bin/git", "init", "-q", "-b", "main", str(fixture)],
         check=True,
     )
-    (fixture / "safe.py").write_text("def answer():\n    return 42\n")
+    (fixture / "safe.py").write_text(
+        "def answer():\n    return 42\n\ndef call_answer():\n    return answer()\n"
+    )
     (fixture / "README.md").write_text("# Controlled fixture\n")
     (fixture / "danger.py").write_text(f"open({str(marker)!r}, 'w').write('executed')\n")
     subprocess.run(  # noqa: S603
@@ -368,8 +371,9 @@ class FailingAnalyzer:
         index_version: int,
         commit_sha: str,
         on_chunking: Callable[[], Awaitable[None]],
+        on_graphing: Callable[[], Awaitable[None]] | None = None,
     ) -> ProcessingResult:
-        del checkout, discovery, repository_id, index_version, commit_sha, on_chunking
+        del checkout, discovery, repository_id, index_version, commit_sha, on_chunking, on_graphing
         raise IndexingError(
             code="internal_parser_failure",
             message="Static repository processing failed safely",
@@ -568,14 +572,20 @@ def test_real_worker_clones_controlled_fixture_without_execution_and_cleans_up(
     assert status.json()["stage"] == "complete"
     assert status.json()["discovered_file_count"] == 3
     assert status.json()["parsed_file_count"] == 3
-    assert status.json()["symbol_count"] == 1
-    assert status.json()["chunk_count"] == 3
-    assert status.json()["embedded_chunk_count"] == 3
-    assert status.json()["vector_count"] == 3
-    assert status.json()["active_vector_count"] == 3
+    assert status.json()["symbol_count"] == 2
+    assert status.json()["chunk_count"] == 4
+    assert status.json()["embedded_chunk_count"] == 4
+    assert status.json()["vector_count"] == 4
+    assert status.json()["active_vector_count"] == 4
+    assert status.json()["call_site_count"] == 1
+    assert status.json()["exact_edge_count"] == 1
+    assert status.json()["ambiguous_edge_count"] == 0
+    assert status.json()["unresolved_call_count"] == 0
+    assert status.json()["graph_warning_count"] == 0
     assert status.json()["active_index_version"] == 1
     assert status.json()["searchable"] is True
-    assert asyncio.run(scalar(select(func.count(SymbolDefinition.id)))) == 1
+    assert asyncio.run(scalar(select(func.count(SymbolDefinition.id)))) == 2
+    assert asyncio.run(scalar(select(func.count(CallEdge.id)))) == 1
     assert asyncio.run(scalar(select(SymbolDefinition.index_version))) == 1
     assert asyncio.run(scalar(select(func.count(RepositoryIndexBuild.id)))) == 1
     repository = asyncio.run(
@@ -591,7 +601,7 @@ def test_real_worker_clones_controlled_fixture_without_execution_and_cleans_up(
         await vectors.close()
         return count
 
-    assert asyncio.run(vector_count()) == 3
+    assert asyncio.run(vector_count()) == 4
     assert cloner.calls == 1
     assert tuple(clone_root.iterdir()) == ()
     assert not marker.exists()
@@ -629,8 +639,9 @@ def test_real_embedding_service_completes_controlled_fixture_pipeline(
     assert response.status_code == 200
     assert response.json()["job_status"] == "complete"
     assert response.json()["active_index_version"] == 1
-    assert response.json()["embedded_chunk_count"] == 3
-    assert response.json()["active_vector_count"] == 3
+    assert response.json()["embedded_chunk_count"] == 4
+    assert response.json()["active_vector_count"] == 4
+    assert response.json()["call_site_count"] == 1
     assert response.json()["searchable"] is True
     assert tuple(clone_root.iterdir()) == ()
 
@@ -721,7 +732,7 @@ def test_failed_replacement_preserves_previous_active_index(
     assert status_payload["error_code"] == "embedding_generation_failed"
     assert status_payload["active_index_version"] == 1
     assert status_payload["vector_count"] == 0
-    assert status_payload["active_vector_count"] == 3
+    assert status_payload["active_vector_count"] == 4
     assert status_payload["searchable"] is True
 
     async def durable_state() -> tuple[int, tuple[tuple[IndexBuildState, IndexCleanupStatus], ...]]:
@@ -742,7 +753,7 @@ def test_failed_replacement_preserves_previous_active_index(
         return active_vectors, builds
 
     active_vectors, builds = asyncio.run(durable_state())
-    assert active_vectors == 3
+    assert active_vectors == 4
     assert builds == (
         (IndexBuildState.ACTIVE, IndexCleanupStatus.NOT_REQUIRED),
         (IndexBuildState.FAILED, IndexCleanupStatus.COMPLETE),
@@ -755,7 +766,13 @@ def test_failed_replacement_preserves_previous_active_index(
         await vectors.close()
         return active, failed
 
-    assert asyncio.run(vector_counts()) == (3, 0)
+    assert asyncio.run(vector_counts()) == (4, 0)
+    assert (
+        asyncio.run(scalar(select(func.count(CallEdge.id)).where(CallEdge.index_version == 1))) == 1
+    )
+    assert (
+        asyncio.run(scalar(select(func.count(CallEdge.id)).where(CallEdge.index_version == 2))) == 0
+    )
     assert tuple(clone_root.iterdir()) == ()
 
 
@@ -790,7 +807,7 @@ def test_successful_replacement_activates_then_cleans_previous_version(
     assert response.status_code == 200
     assert response.json()["job_status"] == "complete"
     assert response.json()["active_index_version"] == 2
-    assert response.json()["active_vector_count"] == 3
+    assert response.json()["active_vector_count"] == 4
     assert response.json()["searchable"] is True
 
     async def durable_state() -> tuple[list[tuple[IndexBuildState, IndexCleanupStatus]], int]:
@@ -826,7 +843,13 @@ def test_successful_replacement_activates_then_cleans_previous_version(
         await vectors.close()
         return old, active
 
-    assert asyncio.run(vector_counts()) == (0, 3)
+    assert asyncio.run(vector_counts()) == (0, 4)
+    assert (
+        asyncio.run(scalar(select(func.count(CallEdge.id)).where(CallEdge.index_version == 1))) == 0
+    )
+    assert (
+        asyncio.run(scalar(select(func.count(CallEdge.id)).where(CallEdge.index_version == 2))) == 1
+    )
     assert tuple(clone_root.iterdir()) == ()
 
 

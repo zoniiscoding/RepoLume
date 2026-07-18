@@ -9,7 +9,6 @@ from app.rag.models import NormalizedQuestion
 
 _TOKEN_PATTERN = re.compile(r"[\w]+|[^\w\s]", flags=re.UNICODE)
 _UNSUPPORTED_PATTERNS = (
-    re.compile(r"\b(?:find\s+(?:all\s+)?callers|what\s+calls|who\s+calls|call\s+graph)\b", re.I),
     re.compile(
         r"\b(?:runtime|current\s+production|production\s+(?:logs?|traffic|state)|current\s+(?:database|network|memory|cpu))\b",
         re.I,

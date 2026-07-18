@@ -41,6 +41,11 @@ class IndexingJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         CheckConstraint("vector_count >= 0", name="vector_count_nonnegative"),
         CheckConstraint("embedding_failed_count >= 0", name="embedding_failed_count_nonnegative"),
         CheckConstraint("embedding_skipped_count >= 0", name="embedding_skipped_count_nonnegative"),
+        CheckConstraint("call_site_count >= 0", name="call_site_count_nonnegative"),
+        CheckConstraint("exact_edge_count >= 0", name="exact_edge_count_nonnegative"),
+        CheckConstraint("ambiguous_edge_count >= 0", name="ambiguous_edge_count_nonnegative"),
+        CheckConstraint("unresolved_call_count >= 0", name="unresolved_call_count_nonnegative"),
+        CheckConstraint("graph_warning_count >= 0", name="graph_warning_count_nonnegative"),
         CheckConstraint(
             "target_index_version IS NULL OR target_index_version >= 1",
             name="target_index_version_positive",
@@ -128,6 +133,21 @@ class IndexingJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     preprocessing_fingerprint: Mapped[str | None] = mapped_column(String(64))
     parser_warnings_json: Mapped[dict[str, int]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    call_site_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    exact_edge_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    ambiguous_edge_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    unresolved_call_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    graph_warning_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -357,3 +357,31 @@ Decisions are append-only. If a decision changes, add a superseding entry instea
 - **Decision:** Add no history, trace, question, answer, or agent-step tables. PostgreSQL continues to own users, installation membership, repository authorization, and the active index; tool evidence exists only for the duration of one request.
 - **Rationale:** The product specification does not require history persistence at this milestone, and retaining private history would expand deletion, encryption, incident, and tenant-isolation obligations without product need.
 - **Consequence:** The existing Alembic head remains `d06a6455fcd7`; the full chain must still be verified from a clean PostgreSQL database.
+
+## D-046 — Build the call graph inside isolated static analysis
+
+- **Status:** Accepted and implemented in Milestone 8
+- **Decision:** Extract bounded Tree-sitter Python call nodes inside the existing killable parser process and construct the complete graph only during a full versioned re-index.
+- **Rationale:** Connected code remains inert data and the existing CPU/memory/time/path boundary remains enforceable.
+- **Consequence:** Runtime tracing and Milestone 9 incremental maintenance are intentionally absent.
+
+## D-047 — Persist conservative resolution and ambiguity
+
+- **Status:** Accepted and implemented in Milestone 8
+- **Decision:** Persist only `exact_same_file`, `exact_direct_import`, `qualified_module`, uniquely `probable_method`, `ambiguous`, or `unresolved` with high/medium/low confidence. Wildcard, dynamic, reflective, and ambiguous calls never become exact edges.
+- **Rationale:** False exact caller claims are more damaging than explicit incomplete static evidence.
+- **Consequence:** Recall is intentionally lower than runtime truth and every caller citation exposes the limitation.
+
+## D-048 — Require a validated graph fingerprint before activation
+
+- **Status:** Accepted and implemented in Milestone 8
+- **Decision:** Store deterministic symbol/edge IDs and inactive graph counts/fingerprint, then re-read PostgreSQL edges and recompute them before ready/active transitions. Failed and superseded versions clean edges through scoped symbol cascades.
+- **Rationale:** Vector readiness alone cannot prove the relational caller index is complete or internally consistent.
+- **Consequence:** A partial/corrupt graph cannot become the active caller source; existing pre-Milestone-8 active builds require a full re-index before caller lookup.
+
+## D-049 — Add exactly one server-scoped caller tool
+
+- **Status:** Accepted and implemented in Milestone 8
+- **Decision:** The immutable registry is exactly `search_code`, `get_history`, and `find_callers`. Caller arguments contain only a symbol and optional safe file path; authorization, repository, version, commit, limit, ordering, SQL, and citations remain server-owned.
+- **Rationale:** Caller questions need a reviewed capability without granting the model a general graph or database interface.
+- **Consequence:** Missing/ambiguous targets are semantic non-answers; graph/query/scope failures are operational unavailability. No fourth tool or Milestone 9 behavior exists.

@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from app.core.config import Settings
+from app.indexing.call_graph import PythonCallGraphBuilder
 from app.indexing.chunking import DocumentationChunker, PythonChunker
 from app.indexing.discovery import DiscoveryResult
 from app.indexing.failures import IndexingError
@@ -41,6 +42,9 @@ class ParserLimits:
     max_total_chunk_bytes: int
     max_document_section_bytes: int
     max_warnings_per_file: int
+    max_call_sites_per_file: int
+    max_total_call_sites: int
+    max_call_expression_bytes: int
     timeout_seconds: float
     process_memory_bytes: int
     process_cpu_seconds: int
@@ -57,6 +61,9 @@ class ParserLimits:
             max_total_chunk_bytes=settings.parser_max_total_chunk_bytes,
             max_document_section_bytes=settings.parser_max_document_section_bytes,
             max_warnings_per_file=settings.parser_max_warnings_per_file,
+            max_call_sites_per_file=settings.parser_max_call_sites_per_file,
+            max_total_call_sites=settings.parser_max_total_call_sites,
+            max_call_expression_bytes=settings.parser_max_call_expression_bytes,
             timeout_seconds=settings.parser_timeout_seconds,
             process_memory_bytes=settings.parser_process_memory_bytes,
             process_cpu_seconds=settings.parser_process_cpu_seconds,
@@ -83,6 +90,7 @@ class RepositoryAnalyzerProtocol(Protocol):
         index_version: int,
         commit_sha: str,
         on_chunking: Callable[[], Awaitable[None]],
+        on_graphing: Callable[[], Awaitable[None]] | None = None,
     ) -> ProcessingResult: ...
 
 
@@ -94,6 +102,8 @@ class RepositoryAnalyzer:
         self._python_parser = PythonStaticParser(
             max_symbols=limits.max_symbols_per_file,
             max_warnings=limits.max_warnings_per_file,
+            max_call_sites=limits.max_call_sites_per_file,
+            max_call_expression_bytes=limits.max_call_expression_bytes,
         )
         self._python_chunker = PythonChunker(
             max_symbol_bytes=limits.max_symbol_bytes,
@@ -117,6 +127,7 @@ class RepositoryAnalyzer:
         index_version: int,
         commit_sha: str,
         on_chunking: Callable[[], None] | None = None,
+        on_graphing: Callable[[], None] | None = None,
     ) -> ProcessingResult:
         root = checkout.resolve(strict=True)
         if not root.is_dir():
@@ -151,6 +162,19 @@ class RepositoryAnalyzer:
         )
         chunks = [replace(chunk, ordinal=ordinal) for ordinal, chunk in enumerate(chunks)]
         self._assert_total_chunk_bytes(chunks)
+        if on_graphing is not None:
+            on_graphing()
+        graph = PythonCallGraphBuilder(
+            max_total_call_sites=self._limits.max_total_call_sites
+        ).build(
+            repository_id=repository_id,
+            index_version=index_version,
+            commit_sha=commit_sha,
+            parsed_files=scan.parsed_files,
+            symbols=tuple(symbols),
+        )
+        if graph.warning_count:
+            warnings["call_graph_resolution_warning"] += graph.warning_count
         fingerprints = tuple(
             ChunkFingerprint(
                 ordinal=chunk.ordinal,
@@ -176,6 +200,13 @@ class RepositoryAnalyzer:
             symbols=tuple(symbols),
             chunk_fingerprints=fingerprints,
             chunks=tuple(chunks),
+            call_site_count=graph.call_site_count,
+            exact_edge_count=graph.exact_edge_count,
+            ambiguous_edge_count=graph.ambiguous_edge_count,
+            unresolved_call_count=graph.unresolved_call_count,
+            graph_warning_count=graph.warning_count,
+            graph_fingerprint=graph.fingerprint,
+            call_edges=graph.edges,
         )
 
     def _build_chunks(
@@ -355,7 +386,7 @@ class ProcessIsolatedAnalyzer:
             settings if isinstance(settings, ParserLimits) else ParserLimits.from_settings(settings)
         )
 
-    async def analyze(
+    async def analyze(  # noqa: PLR0912 -- explicit child-process protocol fails closed
         self,
         *,
         checkout: Path,
@@ -364,6 +395,7 @@ class ProcessIsolatedAnalyzer:
         index_version: int,
         commit_sha: str,
         on_chunking: Callable[[], Awaitable[None]],
+        on_graphing: Callable[[], Awaitable[None]] | None = None,
     ) -> ProcessingResult:
         context = multiprocessing.get_context("spawn")
         receiving, sending = context.Pipe(duplex=False)
@@ -395,7 +427,10 @@ class ProcessIsolatedAnalyzer:
                             retryable=False,
                         ) from error
                     if kind == "stage":
-                        await on_chunking()
+                        if payload == "chunking":
+                            await on_chunking()
+                        elif payload == "graphing" and on_graphing is not None:
+                            await on_graphing()
                         continue
                     if kind == "result":
                         if (
@@ -458,7 +493,8 @@ def _analyzer_process(
             repository_id=repository_id,
             index_version=index_version,
             commit_sha=commit_sha,
-            on_chunking=lambda: connection.send(("stage", None)),
+            on_chunking=lambda: connection.send(("stage", "chunking")),
+            on_graphing=lambda: connection.send(("stage", "graphing")),
         )
         connection.send(("result", result))
     except IndexingError as error:

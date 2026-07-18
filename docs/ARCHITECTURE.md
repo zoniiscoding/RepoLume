@@ -1,6 +1,6 @@
 # RepoLume Architecture
 
-**Status:** Milestone 7 bounded agent orchestration and on-demand GitHub history are implemented and locally verified with Python 3.13, PostgreSQL 18, Redis 8.8, standalone Qdrant 1.18.2, the pinned private ONNX embedding model, mocked GitHub history, and deterministic agent decisions. Live GitHub App history, hosted OpenAI-model acceptance, a Milestone 7 hosted CI run, and deployment remain outstanding.
+**Status:** Milestone 8 persistent static Python call graphs and authorized caller analysis are implemented. Local migration, graph, tenancy, agent, and service verification is recorded in `BUILD_STATUS.md`; runtime call tracing, incremental indexing, live GitHub/hosted-model acceptance, and deployment remain outstanding.
 
 ## Goals
 
@@ -34,8 +34,8 @@ Only the frontend, API, webhook route, and safe health routes are public. The wo
 | Component | Responsibility | Must not do |
 | --- | --- | --- |
 | Frontend | Authentication states, repository management, progress, repository-scoped chat, sanitized evidence rendering | Store access tokens persistently; render untrusted HTML |
-| API | **Through Milestone 7:** foundation, GitHub OAuth/sessions, authorization, signed webhooks, selection/status, readiness, and a bounded two-tool repository agent | Perform ingestion in request handlers; trust model/client scope or filters; expose shell/arbitrary networking; persist questions/prompts/answers/history evidence; expose vectors, prompts, or infrastructure details |
-| Worker | **Through Milestone 5:** claim/recover/heartbeat, reauthorize, clone/discover/parse/chunk, call embeddings, write/validate scoped vectors, atomically activate, clean up | Expose a public endpoint; execute/import connected code; activate incomplete data; perform unscoped vector operations |
+| API | **Through Milestone 8:** foundation, GitHub OAuth/sessions, authorization, signed webhooks, selection/status, readiness, and a bounded three-tool repository agent | Perform ingestion in request handlers; trust model/client scope or filters; expose shell/arbitrary networking; persist questions/prompts/answers/history evidence; expose vectors, prompts, or infrastructure details |
+| Worker | **Through Milestone 8:** claim/recover/heartbeat, reauthorize, clone/discover/parse/chunk/build graph, call embeddings, validate inactive graph/vectors, atomically activate, clean up | Expose a public endpoint; execute/import connected code; activate incomplete data; perform unscoped graph/vector operations |
 | Embedding service | Load and warm one immutable ONNX model, authenticate and bound batches, enforce token/output contracts, return deterministic normalized vectors | Receive GitHub/Redis/database credentials; log raw chunks/vectors; accept public traffic; load remote code |
 | PostgreSQL | Identity/access, webhook/job truth, processing summaries, versioned symbols, index-build/count/activation/cleanup truth | Act as a vector engine; persist raw tokens, source bodies, or vector arrays |
 | Redis | **Implemented:** at-least-once Stream delivery of opaque job UUIDs; later ephemeral cache/rate-limit support | Be the only record of a job or access decision; carry repository data or credentials |
@@ -47,12 +47,12 @@ Only the frontend, API, webhook route, and safe health routes are public. The wo
 ```text
 backend/             FastAPI API, domain services, persistence, jobs, ingestion, tests
 embedding_service/   Private FastAPI/FastEmbed ONNX service, independent locks/image/tests
-frontend/            Reserved for a later React/Vite application; not created through Milestone 7
+frontend/            Reserved for a later React/Vite application; not created through Milestone 8
 docs/                Product, architecture, security, decisions, evaluation, status, operations
 .github/              CI/CD and dependency automation
 ```
 
-Within the backend, versioned routes delegate to auth, installation, repository, agent-question, webhook, and health services. GitHub, Redis, embeddings, Qdrant, and the hosted provider sit behind typed protocols. The immutable agent registry exposes only `search_code` and `get_history`; tools receive a server-built context and cannot choose tenant scope or destinations. The API holds no ORM session across embedding, Qdrant, GitHub, or LLM I/O and reauthorizes/rechecks the active build before returning. Caller resolution, chat persistence, and frontend integrations do not exist.
+Within the backend, versioned routes delegate to auth, installation, repository, agent-question, webhook, and health services. GitHub, Redis, embeddings, Qdrant, and the hosted provider sit behind typed protocols. The immutable agent registry exposes only `search_code`, `get_history`, and `find_callers`; tools receive a server-built context and cannot choose tenant scope, versions, commits, destinations, or limits. The API holds no ORM session across embedding, Qdrant, GitHub, or LLM I/O and reauthorizes/rechecks the active build before returning. Chat persistence and frontend integrations do not exist.
 
 ## Implemented request paths
 
@@ -87,9 +87,9 @@ Repository selection:
 Worker:
   Redis job UUID -> conditional PostgreSQL claim -> durable authorization reload
   -> short-lived installation token -> fixed shallow clone -> bounded discovery
-  -> parsing/chunking child -> safe summary + inactive symbols in PostgreSQL
+  -> parsing/chunking/static-graph child -> safe summary + inactive symbols/edges in PostgreSQL
   -> deterministic preprocessing -> authenticated bounded embedding batches
-  -> inactive scoped Qdrant upsert/count/metadata validation
+  -> inactive scoped Qdrant upsert/count/metadata validation + graph validation
   -> PostgreSQL atomic activation -> superseded-version cleanup
   -> terminal/retry transition -> guaranteed clone cleanup -> Redis ACK
 
@@ -99,6 +99,7 @@ Repository question:
   -> normalized bounded query -> strict provider tool/final decision
   -> search_code: private query embedding + mandatory scoped Qdrant search
   -> get_history: repository-restricted ephemeral GitHub token + fixed commit/PR paths
+  -> find_callers: exact active repository/version/commit PostgreSQL graph query
   -> bounded untrusted evidence -> strict provider decision/final response
   -> current-trace mixed citation resolution -> authorization/version recheck
   -> explicit answer, partial answer, or non-answer plus content-free safe trace
@@ -123,7 +124,7 @@ Services derive repository context from authorization-aware joins. Client identi
 
 GitHub user tokens exist only during callback synchronization. Installation tokens exist only during one repository synchronization or worker clone. RepoLume access tokens are short-lived signed bearer tokens. Browser refresh tokens are random opaque values; PostgreSQL stores only a keyed digest, family lineage, expiry/use/revocation state, and user relation. OAuth state and the PKCE verifier are also persisted only as keyed digests.
 
-The relational model now actively supports users, installations/memberships, authorized repositories, content-free webhook delivery state, one-time OAuth state, refresh-token families, and indexing job delivery/state. Chat, graph, and symbol relations remain groundwork for later milestones.
+The relational model actively supports users, installations/memberships, authorized repositories, content-free webhook delivery state, one-time OAuth state, refresh-token families, indexing jobs/builds, versioned symbols, and validated versioned call edges. Chat relations remain groundwork for later milestones.
 
 ## Database session strategy
 
@@ -133,7 +134,7 @@ RepoLume uses SQLAlchemy 2.x async sessions with `asyncpg` in FastAPI and the wo
 - One short-lived session per worker job step/transaction; no session remains open during clone, embedding, LLM, or other network work.
 - `expire_on_commit=False`; ORM instances do not cross process or queue boundaries.
 - Workers receive scalar identifiers, then reload and re-authorize durable state.
-- Schema changes are made only through Alembic migrations; `d06a6455fcd7` adds the Milestone 5 build/count/model/cleanup lifecycle after `f9389ed2964e`.
+- Schema changes are made only through Alembic migrations; head `b83f2d8a6c41` adds Milestone 8 call metadata and graph build/job validation state after `d06a6455fcd7`.
 - Transactions protect state transitions and atomic index activation; external side effects use idempotent operations and compensating cleanup rather than pretending they share a database transaction.
 
 ## Repository indexing data flow
@@ -143,11 +144,11 @@ RepoLume uses SQLAlchemy 2.x async sessions with `asyncpg` in FastAPI and the wo
 3. **Implemented:** Worker conditionally claims the job, records progress/heartbeat/attempt state, and reloads durable access state.
 4. **Implemented:** Worker obtains a short-lived installation token and performs a fixed-argument, shallow, single-branch clone into a fresh temporary directory.
 5. **Implemented:** Discovery enforces configured file, byte, path, type, binary, directory, and symlink limits, then persists counts only and removes the clone.
-6. **Implemented:** a resource-bounded child statically extracts Python symbols and creates deterministic Python/Markdown/text chunks without importing or running repository code. PostgreSQL stores inactive symbol definitions; chunk text is returned only transiently to the trusted worker.
+6. **Implemented:** a resource-bounded child statically extracts Python symbols and calls, constructs the deterministic conservative call graph, and creates Python/Markdown/text chunks without importing or running repository code. PostgreSQL stores inactive symbol definitions and call edges; chunk text is returned only transiently to the trusted worker.
 7. **Implemented:** one central preprocessor serializes trusted citation metadata and complete content without truncation, fingerprints the policy/input, and rejects over-limit items. The worker sends bounded authenticated batches to the private service.
 8. **Implemented:** the service loads `jinaai/jina-embeddings-v2-base-code` revision `516f4baf13dec4ddddda8631e019b5737c8bc250` through FastEmbed/ONNX CPU execution with an artifact allowlist and no remote code. It returns 768-dimensional L2-normalized vectors.
 9. **Implemented:** deterministic UUIDv5 point IDs bind installation, repository, inactive version, path, stable chunk hash, type, and ordinal. Qdrant collection metadata fixes cosine/768/model/revision/L2; all writes, counts, scroll validation, and deletes use typed installation/repository/version filters.
-10. **Implemented:** exact count plus commit/model/scope metadata validation marks the build ready. One PostgreSQL transaction locks the job/repository/build, supersedes the prior row, activates the new build, updates the repository active version/SHA/vector count, and completes the job.
+10. **Implemented:** exact vector count/commit/model/scope validation plus re-read graph counts/fingerprint mark the build ready. One PostgreSQL transaction locks the job/repository/build, supersedes the prior row, activates the new build, updates the repository active version/SHA/vector count, and completes the job.
 11. **Implemented:** any pre-activation failure preserves the old active version, deletes only the failed inactive scope, records cleanup state, and keeps duplicate retries idempotent. Post-activation cleanup deletes only the superseded trusted scope.
 12. Temporary clones are removed in a `finally` path.
 
@@ -158,7 +159,7 @@ Incremental indexing will be introduced only in Milestone 9. Until then, re-inde
 1. API authenticates the user and performs the full active installation/repository authorization join. Cross-tenant selectors receive the same non-enumerating not-found response.
 2. PostgreSQL must show repository indexing `complete`, a nonzero active vector count, and exactly one matching `active` build with the current commit, version, model, dimension, preprocessing fingerprint, and count.
 3. Central preprocessing NFC-normalizes and folds whitespace while preserving identifiers, rejects controls and questions shorter than 3 characters or over 4,096 UTF-8 bytes/512 estimated tokens, and produces a prompt-version-bound SHA-256 fingerprint. Raw questions and query vectors are neither logged nor persisted.
-4. The provider receives fixed `repolume-agent-v1` instructions and canonical JSON untrusted context. Its strict output is either one allowlisted typed tool call or a final answer/evidence-ID object. Repository IDs, installation IDs, tokens, URLs, raw filters, revisions, limits, and citation metadata are absent from the schema.
+4. The provider receives fixed `repolume-agent-v2` instructions and canonical JSON untrusted context. Its strict output is either one allowlisted typed tool call or a final answer/evidence-ID object. Repository IDs, installation IDs, tokens, URLs, raw filters, revisions, limits, and citation metadata are absent from the schema.
 5. `search_code` calls the private service in query mode, validates the exact model/revision/one finite normalized vector, and searches Qdrant with mandatory server-derived installation/repository/active-version/commit/model/preprocessing scope. Existing deterministic evidence selection caps code evidence.
 6. `get_history` reauthorizes the internal installation, mints a short-lived token restricted to the server-authorized GitHub repository, and uses only fixed commit/detail/associated-PR paths. It anchors at the active indexed SHA unless a valid SHA occurs in the original user question. Commit count, message, path, patch, PR body, HTTP time, and retry counts are bounded; nothing is persisted.
 7. The loop permits at most four calls, eight seconds per tool, 45 seconds total, 32 KiB per result, 64 KiB total evidence, and 1,200 final output tokens by default. Unknown, extra, malformed, repeated, oversized, timed-out, and over-cap calls fail closed. Cancellation propagates.
@@ -166,11 +167,17 @@ Incremental indexing will be introduced only in Milestone 9. Until then, re-inde
 9. The service repeats authorization and active-build validation after external work. A changed version or revoked repository/installation fails closed.
 10. The response is one of `answered`, `partially_answered`, `insufficient_evidence`, `unsupported_question`, or `temporarily_unavailable`. It includes indexed SHA/version, safe evidence/tool counts, duration, and a content-free trace. It excludes questions, evidence text beyond cited bounded excerpts, prompts, provider bodies, tokens, embeddings, point IDs, and vector topology.
 
-The provider never receives a shell, repository write capability, secret access, arbitrary networking, or authority to select tenant scope. Caller lookup, call graphs, repository chat, and agent/history persistence remain absent.
+`find_callers` accepts only a bounded symbol name and optional safe repository-relative file path. It reauthorizes the repository, requires the exact validated active graph/version/commit, resolves one target, and returns at most 20 deterministic caller records with confidence and static-analysis limitations. Missing or ambiguous targets yield insufficient evidence; graph/query/scope failures yield unavailable. The provider never receives a shell, write capability, secret access, arbitrary networking, SQL, or tenant/version authority.
 
 ## Index consistency
 
-`repositories.index_version` and `repository_index_builds.state='active'` identify the only active version. A partial unique index enforces one active build per repository; ready/active constraints require exact embedded/vector/expected counts with zero failed/skipped items. New vectors and symbols are written under a distinct inactive version. Activation updates the old/new build rows, repository version/SHA/count/status, and job in one transaction after all Qdrant validation succeeds. The old row is flushed as superseded before the new active row to keep the partial uniqueness invariant valid throughout transaction flush ordering.
+`repositories.index_version` and `repository_index_builds.state='active'` identify the only active version. A partial unique index enforces one active build per repository; application transitions require exact embedded/vector/expected counts, zero failed/skipped items, and a re-read SHA-256 graph fingerprint with `graph_validated=true`. New vectors, deterministic symbols, and deterministic call edges are written under a distinct inactive version. Activation proceeds only after Qdrant and graph validation; failed/superseded symbol deletion cascades only that version's call edges.
+
+## Milestone 8 static call-graph flow
+
+The existing resource-bounded child process walks Tree-sitter Python `call` nodes and attributes them only to enclosing function, async-function, or method definitions. It never imports or executes repository modules. The resolver recognizes same-file/nested names, direct and relative imports/aliases, module-qualified calls, constructors, `self`/`cls` methods, Unicode identifiers, and a unique repository-wide probable method. Duplicate candidates are persisted as low-confidence `ambiguous`; wildcards, reflection, call-return attributes, and other dynamic forms remain low-confidence `unresolved`.
+
+Deterministic UUIDv5 symbol and call-site identities plus a SHA-256 graph fingerprint bind repository, inactive index version, source location, and commit. PostgreSQL stores call expression/location, resolved or unresolved target, resolution type, confidence, and build/job counts. The worker re-reads all inactive edges, recomputes counts/fingerprint, and blocks readiness and activation on any mismatch. Milestone 9 incremental graph maintenance is not present; every re-index remains a full versioned rebuild.
 
 Cleanup is idempotent and always uses trusted installation/repository/version filters. A failed activation keeps the prior version queryable. Failed inactive, retry-artifact, and just-superseded vector scopes are cleaned now; full repository deletion and general orphan reconciliation remain later lifecycle work.
 
@@ -224,7 +231,7 @@ The API and worker use one hashed-dependency, non-root Python 3.13.14/Git image 
 - Python is the only initially supported structured language.
 - Repository/history evidence cannot establish actual runtime state or undocumented historical intent; commit messages alone are not treated as proof of causation.
 - The deterministic local provider verifies protocol, refusal, citation, and isolation behavior, not hosted answer quality. No real OpenAI credential was available for local acceptance.
-- The direct loop can combine bounded code and GitHub commit/PR evidence. It cannot analyze callers/call graphs or live/external state; those questions are explicitly unsupported.
+- The direct loop can combine bounded code, GitHub commit/PR, and statically resolved direct-caller evidence. Dynamic/runtime-only and live external-state questions remain explicitly unsupported.
 - Cross-service index activation requires idempotency and reconciliation because PostgreSQL and Qdrant do not share a transaction.
 - Qdrant now persists complete chunk text for later retrieval/citation; it must be treated as a private sensitive-content store with backups, deletion, encryption, and authorization controls equivalent to repository data.
 - A version-scoped container-scan exception exists for CPython 3.13.14 `CVE-2026-15308`; the vulnerable `html.parser` path is outside these services' execution path and the exception must be removed when a fixed 3.13 maintenance release exists.

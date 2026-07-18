@@ -93,6 +93,9 @@ def test_evaluation_metrics_cover_retrieval_citations_refusal_leakage_and_latenc
     assert metrics.tool_limit_violation_count == 0
     assert metrics.unknown_tool_execution_count == 0
     assert metrics.fixture_observation_count == 0
+    assert metrics.caller_precision == 1
+    assert metrics.caller_recall == 1
+    assert metrics.exact_edge_precision == 1
 
 
 def test_evaluation_rejects_unknown_cases_and_empty_observations() -> None:
@@ -177,3 +180,28 @@ def test_milestone7_fixture_contract_metrics_are_explicit_and_content_free() -> 
     assert metrics.citation_type_accuracy == 1
     assert metrics.mean_latency_ms is None
     assert metrics.max_latency_ms is None
+
+
+def test_milestone8_fixture_contract_measures_call_graph_quality_and_isolation() -> None:
+    root = Path(__file__).parents[2] / "evaluation"
+    cases = [
+        EvaluationCase.model_validate(item)
+        for item in json.loads((root / "milestone8_cases.json").read_text())
+    ]
+    observations = [
+        EvaluationObservation.model_validate(item)
+        for item in json.loads((root / "milestone8_fixture_observations.json").read_text())
+    ]
+
+    metrics = calculate_metrics(cases, observations)
+
+    assert metrics.case_count == 20
+    assert metrics.fixture_observation_count == 20
+    assert metrics.caller_precision == 1
+    assert metrics.caller_recall == 1
+    assert metrics.exact_edge_precision == 1
+    assert metrics.ambiguity_accuracy == 1
+    assert metrics.unresolved_accuracy == 1
+    assert metrics.inactive_graph_leakage_count == 0
+    assert metrics.fabricated_caller_citation_count == 0
+    assert metrics.mean_latency_ms is None

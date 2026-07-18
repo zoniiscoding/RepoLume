@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.agent.models import AgentToolName
 from app.rag.models import Answerability
 
-CitationType = Literal["code", "commit", "pull_request"]
+CitationType = Literal["code", "commit", "pull_request", "caller"]
 
 
 class ExpectedCitationRange(BaseModel):
@@ -39,6 +39,9 @@ class EvaluationCase(BaseModel):
     expected_tools: list[AgentToolName] = Field(default_factory=list)
     expected_citation_types: list[CitationType] = Field(default_factory=list)
     expects_history_evidence: bool = False
+    expected_callers: list[str] = Field(default_factory=list)
+    expects_ambiguous_target: bool = False
+    expects_unresolved_call: bool = False
 
 
 class EvaluationObservation(BaseModel):
@@ -61,6 +64,13 @@ class EvaluationObservation(BaseModel):
     tool_limit_violation: bool = False
     unknown_tool_execution: bool = False
     measurement_kind: Literal["observed", "fixture_contract"] = "observed"
+    retrieved_callers: list[str] = Field(default_factory=list)
+    exact_edge_count: int = Field(default=0, ge=0)
+    correct_exact_edge_count: int = Field(default=0, ge=0)
+    ambiguity_classification_correct: bool | None = None
+    unresolved_classification_correct: bool | None = None
+    inactive_graph_leakage: bool = False
+    fabricated_caller_citation: bool = False
 
 
 class EvaluationMetrics(BaseModel):
@@ -84,6 +94,13 @@ class EvaluationMetrics(BaseModel):
     tool_limit_violation_count: int
     unknown_tool_execution_count: int
     fixture_observation_count: int
+    caller_precision: float
+    caller_recall: float
+    exact_edge_precision: float
+    ambiguity_accuracy: float
+    unresolved_accuracy: float
+    inactive_graph_leakage_count: int
+    fabricated_caller_citation_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +159,20 @@ def calculate_metrics(
         observation.latency_ms for observation in observations if observation.latency_ms is not None
     ]
     agent = _calculate_agent_metrics(case_by_id, observations)
+    expected_callers = sum(len(case_by_id[item.case_id].expected_callers) for item in observations)
+    retrieved_callers = sum(len(item.retrieved_callers) for item in observations)
+    correct_callers = sum(
+        len(set(item.retrieved_callers) & set(case_by_id[item.case_id].expected_callers))
+        for item in observations
+    )
+    exact_edges = sum(item.exact_edge_count for item in observations)
+    correct_exact_edges = sum(item.correct_exact_edge_count for item in observations)
+    ambiguity_items = [
+        item for item in observations if case_by_id[item.case_id].expects_ambiguous_target
+    ]
+    unresolved_items = [
+        item for item in observations if case_by_id[item.case_id].expects_unresolved_call
+    ]
     return EvaluationMetrics(
         case_count=len(cases),
         observation_count=len(observations),
@@ -168,6 +199,25 @@ def calculate_metrics(
         tool_limit_violation_count=agent.tool_limit_violation_count,
         unknown_tool_execution_count=agent.unknown_tool_execution_count,
         fixture_observation_count=agent.fixture_observation_count,
+        caller_precision=1.0 if retrieved_callers == 0 else correct_callers / retrieved_callers,
+        caller_recall=1.0 if expected_callers == 0 else correct_callers / expected_callers,
+        exact_edge_precision=1.0 if exact_edges == 0 else correct_exact_edges / exact_edges,
+        ambiguity_accuracy=(
+            1.0
+            if not ambiguity_items
+            else sum(item.ambiguity_classification_correct is True for item in ambiguity_items)
+            / len(ambiguity_items)
+        ),
+        unresolved_accuracy=(
+            1.0
+            if not unresolved_items
+            else sum(item.unresolved_classification_correct is True for item in unresolved_items)
+            / len(unresolved_items)
+        ),
+        inactive_graph_leakage_count=sum(item.inactive_graph_leakage for item in observations),
+        fabricated_caller_citation_count=sum(
+            item.fabricated_caller_citation for item in observations
+        ),
     )
 
 

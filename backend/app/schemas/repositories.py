@@ -59,6 +59,11 @@ class IndexingStatusResponse(BaseModel):
     symbol_count: int
     chunk_count: int
     parser_warning_counts: dict[str, int]
+    call_site_count: int
+    exact_edge_count: int
+    ambiguous_edge_count: int
+    unresolved_call_count: int
+    graph_warning_count: int
     target_index_version: int | None
     embedded_chunk_count: int
     vector_count: int

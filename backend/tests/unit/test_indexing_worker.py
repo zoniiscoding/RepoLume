@@ -42,6 +42,7 @@ def empty_processing_result() -> ProcessingResult:
 
 async def analyze_empty(**kwargs: Any) -> ProcessingResult:
     await kwargs["on_chunking"]()
+    await kwargs["on_graphing"]()
     return empty_processing_result()
 
 
@@ -62,6 +63,7 @@ def worker_dependencies(
     store.stage = AsyncMock()
     store.prepare_build = AsyncMock()
     store.record_vector_counts = AsyncMock()
+    store.validate_graph = AsyncMock()
     store.mark_build_ready = AsyncMock()
     store.activate = AsyncMock(return_value=0)
     store.can_cleanup_inactive = AsyncMock(return_value=True)
@@ -147,11 +149,12 @@ async def test_worker_completes_discovery_and_cleans_clone(tmp_path: Path) -> No
 
     await worker.process_delivery(delivery)
 
-    assert store.stage.await_count == 7
+    assert store.stage.await_count == 8
     assert [call.kwargs["stage"] for call in store.stage.await_args_list] == [
         "discovering",
         "parsing",
         "chunking",
+        "building_graph",
         "embedding",
         "storing_vectors",
         "validating_index",
@@ -161,12 +164,14 @@ async def test_worker_completes_discovery_and_cleans_clone(tmp_path: Path) -> No
         55,
         65,
         85,
+        87,
         88,
         92,
         96,
         99,
     ]
     store.prepare_build.assert_awaited_once()
+    store.validate_graph.assert_awaited_once()
     store.activate.assert_awaited_once()
     github.create_installation_token.assert_awaited_once_with(42)
     discovery.discover.assert_called_once_with(tmp_path)
@@ -241,6 +246,7 @@ async def test_worker_classifies_retryable_and_unexpected_failures(tmp_path: Pat
     [
         ("upsert", "qdrant_partial_write_failed", True),
         ("validate_scope", "vector_count_mismatch", False),
+        ("validate_graph", "call_graph_validation_failed", False),
         ("mark_build_ready", "vector_count_mismatch", False),
         ("activate", "index_activation_race", False),
     ],
@@ -257,7 +263,11 @@ async def test_worker_cleans_failed_inactive_index_without_activation(
     context = job_context(claimed)
     store.claim.return_value = claimed
     store.authorized_context.return_value = context
-    dependency = store if failure_method in {"mark_build_ready", "activate"} else worker._vectors
+    dependency = (
+        store
+        if failure_method in {"validate_graph", "mark_build_ready", "activate"}
+        else worker._vectors
+    )
     getattr(dependency, failure_method).side_effect = IndexingError(
         code=error_code,
         message="The inactive index failed safely",
