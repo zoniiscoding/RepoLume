@@ -2,7 +2,7 @@
 
 RepoLume is a multi-tenant, read-only developer SaaS for understanding authorized GitHub repositories through evidence-backed answers.
 
-This repository is at **Milestone 9: signed GitHub webhook freshness and safe incremental replacement**. It implements the FastAPI/PostgreSQL foundation, GitHub App authentication and access controls, durable indexing, private ONNX embeddings, atomically activated Qdrant indexes, a three-tool read-only agent, and default-branch push refreshes. Signed deliveries are deduplicated in PostgreSQL, ordered by a repository generation, compared through a repository-restricted GitHub token, and built as complete inactive versions. Unchanged vectors are reused only under exact content/model/policy scope; changed chunks are re-embedded; static parsing and the call graph are conservatively rebuilt for correctness. The prior active version remains queryable until the replacement validates and activates. Chat persistence, frontend functionality, deployment, and later launch work are not implemented.
+This repository is at **Milestone 10: browser application and safe API handoff**. It implements the FastAPI/PostgreSQL foundation, GitHub App authentication and access controls, durable indexing, private ONNX embeddings, atomically activated Qdrant indexes, a three-tool read-only agent, default-branch push refreshes, and a React/TypeScript/Vite browser client for repository selection, progress, questions, and evidence inspection. The prior active version remains queryable until a replacement validates and activates. Chat persistence, deployment, and later launch work are not implemented.
 
 Read [the product specification](docs/PRODUCT_SPEC.md), [current build status](docs/BUILD_STATUS.md), [security posture](docs/SECURITY.md), and [engineering rules](AGENTS.md) before changing code.
 
@@ -33,6 +33,31 @@ cp .env.example .env
 Fill the untracked `.env` with disposable/local PostgreSQL, Redis, Qdrant, and private embedding-service settings plus local-only authentication values. Secret fields must be independent values of at least 32 characters. Never commit `.env`.
 
 For the question API, set `LLM_PROVIDER=openai`, place `LLM_API_KEY` only in the API secret store, and keep the pinned `LLM_MODEL=gpt-5.4-mini-2026-03-17` unless an intentional compatibility review changes it. `LLM_PROVIDER=deterministic` is accepted only in tests and is not a production model substitute. Agent defaults cap each question at four tool calls, eight seconds per tool, 45 seconds total, 32 KiB per tool result, 64 KiB total evidence, 20 caller results, and 1,200 output tokens.
+
+## Frontend
+
+The browser client has an independent locked npm dependency graph and requires Node 22 or newer:
+
+```sh
+cd frontend
+npm ci
+npm run dev
+```
+
+Set `VITE_API_BASE_URL` to the API `/api/v1` base when it is not `http://127.0.0.1:8000/api/v1`. For the normal local browser flow, set `FRONTEND_URL=http://127.0.0.1:5173` and include that exact origin in `CORS_ORIGINS`; production requires a deployed HTTPS origin in both settings. The API consumes GitHub OAuth code/state, sets the HTTP-only refresh cookie, and redirects to the fixed browser callback route without any credential in the URL. The client keeps access tokens only in memory and never writes them to browser storage.
+
+Run the browser quality gates with:
+
+```sh
+cd frontend
+npm run format
+npm run lint
+npm run build
+npm test
+npx playwright install chromium
+npm run test:e2e
+npm audit --audit-level=high
+```
 
 ## GitHub App configuration
 

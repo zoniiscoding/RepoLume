@@ -98,10 +98,16 @@ async def github_callback(
             code=ErrorCode.SERVICE_UNAVAILABLE,
             message="GitHub authentication is temporarily unavailable",
         ) from error
-    response = Response(
-        content=_authentication_response(result).model_dump_json(),
-        media_type="application/json",
-    )
+    if settings.frontend_url is not None:
+        response: Response = RedirectResponse(
+            url=f"{str(settings.frontend_url).rstrip('/')}/auth/callback",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    else:
+        response = Response(
+            content=_authentication_response(result).model_dump_json(),
+            media_type="application/json",
+        )
     clear_pkce_cookie(response, settings)
     set_refresh_cookie(response, result.refresh_token, settings)
     return response

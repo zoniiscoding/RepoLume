@@ -13,6 +13,59 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  frontend:
+    name: Frontend quality and browser-client verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install locked frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Verify frontend dependency consistency
+        working-directory: frontend
+        run: npm ls --all
+
+      - name: Check formatting
+        working-directory: frontend
+        run: npm run format
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Install Chromium for browser verification
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run frontend browser tests
+        working-directory: frontend
+        run: npm run test:e2e
+
+      - name: Audit frontend dependencies
+        working-directory: frontend
+        run: npm audit --audit-level=high
+
   backend:
     name: Backend quality and real dependency verification
     runs-on: ubuntu-latest

@@ -413,3 +413,27 @@ Decisions are append-only. If a decision changes, add a superseding entry instea
 - **Decision:** Accept push refreshes only for `refs/heads/<server-owned default_branch>`. Use a fixed repository compare API and a separately cloned target SHA. Force pushes, absent active state, before/active mismatch, unavailable/non-fast-forward/unsafe/over-limit comparisons, target-byte excess, default-branch changes, or missing reusable artifacts select a full versioned rebuild.
 - **Rationale:** Webhook branch, paths, ancestry claims, and target URLs are untrusted. A safe full rebuild is preferable to a guessed delta.
 - **Consequence:** Arbitrary branch indexing and model-controlled refresh remain absent. Live GitHub acceptance is still required before production use.
+
+## D-054 — Keep browser session authority in the API and redirect only after cookie issuance
+
+- **Date:** 2026-07-19
+- **Status:** Accepted and implemented in Milestone 10
+- **Decision:** The React client keeps only the short-lived RepoLume access token in memory. On a configured frontend deployment, the OAuth callback sets the existing HTTP-only refresh cookie and returns a credential-free 303 to the fixed `<FRONTEND_URL>/auth/callback`; that page calls refresh and fetches identity normally.
+- **Rationale:** Sending an API JSON token response to GitHub's browser callback cannot complete a single-page application safely. Query strings, browser storage, and client-readable cookies would expand the credential exposure boundary.
+- **Consequence:** Production requires an HTTPS, path-free `FRONTEND_URL` that exactly matches an allowed CORS origin. Live GitHub callback verification remains an external acceptance requirement.
+
+## D-055 — Render untrusted answers as sanitized inert Markdown
+
+- **Date:** 2026-07-19
+- **Status:** Accepted and implemented in Milestone 10
+- **Decision:** Render server-returned answer Markdown through `react-markdown` with `rehype-sanitize`; raw HTML is not enabled, arbitrary answer links are rendered as inert text, and only validated server-returned GitHub history URLs may open externally with `noopener noreferrer`.
+- **Rationale:** Repository content and model output are untrusted and must not create browser execution, navigation, or cross-origin data paths.
+- **Consequence:** The frontend does not fetch source by arbitrary path/URL and cannot turn citation/model text into executable HTML.
+
+## D-056 — Isolate integration queue deliveries and verify the browser with Chromium fixtures
+
+- **Date:** 2026-07-19
+- **Status:** Accepted and implemented in Milestone 10 correction
+- **Decision:** Keep indexing-pipeline integration deliveries on a test-only Redis stream and consumer group, and run browser verification through Playwright/Chromium with API interception only. Keep screenshots, traces, reports, and browser binaries out of Git.
+- **Rationale:** A developer worker using the production-named stream can otherwise claim a local test wakeup; browser tests need deterministic authenticated states without GitHub credentials or repository access.
+- **Consequence:** PostgreSQL remains the durable job authority and production queue semantics are unchanged. CI installs Chromium as a development test tool only; browser fixtures never call GitHub or execute connected content.

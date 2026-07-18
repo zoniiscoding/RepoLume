@@ -1,12 +1,12 @@
 # RepoLume Build Status
 
-**Last updated:** 2026-07-18
+**Last updated:** 2026-07-19
 
-**Authorized milestone:** Milestone 9 — signed GitHub webhook freshness and safe incremental replacement
+**Authorized milestone:** Milestone 10 — frontend application and browser-safe API handoff
 
-**Overall status:** Milestone 9 implementation, local dependency-backed verification, and the single local milestone commit are complete; hosted CI verification awaits a manual push.
+**Overall status:** Milestone 10 correction verification is complete on top of the hosted-green Milestone 9 baseline. The full local backend suite, frontend unit/component suite, Chromium browser suite, and production build pass against isolated test services. Milestone 11 has not started.
 
-**Production readiness:** Not production-ready. Live GitHub App acceptance, a hosted CI run of the Milestone 9 commit, deployed private infrastructure, representative reliability/load measurement, monitoring, backup/restore, final deletion operations, and Milestone 10+ product work remain absent or unverified.
+**Production readiness:** Not production-ready. The browser client is implemented, but live GitHub App acceptance, deployed private infrastructure, representative reliability/load measurement, monitoring, backup/restore, final deletion operations, and later launch work remain absent or unverified.
 
 ## Implemented through Milestone 9
 
@@ -97,6 +97,30 @@ The backend package/API version is `0.9.0`. No dependency changed, so both exist
 
 Milestone 9 is a dependency-backed local freshness foundation, not a production SaaS. It must not be launched publicly until the unpushed commit passes hosted CI and the live GitHub, hosted-model, deployment, privacy, reliability, and remaining milestone gates are complete.
 
+## Milestone 10 implementation
+
+- Added the standalone `frontend/` React 19 + TypeScript + Vite application with a dark, responsive developer-product interface, route-level code splitting, semantic UI primitives, keyboard-visible focus, mobile navigation, loading/empty/error states, and no custom icon set beyond Lucide.
+- Added a centralized typed API client. Browser access tokens remain in React memory only; refresh/logout use credentials-bearing requests and no token is persisted in localStorage, sessionStorage, URLs, logs, or analytics.
+- Added sign-in, browser callback recovery, repository selection/connect, repository overview/reindex confirmation, indexing-status polling, repository question workspace, safe Markdown answers, and an evidence inspector. Citations use only server-returned evidence; external history links are restricted to `github.com`; no arbitrary source URL or path is fetched by the browser.
+- Added production `FRONTEND_URL` validation and an OAuth completion redirect. The API writes the scoped HTTP-only refresh cookie and sends a 303 to `<FRONTEND_URL>/auth/callback` with no credential or OAuth query value. Production requires an HTTPS frontend origin that exactly matches an allowed CORS origin.
+- Added locked npm dependencies, frontend lint/format/build/test/audit scripts, and a Node 22 GitHub Actions job. No frontend container, deployment configuration, repository tree browser, chat persistence, or Milestone 11 capability was added.
+
+## Milestone 10 verification evidence
+
+| Gate | Actual result |
+| --- | --- |
+| Frontend formatting, lint, strict TypeScript build | `npm run format`, `npm run lint`, and `npm run build` passed locally on Node 26.0.0. The production build emitted 14 assets; the entry bundle was 235.91 kB / 75.86 kB gzip and the largest lazy question-workspace chunk was 138.74 kB / 42.77 kB gzip. |
+| Frontend tests | 13 Vitest tests across 6 files and 8 Chromium Playwright tests passed. Browser tests cover sign-in/callback/session expiry, repository list/overview/indexing, question answerability/evidence types, settings, focus restoration, Escape, mobile navigation, reduced motion, inert Markdown, trusted history links, long content, and four viewports. |
+| Frontend dependencies | `npm ls --all`, full `npm audit --audit-level=high`, and production `npm audit --omit=dev --audit-level=high` completed with no known vulnerabilities. Playwright 1.61.1 is locked as a development-only dependency; CI installs Chromium only. |
+| Backend integration affected by M10 | Formatting, linting, strict mypy, `pip check`, clean-database migration, and metadata consistency passed. The focused indexing suite passed 10 tests; the config/OAuth suite had previously passed 58 PostgreSQL-backed tests. |
+| Full backend regression | 332 passed in 23.41 seconds with branch-aware coverage of 91.04%. The earlier five failures were caused by a pre-existing local `python -m app.worker` consuming the shared `repolume:indexing` Redis Stream/consumer group. Integration settings now use a test-only stream/group, and the correction run used an isolated Redis instance, disposable PostgreSQL database, Qdrant collection, and private embedding service. No production worker behavior changed. |
+| Browser/viewport visual automation | Chromium Playwright passed 8 tests at 1440×900, 1024×768, 768×1024, and 390×844. Screenshots were reviewed locally and remain ignored. Review found and fixed Strict Mode aborts rendered as repository outage alerts, desktop evidence inspector placement, and visually link-like inert answer text. |
+
+## Milestone 10 remaining external acceptance
+
+- Configure the GitHub App callback at the public API URL and configure production `FRONTEND_URL`/`CORS_ORIGINS` to the exact deployed HTTPS browser origin. Then exercise the real browser OAuth flow; automated tests use mocked GitHub behavior and do not claim live provider verification.
+- Run the amended frontend CI job after the local commit is manually pushed. Do not claim hosted verification before that run exists.
+
 ## Next milestone gate
 
-Milestone 10 is not authorized and has not started. No frontend directory, pages, components, or product UI were added.
+Milestone 10 only is authorized. Milestone 11 must not begin until explicitly authorized.

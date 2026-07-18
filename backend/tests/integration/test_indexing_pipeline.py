@@ -104,6 +104,11 @@ def integration_settings(**overrides: object) -> Settings:
         redis_url=redis_url(),
         qdrant_url=qdrant_url(),
         qdrant_collection_name="repolume_test_chunks",
+        # Keep integration deliveries separate from a developer's normal worker.
+        # The queue is a shared external service in local runs, and a production
+        # consumer group on the same stream can otherwise claim a test wakeup.
+        worker_stream_name="repolume:test:indexing",
+        worker_consumer_group="repolume-test-workers",
         worker_poll_timeout_ms=100,
         worker_abandoned_after_seconds=5,
         worker_retry_base_seconds=1,

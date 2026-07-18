@@ -28,6 +28,7 @@ build/
 
 # Runtime artifacts
 *.log
+dump.rdb
 tmp/
 data/
 

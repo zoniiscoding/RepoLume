@@ -118,6 +118,7 @@ def test_production_settings_accept_secure_explicit_values() -> None:
         cors_origins=["https://app.repolume.example"],
         trusted_hosts=["api.repolume.example"],
         github_oauth_callback_url="https://api.repolume.example/api/v1/auth/github/callback",
+        frontend_url="https://app.repolume.example",
     )
 
     assert settings.is_production is True
@@ -135,6 +136,9 @@ def test_production_settings_accept_secure_explicit_values() -> None:
         ("database_url", "postgresql+asyncpg://service:secret@127.0.0.1/repolume"),
         ("database_url", "postgresql+asyncpg://service@db.example.com/repolume"),
         ("github_oauth_callback_url", "http://api.repolume.example/callback"),
+        ("frontend_url", None),
+        ("frontend_url", "http://app.repolume.example"),
+        ("frontend_url", "https://untrusted.repolume.example"),
         ("redis_url", "redis://service:secret@redis.example.com/0"),
         ("redis_url", "rediss://127.0.0.1/0"),
         ("redis_url", "rediss://redis.example.com/0"),
@@ -155,6 +159,7 @@ def test_production_settings_fail_closed(override: str, value: object) -> None:
         "github_app_private_key": TEST_PRIVATE_KEY,
         "github_webhook_secret": "github-webhook-secret-for-tests-only-0000",
         "github_oauth_callback_url": "https://api.repolume.example/api/v1/auth/github/callback",
+        "frontend_url": "https://app.repolume.example",
         "access_token_secret": "access-token-secret-for-tests-only-0000000",
         "token_hash_secret": "token-hash-secret-for-tests-only-000000000",
     }

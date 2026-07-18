@@ -91,6 +91,7 @@ def make_settings(**overrides: object) -> Settings:
         values["qdrant_api_key"] = "qdrant-api-key-for-tests-only-000000000"
         values["llm_provider"] = "openai"
         values["llm_api_url"] = "https://api.openai.com/v1"
+        values["frontend_url"] = "https://app.repolume.example"
     values.update(overrides)
     return Settings.model_validate(values)
 

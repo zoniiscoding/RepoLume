@@ -1,6 +1,6 @@
 # RepoLume Security
 
-**Status:** Milestone 9 adds signed bounded webhook freshness, normalized delivery persistence, server-owned default-branch/generation authority, repository-restricted comparisons, exact-scope vector reuse, stale-worker rejection, and atomic complete-version replacement. Live GitHub App/hosted-LLM behavior, runtime call completeness, deployment, and hosted production controls remain unverified.
+**Status:** Milestone 10 adds a browser client with memory-only access tokens, safe OAuth callback handoff, sanitized answer rendering, and constrained citation links. Live GitHub App/hosted-LLM behavior, runtime call completeness, deployment, and hosted production controls remain unverified.
 
 ## Security invariants
 
@@ -58,7 +58,7 @@ Legend: **Verified M7** means the implemented subset passed local automated/manu
 | Database | Async parameterized ORM, FKs, unique/check/composite constraints, Alembic | Verified foundation | PostgreSQL migration/model/integration tests; production least privilege later |
 | API abuse | Webhook 1 MiB/body and bounded header/schema validation; mutation idempotency where implemented | Partial | Rate/usage controls remain Milestone 13 |
 | Error safety | Stable envelope, sanitized validation issues, hidden internal messages, request correlation | Verified foundation | `test_http_foundation.py` |
-| Output safety | Sanitized Markdown and safe links/attributes | Planned | Milestone 10 |
+| Output safety | Raw HTML disabled; sanitized Markdown; arbitrary answer links inert; only validated GitHub history URLs open externally | Implemented M10, locally browser-tested | Vitest plus Chromium tests cover untrusted HTML/link text, evidence types, and trusted/untrusted history URLs; live GitHub acceptance pending |
 | Secrets | Secret-valued config, digest-only auth state, ephemeral GitHub tokens, askpass token outside argv/storage/logs | Verified M3 | Config/token/log/persistence/clone-argv tests; final log scan recorded in build report |
 | Agent/tool boundary | Immutable three-tool registry; strict arguments/decisions; four-call, eight-second/tool, total-time, byte, caller-result, and output ceilings; no shell/arbitrary network/write/secret/SQL tools | Verified M8 | Agent schema, graph authorization, timeout, cancellation, repetition, cap, and prompt-injection tests |
 | GitHub history | One-repository ephemeral token, fixed API paths, bounded retries/data, validated GitHub/repository identity, no persistence | Mock-verified M7 | GitHub client/tool/API integration tests; live GitHub App still pending |
@@ -150,7 +150,9 @@ Every milestone updates this file with implementation and executed evidence. Mil
 
 ## Current security posture
 
-The verified Milestone 9 subset provides authentication, authorization, signed content-free delivery ingestion, durable generation-ordered refresh jobs, complete inactive replacements, exact-scope vector reuse, private embeddings, scoped active-version retrieval, validated static caller persistence, bounded code/history/caller orchestration, and content-minimizing traces/logs. It is not a complete public SaaS boundary: controlled fixtures are not live GitHub reliability evidence; static calls are not runtime truth; hosted LLM behavior, deployment/private networking, rate/usage controls, backup/restore, alerting, and final data purge remain absent or unverified.
+The verified Milestone 10 subset provides the Milestone 9 controls plus a no-persistent-token browser client. `FRONTEND_URL` is required in production, accepted only as an exact HTTPS CORS origin, and receives a fixed callback redirect after the API has consumed OAuth code/state and set the HTTP-only cookie. Access token, code, state, refresh token, GitHub token, and cookie values are excluded from frontend storage, routes, logs, and external links. Markdown/model/repository output remains inert; the browser does not render raw HTML or follow arbitrary source/model links.
+
+It is not a complete public SaaS boundary: controlled fixtures are not live GitHub reliability evidence; static calls are not runtime truth; hosted LLM behavior, deployment/private networking, rate/usage controls, backup/restore, alerting, and final data purge remain absent or unverified.
 
 ## Milestone 8/9 call-graph controls and limits
 

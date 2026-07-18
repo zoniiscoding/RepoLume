@@ -261,6 +261,34 @@ def _login(client: TestClient) -> tuple[str, str, str]:
     return access_token, refresh_token, verifier
 
 
+def test_callback_redirects_to_configured_frontend_without_token_query_values(
+    github: FakeGitHubClient,
+) -> None:
+    database = Database(
+        engine=create_async_engine(_database_url(), pool_pre_ping=True),
+        ready_timeout_seconds=2,
+    )
+    app = create_app(
+        settings=make_settings(frontend_url="https://app.repolume.example"),
+        database=database,
+        github_client=github,
+        job_queue=FakeJobQueue(),
+    )
+    with TestClient(app) as client:
+        state, _ = _start_oauth(client)
+        response = client.get(
+            "/api/v1/auth/github/callback",
+            params={"code": OAUTH_CODE, "state": state},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "https://app.repolume.example/auth/callback"
+    assert "access_token" not in response.headers["location"]
+    assert OAUTH_CODE not in response.headers["location"]
+    assert client.cookies.get("repolume_refresh_token") is not None
+
+
 def _authorization(access_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {access_token}"}
 

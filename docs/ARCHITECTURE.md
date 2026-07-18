@@ -1,6 +1,6 @@
 # RepoLume Architecture
 
-**Status:** Milestone 9 signed webhook ingestion, repository-scoped incremental freshness, stale-worker rejection, complete inactive replacement versions, selective vector reuse, and atomic activation are implemented. Static parsing and call-graph construction remain conservative complete-target rebuilds. Live GitHub/hosted-model acceptance, deployment, and Milestone 10 frontend work remain outstanding.
+**Status:** Milestone 10 adds a React/TypeScript/Vite browser client for the existing authenticated API, safe answer/evidence rendering, and a browser-safe OAuth completion redirect. Static parsing and call-graph construction remain conservative complete-target rebuilds. Live GitHub/hosted-model acceptance and deployment remain outstanding.
 
 ## Goals
 
@@ -47,12 +47,20 @@ Only the frontend, API, webhook route, and safe health routes are public. The wo
 ```text
 backend/             FastAPI API, domain services, persistence, jobs, ingestion, tests
 embedding_service/   Private FastAPI/FastEmbed ONNX service, independent locks/image/tests
-frontend/            Reserved for Milestone 10; not created through Milestone 9
+frontend/            React/TypeScript/Vite SPA, typed API client, Vitest/Chromium tests, locked npm dependencies
 docs/                Product, architecture, security, decisions, evaluation, status, operations
 .github/              CI/CD and dependency automation
 ```
 
-Within the backend, versioned routes delegate to auth, installation, repository, agent-question, webhook, and health services. GitHub, Redis, embeddings, Qdrant, and the hosted provider sit behind typed protocols. The immutable agent registry exposes only `search_code`, `get_history`, and `find_callers`; tools receive a server-built context and cannot choose tenant scope, versions, commits, destinations, or limits. The API holds no ORM session across embedding, Qdrant, GitHub, or LLM I/O and reauthorizes/rechecks the active build before returning. Chat persistence and frontend integrations do not exist.
+Within the backend, versioned routes delegate to auth, installation, repository, agent-question, webhook, and health services. GitHub, Redis, embeddings, Qdrant, and the hosted provider sit behind typed protocols. The immutable agent registry exposes only `search_code`, `get_history`, and `find_callers`; tools receive a server-built context and cannot choose tenant scope, versions, commits, destinations, or limits. The API holds no ORM session across embedding, Qdrant, GitHub, or LLM I/O and reauthorizes/rechecks the active build before returning. The frontend calls only the typed API client and has no direct GitHub, vector, worker, source-fetch, or chat-persistence boundary.
+
+## Browser application boundary
+
+The React client has sign-in, callback recovery, installation/repository selection, status-aware repository pages, a reindex confirmation, and a repository-scoped question workspace. It holds a short-lived access token only in memory. Refresh/logout send credentials to the API; the refresh token remains a scoped HTTP-only cookie and the browser does not write either token to storage, a URL, or logs.
+
+For a deployed client, `FRONTEND_URL` is an HTTPS origin without a path/query/credentials and exactly matches `CORS_ORIGINS`. The GitHub callback is still the API: it consumes code/state server-side, sets the cookie, and redirects with HTTP 303 to the fixed frontend `/auth/callback` route without credential or OAuth values. That route refreshes the in-memory session normally. If `FRONTEND_URL` is absent in non-production, the original API JSON callback remains available for non-browser API integrations.
+
+Answers are rendered with raw HTML disabled and `rehype-sanitize`; citation selection only displays server-returned metadata and excerpts. The client never fetches repository paths or model-provided URLs. Commit/PR links must parse as `https://github.com/...` before opening with `noopener noreferrer`. Browser integration tests use only intercepted API fixtures and Chromium; no browser test calls GitHub or real repository content.
 
 ## Implemented request paths
 

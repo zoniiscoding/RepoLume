@@ -13,6 +13,16 @@ from sqlalchemy.exc import ArgumentError
 MINIMUM_SECRET_LENGTH = 32
 
 
+def _origin(url: AnyHttpUrl) -> str:
+    """Return a normalized origin; frontend redirects must never carry a path or query."""
+    parsed = urlsplit(str(url))
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment or parsed.username:
+        raise ValueError(
+            "FRONTEND_URL must be an origin without credentials, path, query, or fragment"
+        )
+    return f"{parsed.scheme}://{parsed.netloc}".lower()
+
+
 class AppEnvironment(StrEnum):
     """Supported runtime environments."""
 
@@ -58,6 +68,7 @@ class Settings(BaseSettings):
     github_app_private_key: SecretStr
     github_webhook_secret: SecretStr
     github_oauth_callback_url: AnyHttpUrl
+    frontend_url: AnyHttpUrl | None = None
 
     access_token_secret: SecretStr
     token_hash_secret: SecretStr
@@ -209,6 +220,14 @@ class Settings(BaseSettings):
             raise ValueError("CLONE_GIT_EXECUTABLE must be an absolute path")
         return value
 
+    @field_validator("frontend_url")
+    @classmethod
+    def validate_frontend_url(cls, value: AnyHttpUrl | None) -> AnyHttpUrl | None:
+        """Accept only an origin for the post-OAuth browser redirect."""
+        if value is not None:
+            _origin(value)
+        return value
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, value: str) -> str:
@@ -267,6 +286,12 @@ class Settings(BaseSettings):
             raise ValueError("CORS_ORIGINS must use HTTPS in production")
         if self.github_oauth_callback_url.scheme != "https":
             raise ValueError("GITHUB_OAUTH_CALLBACK_URL must use HTTPS in production")
+        if self.frontend_url is None:
+            raise ValueError("FRONTEND_URL must be explicit in production")
+        if self.frontend_url.scheme != "https":
+            raise ValueError("FRONTEND_URL must use HTTPS in production")
+        if _origin(self.frontend_url) not in {_origin(origin) for origin in self.cors_origins}:
+            raise ValueError("FRONTEND_URL must be an allowed CORS origin")
 
         self._validate_production_backing_services()
         return self

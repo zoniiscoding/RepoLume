@@ -1,12 +1,12 @@
 # RepoLume Operations
 
-**Status:** Milestone 9 local signed-delivery ingestion, generation-ordered default-branch refresh, changed-file planning, selective vector reuse, complete graph replacement, prior-active availability, and API/worker/PostgreSQL/Redis/Qdrant/private-embedding operations are implemented. No live GitHub/hosted-LLM acceptance, Milestone 9 hosted CI run, hosted environment, dashboard, alert, backup, or production runbook has been verified.
+**Status:** Milestone 10 adds a locally buildable/tested browser client and an API-to-browser OAuth completion redirect. No live GitHub/hosted-LLM acceptance, hosted frontend environment, dashboard, alert, backup, or production runbook has been verified.
 
 ## Service inventory
 
 | Service | Exposure | Planned owner responsibility | Current state |
 | --- | --- | --- | --- |
-| React frontend | Public via Vercel | User interface and safe rendering | Not created |
+| React frontend | Public via Vercel | Authenticated UI, safe rendering, repository questions and status | Implemented locally; not deployed |
 | FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status/questions/manual refresh, bounded three-tool agent, health | Milestone 9 signed freshness and active-version questions verified locally; not deployed |
 | Indexing worker | Railway private service | Durable jobs, safe static ingestion, embedding/vector validation, atomic activation, cleanup | Implemented and locally verified; not deployed |
 | Embedding service | Railway private service | Authenticated bounded fixed-model embeddings | Implemented, real pinned model verified, UID 10002 image built; not deployed |
@@ -24,6 +24,20 @@
 - Private `GET /health/live` on the embedding service is dependency-independent. Credentialed `GET /health/ready` returns only load state and fixed model/revision/dimension/normalization/token ceiling; unauthenticated requests return 401.
 
 API responses include a generated or validated `X-Request-ID` and security headers. PostgreSQL, Redis, and Qdrant are API readiness dependencies. The hosted LLM is deliberately not probed by readiness; an LLM outage affects only question requests. API and model liveness remain successful during dependency/model readiness failure.
+
+## Frontend local operation
+
+Install only from the committed lockfile and run the Vite client separately from the API:
+
+```sh
+cd frontend
+npm ci
+npm run dev
+```
+
+`VITE_API_BASE_URL` defaults to `http://127.0.0.1:8000/api/v1`. The browser client must use an API whose `FRONTEND_URL` is its exact origin and whose `CORS_ORIGINS` includes that origin. In production both must be HTTPS. The API callback, not the frontend, receives GitHub's OAuth query; after server-side exchange it writes the HTTP-only refresh cookie and redirects only to `<FRONTEND_URL>/auth/callback`. Never add OAuth codes, access tokens, refresh tokens, or private keys to Vite variables: only public API base configuration belongs there.
+
+The frontend build is static output from `npm run build`; deployment/hosting configuration is intentionally not implemented in this milestone. CI runs locked install, `npm ls`, formatting, lint, TypeScript build, Vitest, Chromium-only Playwright, and a high-severity npm audit. Run `npx playwright install chromium` once locally, then `npm run test:e2e`; screenshots/traces/reports remain ignored. Live GitHub and deployed-browser acceptance remain required.
 
 ## Logging and metrics contract
 
