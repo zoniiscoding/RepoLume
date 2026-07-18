@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -9,13 +10,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import SecretStr
 
+from app.db.models.enums import IndexingMode
 from app.embeddings.client import EmbeddingProviderProtocol
-from app.github.client import GitHubClientProtocol
+from app.github.client import GitHubAPIError, GitHubClientProtocol
+from app.github.schemas import GitHubCommitComparison
 from app.indexing.analyzer import RepositoryAnalyzerProtocol
 from app.indexing.clone import ClonedRepository, RepositoryClonerProtocol
-from app.indexing.discovery import DiscoveryResult, FileDiscovery
+from app.indexing.discovery import DiscoveredFile, DiscoveryResult, FileDiscovery
 from app.indexing.failures import IndexingError
-from app.indexing.models import ProcessingResult
+from app.indexing.models import ChunkType, ContentChunk, ProcessingResult
 from app.indexing.worker import IndexingWorker
 from app.queue import QueueDelivery, WorkerQueueProtocol
 from app.services.indexing_jobs import ClaimedJob, IndexingJobStore, JobContext
@@ -46,7 +49,7 @@ async def analyze_empty(**kwargs: Any) -> ProcessingResult:
     return empty_processing_result()
 
 
-def worker_dependencies(
+def worker_dependencies(  # noqa: PLR0915 -- explicit protocol doubles document the boundary
     tmp_path: Path,
 ) -> tuple[IndexingWorker, Any, Any, Any, Any, Any]:
     settings = make_settings(worker_heartbeat_interval_seconds=0.1)
@@ -59,6 +62,9 @@ def worker_dependencies(
     store = MagicMock()
     store.claim = AsyncMock()
     store.authorized_context = AsyncMock()
+    store.is_current = AsyncMock(return_value=True)
+    store.mark_stale = AsyncMock()
+    store.record_freshness_plan = AsyncMock()
     store.heartbeat = AsyncMock()
     store.stage = AsyncMock()
     store.prepare_build = AsyncMock()
@@ -75,7 +81,8 @@ def worker_dependencies(
     store.due_jobs = AsyncMock(return_value=())
     store.mark_enqueued = AsyncMock()
     github = MagicMock()
-    github.create_installation_token = AsyncMock(return_value=SecretStr("token"))
+    github.create_repository_installation_token = AsyncMock(return_value=SecretStr("token"))
+    github.compare_repository_commits = AsyncMock()
     cloner = MagicMock()
     cloned = ClonedRepository(
         workspace=tmp_path,
@@ -106,6 +113,7 @@ def worker_dependencies(
     vectors.upsert = AsyncMock()
     vectors.validate_scope = AsyncMock()
     vectors.count_scope = AsyncMock(return_value=0)
+    vectors.reusable_vectors = AsyncMock(return_value={})
     vectors.close = AsyncMock()
     worker = IndexingWorker(
         settings=settings,
@@ -173,10 +181,211 @@ async def test_worker_completes_discovery_and_cleans_clone(tmp_path: Path) -> No
     store.prepare_build.assert_awaited_once()
     store.validate_graph.assert_awaited_once()
     store.activate.assert_awaited_once()
-    github.create_installation_token.assert_awaited_once_with(42)
+    github.create_repository_installation_token.assert_awaited_once()
     discovery.discover.assert_called_once_with(tmp_path)
     cloner.cleanup.assert_called_once()
     queue.acknowledge.assert_awaited_once_with("1-0")
+
+
+@pytest.mark.parametrize("complete_previous_artifacts", [True, False])
+@pytest.mark.asyncio
+async def test_incremental_worker_reuses_only_complete_unchanged_vector_state(
+    tmp_path: Path,
+    complete_previous_artifacts: bool,
+) -> None:
+    worker, queue, store, github, cloner, _ = worker_dependencies(tmp_path)
+    claimed = claimed_job()
+    context = JobContext(
+        job_id=claimed.id,
+        repository_id=claimed.repository_id,
+        installation_id=uuid.uuid4(),
+        github_installation_id=42,
+        owner="octo-org",
+        name="repo",
+        default_branch="main",
+        index_version=2,
+        github_repository_id=9001,
+        refresh_generation=1,
+        active_index_version=1,
+        active_commit_sha="a" * 40,
+        indexed_branch="main",
+        requested_mode=IndexingMode.INCREMENTAL,
+    )
+    store.claim.return_value = claimed
+    store.authorized_context.return_value = context
+    cloner.clone.return_value = ClonedRepository(
+        workspace=tmp_path,
+        checkout=tmp_path,
+        commit_sha="b" * 40,
+    )
+    github.compare_repository_commits.return_value = GitHubCommitComparison.model_validate(
+        {
+            "status": "ahead",
+            "ahead_by": 1,
+            "behind_by": 0,
+            "total_commits": 1,
+            "files": [{"filename": "changed.py", "status": "modified", "changes": 2}],
+        }
+    )
+    chunks = tuple(
+        ContentChunk(
+            repository_id=claimed.repository_id,
+            index_version=2,
+            ordinal=ordinal,
+            file_path=path,
+            language="python",
+            chunk_type=ChunkType.MODULE,
+            symbol_name=None,
+            qualified_name=path.removesuffix(".py"),
+            parent_qualified_name=None,
+            heading_hierarchy=(),
+            imports=(),
+            decorators=(),
+            signature=None,
+            docstring=None,
+            start_line=1,
+            end_line=1,
+            commit_sha="b" * 40,
+            content_hash=("c" if ordinal == 0 else "d") * 64,
+            content=f"value = {ordinal}",
+        )
+        for ordinal, path in enumerate(("unchanged.py", "changed.py"))
+    )
+    processing = ProcessingResult(
+        repository_id=claimed.repository_id,
+        index_version=2,
+        commit_sha="b" * 40,
+        parsed_file_count=2,
+        partial_file_count=0,
+        skipped_file_count=0,
+        symbol_count=0,
+        chunk_count=2,
+        warning_counts={},
+        symbols=(),
+        chunk_fingerprints=(),
+        chunks=chunks,
+    )
+    worker._analyzer.analyze.side_effect = None  # type: ignore[attr-defined]
+    worker._analyzer.analyze.return_value = processing  # type: ignore[attr-defined]
+    worker._vectors.reusable_vectors.return_value = (  # type: ignore[attr-defined]
+        {"0": (1.0,) + (0.0,) * 767} if complete_previous_artifacts else {}
+    )
+    worker._embeddings.embed_documents.return_value = dict.fromkeys(  # type: ignore[attr-defined]
+        ("1",) if complete_previous_artifacts else ("0", "1"),
+        (1.0,) + (0.0,) * 767,
+    )
+
+    await worker.process_delivery(QueueDelivery(delivery_id="2-0", job_id=claimed.id))
+
+    prepared_batch = worker._embeddings.embed_documents.await_args.args[0]  # type: ignore[attr-defined]
+    assert [item.item_id for item in prepared_batch] == (
+        ["1"] if complete_previous_artifacts else ["0", "1"]
+    )
+    assert store.record_vector_counts.await_args.kwargs == {
+        "embedded_chunk_count": 2,
+        "vector_count": 2,
+        "reused_chunk_count": 1 if complete_previous_artifacts else 0,
+        "reembedded_chunk_count": 1 if complete_previous_artifacts else 2,
+    }
+    if not complete_previous_artifacts:
+        assert store.record_freshness_plan.await_args.kwargs["actual_mode"] is IndexingMode.FULL
+        assert (
+            store.record_freshness_plan.await_args.kwargs["fallback_reason"]
+            == "previous_artifact_missing"
+        )
+    queue.acknowledge.assert_awaited_once_with("2-0")
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_reason"),
+    [
+        ("comparison_unavailable", "comparison_unavailable"),
+        ("changed_bytes", "changed_bytes_limit"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_worker_falls_back_to_full_when_delta_cannot_be_reused_safely(
+    tmp_path: Path,
+    scenario: str,
+    expected_reason: str,
+) -> None:
+    worker, queue, store, github, cloner, discovery = worker_dependencies(tmp_path)
+    claimed = claimed_job()
+    context = JobContext(
+        job_id=claimed.id,
+        repository_id=claimed.repository_id,
+        installation_id=uuid.uuid4(),
+        github_installation_id=42,
+        owner="octo-org",
+        name="repo",
+        default_branch="main",
+        index_version=2,
+        github_repository_id=9001,
+        refresh_generation=1,
+        active_index_version=1,
+        active_commit_sha="a" * 40,
+        indexed_branch="main",
+        requested_mode=IndexingMode.INCREMENTAL,
+    )
+    store.claim.return_value = claimed
+    store.authorized_context.return_value = context
+    cloner.clone.return_value = ClonedRepository(
+        workspace=tmp_path,
+        checkout=tmp_path,
+        commit_sha="b" * 40,
+    )
+    if scenario == "comparison_unavailable":
+        github.compare_repository_commits.side_effect = GitHubAPIError
+    else:
+        github.compare_repository_commits.return_value = GitHubCommitComparison.model_validate(
+            {
+                "status": "ahead",
+                "ahead_by": 1,
+                "behind_by": 0,
+                "total_commits": 1,
+                "files": [{"filename": "changed.py", "status": "modified"}],
+            }
+        )
+        discovery.discover.return_value = DiscoveryResult(
+            files=(DiscoveredFile("changed.py", 64 * 1024 * 1024 + 1),),
+            inspected_file_count=1,
+            total_bytes=64 * 1024 * 1024 + 1,
+            skipped={},
+        )
+
+    await worker.process_delivery(QueueDelivery(delivery_id=scenario, job_id=claimed.id))
+
+    assert store.record_freshness_plan.await_args.kwargs["actual_mode"] is IndexingMode.FULL
+    assert store.record_freshness_plan.await_args.kwargs["fallback_reason"] == expected_reason
+    worker._vectors.reusable_vectors.assert_not_awaited()  # type: ignore[attr-defined]
+    queue.acknowledge.assert_awaited_once_with(scenario)
+
+
+@pytest.mark.asyncio
+async def test_worker_marks_an_incremental_target_that_is_already_active_stale(
+    tmp_path: Path,
+) -> None:
+    worker, queue, store, _, _, _ = worker_dependencies(tmp_path)
+    claimed = claimed_job()
+    context = replace(
+        job_context(claimed),
+        active_index_version=1,
+        active_commit_sha="a" * 40,
+        indexed_branch="main",
+        requested_mode=IndexingMode.INCREMENTAL,
+    )
+    store.claim.return_value = claimed
+    store.authorized_context.return_value = context
+
+    await worker.process_delivery(QueueDelivery(delivery_id="already-active", job_id=claimed.id))
+
+    store.mark_stale.assert_awaited_once_with(
+        claimed,
+        "test-worker",
+        code="target_already_active",
+    )
+    worker._analyzer.analyze.assert_not_awaited()  # type: ignore[attr-defined]
+    queue.acknowledge.assert_awaited_once_with("already-active")
 
 
 @pytest.mark.asyncio
@@ -188,7 +397,7 @@ async def test_worker_acks_duplicate_without_processing(tmp_path: Path) -> None:
     await worker.process_delivery(delivery)
 
     queue.acknowledge.assert_awaited_once_with("duplicate")
-    github.create_installation_token.assert_not_awaited()
+    github.create_repository_installation_token.assert_not_awaited()
     cloner.clone.assert_not_awaited()
     discovery.discover.assert_not_called()
 
@@ -203,9 +412,33 @@ async def test_worker_cancels_job_when_durable_access_is_revoked(tmp_path: Path)
     await worker.process_delivery(QueueDelivery(delivery_id="revoked", job_id=claimed.id))
 
     store.cancel_revoked.assert_awaited_once_with(claimed, "test-worker")
-    github.create_installation_token.assert_not_awaited()
+    github.create_repository_installation_token.assert_not_awaited()
     cloner.clone.assert_not_awaited()
     queue.acknowledge.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_newer_generation_blocks_old_worker_immediately_before_activation(
+    tmp_path: Path,
+) -> None:
+    worker, queue, store, _, _, _ = worker_dependencies(tmp_path)
+    claimed = claimed_job()
+    store.claim.return_value = claimed
+    store.authorized_context.return_value = job_context(claimed)
+    store.is_current.side_effect = [True, False]
+
+    await worker.process_delivery(QueueDelivery(delivery_id="stale-worker", job_id=claimed.id))
+
+    store.mark_build_ready.assert_awaited_once()
+    store.activate.assert_not_awaited()
+    store.mark_stale.assert_awaited_once_with(
+        claimed,
+        "test-worker",
+        code="refresh_superseded_before_activation",
+        superseded=True,
+    )
+    assert worker._vectors.delete_scope.await_count == 2  # type: ignore[attr-defined]
+    queue.acknowledge.assert_awaited_once_with("stale-worker")
 
 
 @pytest.mark.asyncio

@@ -43,6 +43,7 @@ class Repository(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ),
         CheckConstraint("size_bytes IS NULL OR size_bytes >= 0", name="size_bytes_nonnegative"),
         CheckConstraint("active_vector_count >= 0", name="active_vector_count_nonnegative"),
+        CheckConstraint("refresh_generation >= 0", name="refresh_generation_nonnegative"),
         Index(
             "ix_repositories_installation_status",
             "installation_id",
@@ -63,6 +64,13 @@ class Repository(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     github_url: Mapped[str] = mapped_column(Text, nullable=False)
     is_private: Mapped[bool] = mapped_column(Boolean, nullable=False)
     default_branch: Mapped[str] = mapped_column(String(255), nullable=False)
+    indexed_branch: Mapped[str | None] = mapped_column(String(255))
+    refresh_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    latest_webhook_commit_sha: Mapped[str | None] = mapped_column(String(64))
+    last_delivery_status: Mapped[str | None] = mapped_column(String(32))
+    last_delivery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     current_remote_sha: Mapped[str | None] = mapped_column(String(64))
     last_indexed_commit_sha: Mapped[str | None] = mapped_column(String(64))
     index_version: Mapped[int] = mapped_column(

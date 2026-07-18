@@ -1,6 +1,6 @@
 # RepoLume Architecture
 
-**Status:** Milestone 8 persistent static Python call graphs and authorized caller analysis are implemented. Local migration, graph, tenancy, agent, and service verification is recorded in `BUILD_STATUS.md`; runtime call tracing, incremental indexing, live GitHub/hosted-model acceptance, and deployment remain outstanding.
+**Status:** Milestone 9 signed webhook ingestion, repository-scoped incremental freshness, stale-worker rejection, complete inactive replacement versions, selective vector reuse, and atomic activation are implemented. Static parsing and call-graph construction remain conservative complete-target rebuilds. Live GitHub/hosted-model acceptance, deployment, and Milestone 10 frontend work remain outstanding.
 
 ## Goals
 
@@ -34,8 +34,8 @@ Only the frontend, API, webhook route, and safe health routes are public. The wo
 | Component | Responsibility | Must not do |
 | --- | --- | --- |
 | Frontend | Authentication states, repository management, progress, repository-scoped chat, sanitized evidence rendering | Store access tokens persistently; render untrusted HTML |
-| API | **Through Milestone 8:** foundation, GitHub OAuth/sessions, authorization, signed webhooks, selection/status, readiness, and a bounded three-tool repository agent | Perform ingestion in request handlers; trust model/client scope or filters; expose shell/arbitrary networking; persist questions/prompts/answers/history evidence; expose vectors, prompts, or infrastructure details |
-| Worker | **Through Milestone 8:** claim/recover/heartbeat, reauthorize, clone/discover/parse/chunk/build graph, call embeddings, validate inactive graph/vectors, atomically activate, clean up | Expose a public endpoint; execute/import connected code; activate incomplete data; perform unscoped graph/vector operations |
+| API | **Through Milestone 9:** foundation, GitHub OAuth/sessions, authorization, signed and bounded webhook ingress, durable freshness scheduling, manual full reindex, selection/status, readiness, and a bounded three-tool repository agent | Perform ingestion in request handlers; trust payload/model/client scope or filters; expose shell/arbitrary networking; persist raw webhook bodies/questions/prompts/answers/history evidence; expose vectors, prompts, or infrastructure details |
+| Worker | **Through Milestone 9:** claim/recover/heartbeat, reauthorize, reject stale generations, repository-restricted compare/clone, discover/parse/chunk/build graph, selectively reuse/embed vectors, validate inactive state, atomically activate, clean up | Expose a public endpoint; execute/import connected code; activate incomplete/stale data; perform unscoped graph/vector operations |
 | Embedding service | Load and warm one immutable ONNX model, authenticate and bound batches, enforce token/output contracts, return deterministic normalized vectors | Receive GitHub/Redis/database credentials; log raw chunks/vectors; accept public traffic; load remote code |
 | PostgreSQL | Identity/access, webhook/job truth, processing summaries, versioned symbols, index-build/count/activation/cleanup truth | Act as a vector engine; persist raw tokens, source bodies, or vector arrays |
 | Redis | **Implemented:** at-least-once Stream delivery of opaque job UUIDs; later ephemeral cache/rate-limit support | Be the only record of a job or access decision; carry repository data or credentials |
@@ -47,7 +47,7 @@ Only the frontend, API, webhook route, and safe health routes are public. The wo
 ```text
 backend/             FastAPI API, domain services, persistence, jobs, ingestion, tests
 embedding_service/   Private FastAPI/FastEmbed ONNX service, independent locks/image/tests
-frontend/            Reserved for a later React/Vite application; not created through Milestone 8
+frontend/            Reserved for Milestone 10; not created through Milestone 9
 docs/                Product, architecture, security, decisions, evaluation, status, operations
 .github/              CI/CD and dependency automation
 ```
@@ -74,10 +74,11 @@ Protected installation/repository lookup:
   -> server-minted installation token -> fixed GitHub repository API
   -> reauthorization -> repository access-state sync -> safe response
 
-Webhook:
+Webhook freshness:
   bounded raw body -> HMAC-SHA256 validation -> payload validation
-  -> delivery-ID insert-on-conflict -> immediate access-state transition
-  -> processed/ignored/queued durable acknowledgement
+  -> content-free delivery-ID insert-on-conflict -> trusted installation/repository row lock
+  -> immediate access-state transition or default-branch generation/job creation
+  -> commit durable state -> Redis opaque job UUID -> accepted/duplicate/ignored response
 
 Repository selection:
   bearer validation -> fresh membership + active installation
@@ -86,11 +87,13 @@ Repository selection:
 
 Worker:
   Redis job UUID -> conditional PostgreSQL claim -> durable authorization reload
-  -> short-lived installation token -> fixed shallow clone -> bounded discovery
-  -> parsing/chunking/static-graph child -> safe summary + inactive symbols/edges in PostgreSQL
-  -> deterministic preprocessing -> authenticated bounded embedding batches
+  -> generation check -> repository-restricted installation token -> fixed shallow clone
+  -> fixed compare API from active SHA to cloned SHA -> bounded changed-file plan
+  -> complete-target parsing/chunking/static-graph child -> inactive symbols/edges
+  -> exact-scope unchanged-vector lookup + changed/new authenticated embedding batches
   -> inactive scoped Qdrant upsert/count/metadata validation + graph validation
-  -> PostgreSQL atomic activation -> superseded-version cleanup
+  -> authorization/generation/branch recheck -> PostgreSQL compare-and-swap activation
+  -> superseded-version cleanup
   -> terminal/retry transition -> guaranteed clone cleanup -> Redis ACK
 
 Repository question:
@@ -134,7 +137,7 @@ RepoLume uses SQLAlchemy 2.x async sessions with `asyncpg` in FastAPI and the wo
 - One short-lived session per worker job step/transaction; no session remains open during clone, embedding, LLM, or other network work.
 - `expire_on_commit=False`; ORM instances do not cross process or queue boundaries.
 - Workers receive scalar identifiers, then reload and re-authorize durable state.
-- Schema changes are made only through Alembic migrations; head `b83f2d8a6c41` adds Milestone 8 call metadata and graph build/job validation state after `d06a6455fcd7`.
+- Schema changes are made only through Alembic migrations; head `4cafdf2faa66` adds Milestone 9 delivery, branch, generation, requested/actual-mode, change-count, reuse, and graph-refresh state after `b83f2d8a6c41`.
 - Transactions protect state transitions and atomic index activation; external side effects use idempotent operations and compensating cleanup rather than pretending they share a database transaction.
 
 ## Repository indexing data flow
@@ -150,14 +153,15 @@ RepoLume uses SQLAlchemy 2.x async sessions with `asyncpg` in FastAPI and the wo
 9. **Implemented:** deterministic UUIDv5 point IDs bind installation, repository, inactive version, path, stable chunk hash, type, and ordinal. Qdrant collection metadata fixes cosine/768/model/revision/L2; all writes, counts, scroll validation, and deletes use typed installation/repository/version filters.
 10. **Implemented:** exact vector count/commit/model/scope validation plus re-read graph counts/fingerprint mark the build ready. One PostgreSQL transaction locks the job/repository/build, supersedes the prior row, activates the new build, updates the repository active version/SHA/vector count, and completes the job.
 11. **Implemented:** any pre-activation failure preserves the old active version, deletes only the failed inactive scope, records cleanup state, and keeps duplicate retries idempotent. Post-activation cleanup deletes only the superseded trusted scope.
-12. Temporary clones are removed in a `finally` path.
-
-Incremental indexing will be introduced only in Milestone 9. Until then, re-indexing is a full versioned rebuild.
+12. **Milestone 9:** a default-branch push compares the active SHA to the independently cloned target. The planner validates normalized add/modify/remove/rename/copy paths. Missing ancestry, force pushes, no active version, unsafe/incomplete/large comparisons, target-byte limits, or missing reusable artifacts produce an explicit full fallback.
+13. **Milestone 9:** incremental mode still creates a complete new version. Parsing/chunk generation and the static graph are rebuilt over the complete target tree because imports and ambiguity make narrower invalidation unsafe in the current schema. Only unchanged vectors with exact path/type/content/location/model/preprocessing identity are copied into the new version; changed/new chunks are embedded. This is selective vector reuse, not claimed selective parse reuse.
+14. **Milestone 9:** repository `refresh_generation` is the compare-and-swap freshness authority. A newer push or manual reindex supersedes older queued/running work. The worker checks it before external work and immediately before activation. Questions continue to use the validated prior active version while a replacement is queued/building/failed.
+15. Temporary clones are removed in a `finally` path.
 
 ## Bounded agent question flow
 
 1. API authenticates the user and performs the full active installation/repository authorization join. Cross-tenant selectors receive the same non-enumerating not-found response.
-2. PostgreSQL must show repository indexing `complete`, a nonzero active vector count, and exactly one matching `active` build with the current commit, version, model, dimension, preprocessing fingerprint, and count.
+2. PostgreSQL must show a nonzero active version/vector count and exactly one matching `active` build with the current commit, version, model, dimension, preprocessing fingerprint, and count. A queued/building/failed replacement may coexist; `not_indexed`, revoked, and deleting states fail closed.
 3. Central preprocessing NFC-normalizes and folds whitespace while preserving identifiers, rejects controls and questions shorter than 3 characters or over 4,096 UTF-8 bytes/512 estimated tokens, and produces a prompt-version-bound SHA-256 fingerprint. Raw questions and query vectors are neither logged nor persisted.
 4. The provider receives fixed `repolume-agent-v2` instructions and canonical JSON untrusted context. Its strict output is either one allowlisted typed tool call or a final answer/evidence-ID object. Repository IDs, installation IDs, tokens, URLs, raw filters, revisions, limits, and citation metadata are absent from the schema.
 5. `search_code` calls the private service in query mode, validates the exact model/revision/one finite normalized vector, and searches Qdrant with mandatory server-derived installation/repository/active-version/commit/model/preprocessing scope. Existing deterministic evidence selection caps code evidence.
@@ -173,11 +177,11 @@ Incremental indexing will be introduced only in Milestone 9. Until then, re-inde
 
 `repositories.index_version` and `repository_index_builds.state='active'` identify the only active version. A partial unique index enforces one active build per repository; application transitions require exact embedded/vector/expected counts, zero failed/skipped items, and a re-read SHA-256 graph fingerprint with `graph_validated=true`. New vectors, deterministic symbols, and deterministic call edges are written under a distinct inactive version. Activation proceeds only after Qdrant and graph validation; failed/superseded symbol deletion cascades only that version's call edges.
 
-## Milestone 8 static call-graph flow
+## Milestone 8/9 static call-graph flow
 
 The existing resource-bounded child process walks Tree-sitter Python `call` nodes and attributes them only to enclosing function, async-function, or method definitions. It never imports or executes repository modules. The resolver recognizes same-file/nested names, direct and relative imports/aliases, module-qualified calls, constructors, `self`/`cls` methods, Unicode identifiers, and a unique repository-wide probable method. Duplicate candidates are persisted as low-confidence `ambiguous`; wildcards, reflection, call-return attributes, and other dynamic forms remain low-confidence `unresolved`.
 
-Deterministic UUIDv5 symbol and call-site identities plus a SHA-256 graph fingerprint bind repository, inactive index version, source location, and commit. PostgreSQL stores call expression/location, resolved or unresolved target, resolution type, confidence, and build/job counts. The worker re-reads all inactive edges, recomputes counts/fingerprint, and blocks readiness and activation on any mismatch. Milestone 9 incremental graph maintenance is not present; every re-index remains a full versioned rebuild.
+Deterministic UUIDv5 symbol and call-site identities plus a SHA-256 graph fingerprint bind repository, inactive index version, source location, and commit. PostgreSQL stores call expression/location, resolved or unresolved target, resolution type, confidence, and build/job counts. The worker re-reads all inactive edges, recomputes counts/fingerprint, and blocks readiness and activation on any mismatch. Milestone 9 intentionally rebuilds the complete graph for every target version so changed imports, renamed modules, deleted definitions, and introduced/resolved ambiguity cannot leave stale edges.
 
 Cleanup is idempotent and always uses trusted installation/repository/version filters. A failed activation keeps the prior version queryable. Failed inactive, retry-artifact, and just-superseded vector scopes are cleaned now; full repository deletion and general orphan reconciliation remain later lifecycle work.
 
@@ -204,7 +208,7 @@ Exact retention decisions will be finalized before deletion functionality is aut
 - GitHub dependency failures return safe `503` responses without response bodies, credentials, or provider error text.
 - OAuth state is consumed before the code exchange so a failed or replayed callback cannot reuse it.
 - Refresh rotation uses PostgreSQL row locks; replay of a used/revoked token invalidates its complete family.
-- Installation and repository webhooks apply revocation in the request transaction before acknowledging. Push and non-deletion repository changes remain content-free durable delivery records; automatic reindex wiring is deferred beyond the initial Milestone 3 selection flow.
+- Installation and repository webhooks apply revocation in the request transaction before acknowledging. Default-branch pushes and default-branch metadata changes create durable versioned refresh jobs after signature, header, payload, installation, repository, branch, and idempotency validation. Non-default/deleted branches are ignored.
 - PostgreSQL is the durable source of job state; Redis delivery is recoverable.
 - Worker conditional claims prevent concurrent execution. Heartbeats, Redis pending-entry reclaim, delayed bounded retry, and PostgreSQL stuck-job reconciliation recover after restarts or Redis loss.
 - Qdrant, embedding, or LLM outages return safe degraded states and do not activate partial indexes.
@@ -226,7 +230,7 @@ The API and worker use one hashed-dependency, non-root Python 3.13.14/Git image 
 
 - No real GitHub App or hosted frontend is connected; GitHub adapter behavior is automatically verified with mocked responses only.
 - Membership is synchronized at login and accepted for a configurable bounded freshness interval. Signed installation suspension/deletion and repository-removal webhooks override it immediately.
-- Initial selected-repository jobs can complete a searchable vector version and authorized users can ask bounded code/history questions. Webhook-triggered reindex scheduling is not connected.
+- Initial/manual/full and webhook-triggered refresh jobs can complete searchable versions. The comparison adapter and signed deliveries are fully automated with controlled fixtures; real GitHub App acceptance remains pending credentials.
 - Static Python analysis cannot prove dynamic dispatch, reflection, monkey patching, metaclass, decorator-generated, dependency-injection, or runtime-assignment behavior.
 - Python is the only initially supported structured language.
 - Repository/history evidence cannot establish actual runtime state or undocumented historical intent; commit messages alone are not treated as proof of causation.

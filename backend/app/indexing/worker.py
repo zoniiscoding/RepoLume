@@ -11,7 +11,7 @@ import structlog
 from pydantic import SecretStr
 
 from app.core.config import Settings
-from app.db.models.enums import RepositoryIndexingStatus
+from app.db.models.enums import IndexingMode, RepositoryIndexingStatus
 from app.embeddings.client import EmbeddingProviderProtocol
 from app.embeddings.preprocessing import EmbeddingPreprocessor
 from app.github.client import GitHubAPIError, GitHubClientProtocol
@@ -19,6 +19,7 @@ from app.indexing.analyzer import RepositoryAnalyzerProtocol
 from app.indexing.clone import ClonedRepository, CloneRequest, RepositoryClonerProtocol
 from app.indexing.discovery import DiscoveryResult, FileDiscovery
 from app.indexing.failures import IndexingError
+from app.indexing.freshness import FreshnessPlan, plan_refresh
 from app.indexing.models import ProcessingResult
 from app.queue import QueueDelivery, QueueUnavailableError, WorkerQueueProtocol
 from app.services.indexing_jobs import ClaimedJob, IndexingJobStore, JobContext
@@ -143,6 +144,14 @@ class IndexingWorker:
                     repository_id=str(claimed.repository_id),
                 )
                 return
+            if not await self._store.is_current(claimed, self._worker_id):
+                await self._store.mark_stale(
+                    claimed,
+                    self._worker_id,
+                    code="refresh_superseded",
+                    superseded=True,
+                )
+                return
             await self._process_authorized(claimed, state)
         except IndexingError as error:
             cleanup_complete = True
@@ -198,7 +207,56 @@ class IndexingWorker:
                     installation_token=token,
                 )
             )
+            if (
+                context.active_commit_sha == cloned.commit_sha
+                and context.indexed_branch == context.default_branch
+                and context.requested_mode is IndexingMode.INCREMENTAL
+            ):
+                await self._store.mark_stale(
+                    claimed,
+                    self._worker_id,
+                    code="target_already_active",
+                )
+                return
+            comparison = None
+            if context.active_commit_sha is not None:
+                try:
+                    comparison = await self._github.compare_repository_commits(
+                        token,
+                        owner=context.owner,
+                        repository=context.name,
+                        base=context.active_commit_sha,
+                        head=cloned.commit_sha,
+                    )
+                except GitHubAPIError:
+                    comparison = None
+            plan = plan_refresh(
+                comparison,
+                has_active_index=context.active_index_version > 0,
+                requested_mode=context.requested_mode,
+                max_changed_files=self._settings.freshness_max_changed_files,
+            )
             discovery, processing = await self._analyze(claimed, context, cloned)
+            if plan.actual_mode is IndexingMode.INCREMENTAL:
+                changed_bytes = sum(
+                    item.size_bytes
+                    for item in discovery.files
+                    if item.relative_path in plan.changes.target_paths
+                )
+                if changed_bytes > self._settings.freshness_max_changed_bytes:
+                    plan = FreshnessPlan(
+                        actual_mode=IndexingMode.FULL,
+                        fallback_reason="changed_bytes_limit",
+                        changes=plan.changes,
+                    )
+            await self._store.record_freshness_plan(
+                claimed,
+                self._worker_id,
+                actual_mode=plan.actual_mode,
+                fallback_reason=plan.fallback_reason,
+                changed_counts=plan.changes.counts,
+                changed_file_count=len(plan.changes.target_paths | plan.changes.removed_paths),
+            )
             await self._store.prepare_build(
                 claimed,
                 self._worker_id,
@@ -208,7 +266,7 @@ class IndexingWorker:
                 preprocessing_fingerprint=self._preprocessor.policy_fingerprint,
             )
             state.build_prepared = True
-            vector_count = await self._embed_and_store(claimed, context, cloned, processing)
+            vector_count = await self._embed_and_store(claimed, context, cloned, processing, plan)
             if await self._validate_and_activate(claimed, context, cloned, vector_count):
                 self._log_completion(claimed, context, discovery, processing, vector_count)
         finally:
@@ -217,7 +275,10 @@ class IndexingWorker:
 
     async def _installation_token(self, context: JobContext) -> SecretStr:
         try:
-            return await self._github.create_installation_token(context.github_installation_id)
+            return await self._github.create_repository_installation_token(
+                context.github_installation_id,
+                repository_id=context.github_repository_id,
+            )
         except GitHubAPIError as error:
             raise IndexingError(
                 code="github_token_unavailable",
@@ -286,6 +347,7 @@ class IndexingWorker:
         context: JobContext,
         cloned: ClonedRepository,
         processing: ProcessingResult,
+        plan: FreshnessPlan,
     ) -> int:
         await self._store.stage(
             claimed,
@@ -296,8 +358,36 @@ class IndexingWorker:
             commit_sha=cloned.commit_sha,
         )
         prepared = tuple(self._preprocessor.prepare_chunk(chunk) for chunk in processing.chunks)
-        embeddings = await self._embeddings.embed_documents(prepared)
-        if len(embeddings) != len(prepared):
+        reused: dict[str, tuple[float, ...]] = {}
+        if plan.actual_mode is IndexingMode.INCREMENTAL and context.active_index_version > 0:
+            reusable = tuple(
+                document
+                for document in prepared
+                if document.chunk is not None
+                and document.chunk.file_path not in plan.changes.target_paths
+            )
+            reused = await self._vectors.reusable_vectors(
+                self._scope(context, context.active_index_version),
+                prepared=reusable,
+                commit_sha=context.active_commit_sha or "",
+                model_fingerprint=embedding_model_fingerprint(
+                    self._settings, self._preprocessor.policy_fingerprint
+                ),
+                preprocessing_fingerprint=self._preprocessor.policy_fingerprint,
+            )
+            if len(reused) != len(reusable):
+                reused = {}
+                await self._store.record_freshness_plan(
+                    claimed,
+                    self._worker_id,
+                    actual_mode=IndexingMode.FULL,
+                    fallback_reason="previous_artifact_missing",
+                    changed_counts=plan.changes.counts,
+                    changed_file_count=len(plan.changes.target_paths | plan.changes.removed_paths),
+                )
+        to_embed = tuple(document for document in prepared if document.item_id not in reused)
+        embeddings = await self._embeddings.embed_documents(to_embed)
+        if len(embeddings) != len(to_embed):
             raise IndexingError(
                 code="embedding_result_count_mismatch",
                 message="The embedding service returned an invalid response",
@@ -324,7 +414,7 @@ class IndexingWorker:
             build_vector_record(
                 scope=scope,
                 prepared=document,
-                vector=embeddings[document.item_id],
+                vector=reused.get(document.item_id, embeddings.get(document.item_id, ())),
                 settings=self._settings,
                 policy_fingerprint=self._preprocessor.policy_fingerprint,
             )
@@ -336,6 +426,8 @@ class IndexingWorker:
             self._worker_id,
             embedded_chunk_count=len(prepared),
             vector_count=len(records),
+            reused_chunk_count=len(reused),
+            reembedded_chunk_count=len(to_embed),
         )
         return len(records)
 
@@ -364,6 +456,15 @@ class IndexingWorker:
         )
         await self._store.validate_graph(claimed, self._worker_id)
         await self._store.mark_build_ready(claimed, self._worker_id)
+        if not await self._store.is_current(claimed, self._worker_id):
+            await self._cleanup_inactive(context)
+            await self._store.mark_stale(
+                claimed,
+                self._worker_id,
+                code="refresh_superseded_before_activation",
+                superseded=True,
+            )
+            return False
         reauthorized = await self._store.authorized_context(claimed)
         if reauthorized is None:
             await self._cleanup_inactive(context)

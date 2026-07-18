@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.db.models.enums import IndexingJobStatus, RepositoryIndexingStatus
+from app.db.models.enums import IndexingJobStatus, IndexingMode, RepositoryIndexingStatus
 
 
 class RepositoryCreateRequest(BaseModel):
@@ -34,6 +34,8 @@ class RepositoryDetailResponse(BaseModel):
     size_bytes: int | None
     active_commit_sha: str | None
     active_index_version: int
+    indexed_branch: str | None
+    latest_remote_commit_sha: str | None
     vector_count: int
     searchable: bool
 
@@ -76,6 +78,18 @@ class IndexingStatusResponse(BaseModel):
     last_failure_category: str | None
     heartbeat_at: datetime | None
     completed_at: datetime | None
+    requested_mode: IndexingMode | None
+    actual_mode: IndexingMode | None
+    full_rebuild_reason: str | None
+    changed_file_count: int
+    changed_file_counts: dict[str, int]
+    reused_chunk_count: int
+    reembedded_chunk_count: int
+    graph_rebuilt: bool
+    indexed_branch: str | None
+    latest_remote_commit_sha: str | None
+    last_delivery_status: str | None
+    last_delivery_at: datetime | None
 
 
 class RepositoryCreateResponse(BaseModel):

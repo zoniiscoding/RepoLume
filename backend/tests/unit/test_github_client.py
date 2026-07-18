@@ -320,3 +320,46 @@ async def test_repository_history_retries_rate_limit_but_not_authentication_fail
         )
     assert auth_attempts == 1
     await auth_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_repository_compare_uses_fixed_scope_and_rejects_unsafe_paths() -> None:
+    base = "a" * 40
+    head = "b" * 40
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "status": "ahead",
+                "ahead_by": 1,
+                "behind_by": 0,
+                "total_commits": 1,
+                "files": [{"filename": "src/app.py", "status": "modified", "changes": 4}],
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = GitHubClient(make_settings(), http_client)
+    result = await client.compare_repository_commits(
+        SecretStr("ephemeral-repository-token"),
+        owner="owner",
+        repository="repo",
+        base=base,
+        head=head,
+    )
+    assert result.files[0].filename == "src/app.py"
+    assert requests[0].url.path == f"/repos/owner/repo/compare/{base}...{head}"
+    assert requests[0].headers["Authorization"] == "Bearer ephemeral-repository-token"
+
+    with pytest.raises(GitHubAPIError):
+        await client.compare_repository_commits(
+            SecretStr("ephemeral"),
+            owner="../owner",
+            repository="repo",
+            base=base,
+            head=head,
+        )
+    await http_client.aclose()

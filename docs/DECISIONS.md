@@ -88,7 +88,7 @@ Decisions are append-only. If a decision changes, add a superseding entry instea
 - **Status:** Accepted in principle; retention details deferred
 - **Decision:** Block access immediately, then durably purge all repository-scoped vectors, graphs, chats, caches, jobs, and temporary artifacts before reporting completion.
 - **Rationale:** A soft-delete flag does not meet the product's privacy requirement.
-- **Consequence:** Exact operational-retention treatment for job and usage metadata must be finalized before Milestone 9 implementation.
+- **Consequence:** Milestone 9 immediately revokes access and stops freshness work; the final purge SLA and exact operational-retention treatment for job and usage metadata remain deferred to the dedicated deletion milestone.
 
 ## D-012 — Do not invent evaluation or production evidence
 
@@ -96,7 +96,7 @@ Decisions are append-only. If a decision changes, add a superseding entry instea
 - **Status:** Accepted
 - **Decision:** Record methodology before measurements and add results only from executed evaluation/deployment checks.
 - **Rationale:** Trustworthiness is a product feature; fabricated benchmarks or readiness claims undermine it.
-- **Consequence:** `docs/EVALUATION.md` currently has no scores, and Milestone 0 is explicitly not production-ready.
+- **Consequence:** Every recorded score is labelled as observed or fixture-contract evidence, and no milestone is described as production-ready without the missing live and hosted acceptance.
 
 ## D-013 — Standardize Milestone 1 on Python 3.13 and PostgreSQL 18
 
@@ -384,4 +384,32 @@ Decisions are append-only. If a decision changes, add a superseding entry instea
 - **Status:** Accepted and implemented in Milestone 8
 - **Decision:** The immutable registry is exactly `search_code`, `get_history`, and `find_callers`. Caller arguments contain only a symbol and optional safe file path; authorization, repository, version, commit, limit, ordering, SQL, and citations remain server-owned.
 - **Rationale:** Caller questions need a reviewed capability without granting the model a general graph or database interface.
-- **Consequence:** Missing/ambiguous targets are semantic non-answers; graph/query/scope failures are operational unavailability. No fourth tool or Milestone 9 behavior exists.
+- **Consequence:** Missing/ambiguous targets are semantic non-answers; graph/query/scope failures are operational unavailability. Milestone 9 adds no fourth tool.
+
+## D-050 — Make PostgreSQL delivery generations the freshness authority
+
+- **Status:** Accepted and implemented in Milestone 9
+- **Decision:** Persist only normalized bounded webhook metadata, deduplicate the GitHub delivery ID, row-lock the trusted repository, and increment a server-owned `refresh_generation` for each accepted target. Workers must match the generation before external work and again before activation.
+- **Rationale:** Signatures authenticate bytes but do not prove authorization, ordering, ancestry, or freshness. Receipt timestamps cannot safely order concurrent or replayed pushes.
+- **Consequence:** A newer push or manual refresh deterministically supersedes older work. Redis remains opaque delivery only; PostgreSQL owns target, mode, state, lease, and activation authority.
+
+## D-051 — Build a complete inactive target version and preserve the old active version
+
+- **Status:** Accepted and implemented in Milestone 9
+- **Decision:** Never patch the active graph/vector version in place. Clone and validate the intended default-branch head, construct a complete inactive PostgreSQL/Qdrant version, then atomically compare-and-swap the repository/build rows only after authorization, generation, vectors, and graph validate.
+- **Rationale:** In-place delta mutation could mix commits, expose partial state, or destroy the only queryable version on a failed refresh.
+- **Consequence:** Questions continue against the prior active version throughout queued, building, and failed replacements. Stale workers delete only their own inactive Qdrant scope; activation never combines old/new evidence.
+
+## D-052 — Rebuild static analysis and selectively reuse exact vectors
+
+- **Status:** Accepted and implemented in Milestone 9
+- **Decision:** Re-run bounded discovery, parsing, chunk construction, symbol persistence, and the complete static call graph for the target tree. Reuse an unchanged vector only when repository, prior active version/commit, path, chunk type, content hash, lines, qualified identity, model, and preprocessing fingerprints all match; write a new point under the new version.
+- **Rationale:** The current persisted artifacts do not retain enough import/parse structure to prove safe partial graph invalidation. Full static recomputation is bounded and correct, while exact vector reuse avoids unnecessary private-model work.
+- **Consequence:** `incremental` means authoritative changed-file planning plus selective embedding/vector reuse, not selective parsing. Missing prior vectors degrade to a visible full fallback instead of partial reuse.
+
+## D-053 — Track only the trusted default branch and fall back rather than guess
+
+- **Status:** Accepted and implemented in Milestone 9
+- **Decision:** Accept push refreshes only for `refs/heads/<server-owned default_branch>`. Use a fixed repository compare API and a separately cloned target SHA. Force pushes, absent active state, before/active mismatch, unavailable/non-fast-forward/unsafe/over-limit comparisons, target-byte excess, default-branch changes, or missing reusable artifacts select a full versioned rebuild.
+- **Rationale:** Webhook branch, paths, ancestry claims, and target URLs are untrusted. A safe full rebuild is preferable to a guessed delta.
+- **Consequence:** Arbitrary branch indexing and model-controlled refresh remain absent. Live GitHub acceptance is still required before production use.

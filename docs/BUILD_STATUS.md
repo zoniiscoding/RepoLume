@@ -2,97 +2,101 @@
 
 **Last updated:** 2026-07-18
 
-**Authorized milestone:** Milestone 8 — static Python call graph and caller analysis
+**Authorized milestone:** Milestone 9 — signed GitHub webhook freshness and safe incremental replacement
 
-**Overall status:** Milestone 8 implementation and local dependency-backed verification complete
+**Overall status:** Milestone 9 implementation, local dependency-backed verification, and the single local milestone commit are complete; hosted CI verification awaits a manual push.
 
-**Production readiness:** Not production-ready. Static caller analysis is deliberately incomplete for dynamic Python behavior, and live GitHub App/hosted-model acceptance, a hosted CI run of this local commit, deployment, monitoring, backups/restores, deletion, representative quality/load evaluation, and later freshness controls remain absent or unverified.
+**Production readiness:** Not production-ready. Live GitHub App acceptance, a hosted CI run of the Milestone 9 commit, deployed private infrastructure, representative reliability/load measurement, monitoring, backup/restore, final deletion operations, and Milestone 10+ product work remain absent or unverified.
 
-## Implemented through Milestone 8
+## Implemented through Milestone 9
 
-- All Milestone 1–7 foundation, authorization, durable indexing, private immutable-model embeddings, active-version Qdrant retrieval, grounded citations, GitHub history, and bounded agent behavior.
-- Inert Tree-sitter call-site extraction for supported Python files. RepoLume does not import repository modules, evaluate expressions, run type checkers, install dependencies, invoke repository commands, or execute repository code.
-- Deterministic, repository/version/commit-scoped symbol identities and call edges with caller/callee symbols, exact call-site lines, bounded call expressions, resolution category, confidence, and stable graph fingerprints.
-- Conservative resolution for same/nested-file calls, direct and aliased imports, relative imports, module-qualified calls, constructors, `self`/`cls` methods, and unique probable methods. Wildcard imports, dynamic attribute access, unknown callbacks, ambiguous receivers, and other runtime-dependent behavior remain unresolved or ambiguous.
-- Atomic graph lifecycle inside the existing full-index build. Symbols and call edges are written only to the inactive version, graph counts and fingerprint are re-read and validated before readiness, activation requires validated vectors and graph, and failed/superseded versions are cleaned with repository/version-scoped cascades while the previous active version remains available.
-- Immutable agent registry containing exactly `search_code`, `get_history`, and `find_callers`. Existing four-call, eight-second per-tool, provider/total deadline, evidence-byte, repeated-call, and output-token limits remain unchanged.
-- `find_callers` reauthorizes the user and repository, derives the active version and commit from PostgreSQL, resolves one exact target identity, and returns only deterministic bounded direct callers from that repository/version/commit. Model arguments cannot provide repository, installation, version, commit, SQL, graph filters, traversal depth, URLs, or arbitrary limits.
-- Discriminated `caller` citations whose file paths, symbols, definition/call-site ranges, commit, version, confidence, resolution, and static-analysis limitation are rebuilt from current-request trusted evidence. Fabricated or altered relationship references are rejected.
-- Versioned `repolume-agent-v2` instructions require `find_callers` for dependency questions, preserve uncertainty, prohibit guaranteed runtime-impact claims, and keep source, comments, symbol names, call expressions, questions, and tool evidence inside untrusted JSON boundaries.
-- Eight-case Milestone 8 fixture contract for exact, probable, ambiguous, unresolved, inactive-version, and fabricated-citation behavior. The prior Milestone 6 and 7 baselines remain unchanged.
-- No Milestone 9 incremental indexing, changed-file graph updates, push ordering, freshness handling, frontend, deployment, or billing work.
+- All Milestone 1–8 foundation, authorization, durable full indexing, private immutable-model embeddings, active-version Qdrant retrieval, grounded citations, GitHub history, bounded three-tool agent behavior, and conservative Python call graph.
+- Bounded raw-body GitHub webhook ingestion with exact SHA-256 HMAC verification, constant-time comparison, strict delivery/event headers, typed payload validation, a 1 MiB request limit, and accepted event families `push`, `repository`, `installation`, and `installation_repositories`.
+- Content-free PostgreSQL delivery records with a unique delivery ID, event/installation/repository/job links, branch/ref and before/after SHA, receipt/completion times, retry count, safe failure code, and processing/completed/stale/superseded/unauthorized/retryable states. Raw payloads, patches, source, credentials, and tokens are not stored.
+- Server-owned default-branch policy. Non-default and deleted-branch pushes are ignored; a trusted default-branch metadata change requests a full replacement. Repository deletion/removal and installation suspension immediately make access and later processing unauthorized.
+- Repository `refresh_generation` ordering plus row locks, the running-job partial unique constraint, durable job leases, and compare-and-swap activation. A newer signed push or manual full refresh supersedes older work; receipt timestamps are not the authority.
+- Authoritative fixed-host GitHub comparison using a repository-restricted ephemeral installation token, followed by an independently cloned target SHA. Paths are normalized and rejected for absolute, traversal, NUL, backslash, or overlength forms.
+- Deterministic added/modified/removed/renamed/copied classification. No active index, requested full work, unavailable/unsafe/non-fast-forward or over-file comparison, mismatched ancestry, default-branch change, target-byte limit, or missing reusable artifacts visibly falls back to full indexing.
+- Every update constructs a complete inactive target version. Discovery, parsing, chunks, symbols, and the complete static call graph are rebuilt for correctness; unchanged 768-dimensional vectors are reused only under exact repository/version/commit/path/type/content/location/qualified-identity/model/preprocessing scope. Changed/new vectors are embedded, and deleted or renamed-away paths are absent from the target version.
+- Vector and graph counts/fingerprints are validated before atomic activation. A stale, cancelled, unauthorized, incomplete, or failed replacement cannot replace the current active version and cleans only its own inactive scope.
+- Questions continue against a prior valid active version while a replacement is queued, building, retryable, or failed. `not_indexed`, revoked, suspended, removed, and deleting states fail closed. Inactive/new and old/new evidence are never mixed.
+- Authenticated `POST /api/v1/repositories/{repository_id}/reindex` requests a server-scoped full refresh. Repository detail/status adds indexed branch, active/remote SHA, requested/actual mode, fallback, delivery outcome, changed/reused/re-embedded counts, and graph-rebuilt state without exposing infrastructure or credentials.
+- A 30-case Milestone 9 freshness corpus and 31 fixture-contract observations cover file changes, graph/citation freshness, duplicates, ordering, force pushes, fallbacks, failures, revocation, isolation, concurrency, replay, and deterministic repetition.
+- The immutable model registry remains exactly `search_code`, `get_history`, and `find_callers`. No refresh, webhook, shell, network, repository-write, or Milestone 10 tool was added.
 
-## Resource and safety defaults
+## Limits and policy defaults
 
-| Control | Default |
+| Control | Effective value |
 | --- | ---: |
-| Call sites per file / build | 10,000 / 100,000 |
-| Stored call expression | 2,048 bytes maximum |
-| Direct callers returned | 20 maximum |
-| Agent tool calls | 4 maximum |
-| Per-tool timeout | 8 seconds maximum |
-| Provider / total timeout | 20 / 45 seconds |
-| Tool result / total evidence | 32,768 / 65,536 bytes |
-| Agent final output | 1,200 tokens |
+| Webhook raw body | 1 MiB maximum |
+| Delivery ID | bounded validated GitHub delivery format |
+| Comparison files | 300 maximum before full fallback |
+| Discovered target bytes for incremental reuse | 64 MiB maximum before full fallback |
+| Repository path | 4,096 UTF-8 bytes maximum |
+| Embedding vector | finite normalized 768 dimensions |
+| Index worker attempts | 3 maximum |
+| Agent registry | exactly 3 read-only tools |
 
-All values are validated server-side. Model or client output cannot expand repository scope, index scope, result limits, traversal, or time budgets.
+Existing parser, repository, clone, lease, tool-call, timeout, evidence, and output limits remain enforced server-side. Provider-, payload-, client-, or model-supplied values cannot widen repository, branch, installation, version, commit, filtering, deletion, or activation scope.
 
-## Graph, database, API, and dependency changes
+## Database, migration, API, and dependency changes
 
-Alembic revision `b83f2d8a6c41` follows `d06a6455fcd7`. It extends `call_edges` with the exact call range, bounded expression, stable call-site fingerprint, and repository/version/site uniqueness; adds graph counts, fingerprint, and validation state to `repository_index_builds`; and adds safe graph progress counts to `indexing_jobs`. Caller/callee lookup remains indexed and foreign-key scoped through the versioned symbol table. Nonnegative and line-range checks reject invalid persisted state.
+Alembic revision `4cafdf2faa66` follows `b83f2d8a6c41`. It extends repositories, deliveries, and indexing jobs with branch/generation/freshness references, requested and actual indexing modes, fallback and changed/reuse/re-embedding/graph state, retry/receipt metadata, foreign keys, bounded/nonnegative checks, and repository/receipt indexes. The active-job partial unique constraint now covers `running` only so newer durable work may supersede queued work without two conflicting activations.
 
-The repository-index status response exposes safe graph counts. Repository-question responses now support trusted `caller` citations alongside code, commit, and pull-request evidence. No new public endpoint was required.
-
-The backend package version is `0.8.0`. No dependency changed, so the existing hash-locked backend and embedding-service requirement files remain unchanged and valid.
+The backend package/API version is `0.9.0`. No dependency changed, so both existing hashed production/development lockfile pairs remain unchanged. Redis messages still contain only an opaque job ID; PostgreSQL remains the source of job target, mode, generation, lease, progress, delivery, and activation truth.
 
 ## Verification evidence
 
 | Gate | Actual result |
 | --- | --- |
-| Baseline | Clean local `main` and `origin/main` at `54f847c2bcc2618a452903feab4d4e0a1ea4707b`; hosted CI run 29650105386 for that SHA passed |
+| Baseline | Clean local `main` and `origin/main` began at Milestone 8 commit `8f222dd2e9a7675c098cca4bd3687916a99461d3`; hosted GitHub Actions run `29652564767` for that exact SHA passed |
 | Runtime | Python 3.13.14 local production baseline |
-| Migration chain | PostgreSQL 18 full downgrade to base, clean upgrade through all six revisions, Milestone 8 downgrade to `d06a6455fcd7`, re-upgrade to `b83f2d8a6c41`, and `alembic check` all succeeded; final head is `b83f2d8a6c41` |
-| Complete backend suite | 297 passed, 0 failed, 0 skipped in 19.08 seconds with real PostgreSQL 18, Redis 8.8, standalone Qdrant 1.18.2, and the real pinned private embedding model |
-| Coverage | 92.98% combined statement/branch coverage; required threshold remains 90% |
-| Question integration | 20 passed; includes authorized and mixed caller citations, target ambiguity, graph unavailability, cross-user denial, and explicit other-repository/inactive-version distractors |
-| Indexing pipeline | 8 passed; includes persisted edges and statistics, graph validation before activation, failed replacement preservation, and superseded cleanup |
-| Embedding suite | 15 passed, 0 failed, 0 skipped in 1.37 seconds with the real immutable model; 92.24% coverage |
-| Evaluation | 20 cases/20 explicitly labelled fixture-contract observations; caller precision/recall, exact precision, ambiguity/unresolved accuracy, tool/citation validity, and deterministic consistency are 1.0; inactive leakage and fabricated caller citations are zero; latency is intentionally unmeasured (`null`) |
-| API/worker startup | Actual Uvicorn API started on port 18008; liveness returned 200 `{"status":"ok"}` and readiness returned 200 with database/redis/qdrant `ready`; the actual worker emitted `worker_started` and stopped cleanly |
-| Quality | Ruff formatting/lint clean; strict mypy clean for 124 backend and 13 embedding-service source files |
-| Dependencies | `pip check` found no broken requirements; production lock audits for both services found no known vulnerabilities |
-| Secrets/logs | Diff/secret-pattern inspection found no real credentials; controlled API/worker logs contained safe configuration and counts only, with no questions, prompts, answers, source, graph bodies, tokens, credential values, or service URLs |
-| Live providers | No real GitHub App or hosted LLM credential was available. GitHub and OpenAI adapters are mocked/structurally tested; live success is not claimed |
-| Containers | Not retried because the previously documented contradictory Podman VM/socket state remains a host-runtime block. Baseline hosted CI passed production image builds and non-root assertions; the unpushed Milestone 8 commit has not run in hosted CI |
+| Migration chain | PostgreSQL 18 downgrade from Milestone 9 head to `b83f2d8a6c41`, re-upgrade, full downgrade to base, clean upgrade through all revisions, `alembic check`, catalog inspection, and final `current` all succeeded; final head `4cafdf2faa66` |
+| Complete backend suite | 328 passed, 0 failed, 0 skipped in 24.97 seconds using real PostgreSQL 18, Redis 8.8, standalone Qdrant 1.18.2, and the real pinned private embedding model |
+| Branch-aware coverage | 90.74% combined statement/branch coverage from the exact CI working directory; the 90% gate and branch coverage remain enabled |
+| Embedding service | 15 passed, 0 failed, 0 skipped in 2.22 seconds against the real offline immutable model; 92.24% coverage |
+| Focused A→B flow | PostgreSQL/Redis/Qdrant/private-embedding integration passed: A remained active/queryable during B, B was inactive until validation, opaque queueing and change/reuse counts matched, activation switched code/caller evidence to B, old/deleted evidence disappeared, renamed paths were current, replay/stale/failure cases could not replace B, and an execution sentinel remained absent |
+| Evaluation | 30 cases/31 explicitly labelled fixture-contract observations; changed-file, mode, delivery, activation, preservation, retry, graph, citation, and deterministic metrics are all 1.0; old-version and cross-repository leakage are zero; latency is unmeasured (`null`) |
+| API startup | Actual Uvicorn API started on port 18009; liveness returned 200 `{"status":"ok"}` and readiness returned 200 with database/Redis/Qdrant `ready`; security headers were present; shutdown was clean |
+| Worker startup | First probe correctly failed closed because the configured private embedding token did not match the surviving service. The authenticated retry emitted `worker_started`, then `worker_stopped` on interrupt; logs contained only safe configuration/lifecycle metadata |
+| Quality | Ruff formatting/lint clean; strict mypy clean for 128 backend and 13 embedding-service source/test files |
+| Dependencies | `pip check` found no broken requirements; audits of both hashed production lockfiles found no known vulnerabilities |
+| Security/privacy | Signature/body-limit, authorization/revocation, cross-tenant, inactive-version, stale-worker, scoped-vector, opaque-Redis, and no-repository-execution regressions passed. Diff/log/secret scans found no real credential, payload, source, patch, prompt, answer, embedding, token, authenticated URL, or service/database URL disclosure |
+| CI/Docker | CI and both production Dockerfiles were statically inspected and unchanged; pinned vulnerability scans, Python 3.13 images, hashed installs, and non-root assertions remain. Local Podman was not retried due the documented contradictory VM/socket host-runtime state |
+| Live providers | No real GitHub App or hosted LLM credential was available. Signed controlled payloads and deterministic GitHub/agent fixtures passed, but live GitHub comparison/delivery and hosted-model acceptance are not claimed |
 
 ## Failures encountered and fixes
 
-1. The first Alembic invocation supplied only the database URL, but application configuration correctly required the remaining mandatory test settings. The command was rerun with complete test-only configuration; the full PostgreSQL migration cycle and final consistency check passed.
-2. Extending the controlled indexing fixture with a second symbol changed its expected vector/symbol totals. The assertions were updated to verify both the existing indexing contract and the new persisted graph state; the final eight-test pipeline suite passed.
-3. An initial configuration validator incorrectly required the call-expression byte cap to be no larger than the parser input cap. A discovery security test correctly exposed that this rejected an otherwise valid smaller parser-input configuration. The redundant validator was removed; input bounds already cap extracted expressions, and the full 294-test suite passed.
-4. A parallel backend/embedding mypy run caused mypy 2.3 to report an internal shared-cache error and a false missing test symbol. The backend check was rerun serially with an isolated cache and passed all 124 files. No assertion or type rule was weakened.
-5. The final Alembic read/check initially hit the sandbox localhost socket restriction. The exact commands were rerun with approved local-network access and confirmed `b83f2d8a6c41 (head)` with no pending upgrade operations.
-6. Dependency audit access initially failed under sandbox DNS restrictions. The unchanged hash-locked production requirements were audited with approved network access; both services reported no known vulnerabilities.
-7. The first Milestone 8 evaluation artifact covered only eight of the required caller scenarios. It was expanded to 20 explicit fixture contracts, adding aliases, methods, constructors, nested calls, mixed code/history, impact, injection, cross-repository, tool-loop, and runtime-refusal behavior. The final evaluator reports 20/20 fixture observations with the documented structural metrics.
-8. Mixed-tool testing found that deterministic caller intent recognized `caller` and `calls` but not plural `callers`, even though symbol extraction did. The classifier now accepts both singular and plural forms; 20 PostgreSQL-backed question tests, including caller+code and caller+history routing, pass.
-9. Ambiguous call sites were initially counted separately but persisted as generic `unresolved` edges, preventing independent ambiguity-count validation. The Milestone 8 migration now adds the explicit `ambiguous` resolution value; graph validation recomputes both ambiguous and unresolved counts, and the complete migration cycle and suite pass.
-10. Unicode Python identifiers were parsed but the first resolver used an ASCII-leading identifier pattern. Resolution now uses Python's Unicode-aware `str.isidentifier()` for every qualified-name segment; deterministic graph tests verify the Unicode call and repository-scoped identity.
+1. The first migration command supplied only a database URL, and application configuration correctly rejected missing mandatory test settings before touching the schema. The full test-only configuration was supplied; the complete PostgreSQL cycle passed.
+2. Initial autogeneration used a duplicate enum check name and allowed the naming convention to prefix an explicit name twice. Both transactions rolled back. Stable explicit names were applied and the clean migration cycle passed.
+3. A stale-worker unit assertion expected one inactive-vector cleanup, while the correct lifecycle performs pre-upsert cleanup and superseded cleanup. The assertion was corrected to validate both safely scoped calls.
+4. A broad prior-active availability change accidentally allowed questions in `not_indexed`. It was narrowed to queued/building/retryable/failed replacement states that already have a valid active version; unindexed and revoked repositories fail closed.
+5. The first signed A→B question flow reached the test app's unavailable/mismatched embedding provider. The controlled test now injects deterministic embeddings and semantic mappings while the full suite separately exercises the real pinned private model.
+6. GitHub comparison `changes` represents line changes, not bytes. A first planner interpretation was corrected: the 64 MiB threshold is applied to discovered target file bytes after clone, never to provider line counts.
+7. Metadata events for an already deleted or revoked repository could initially leave a retryable delivery. Processing now deterministically records `unauthorized`, matching immediate access revocation.
+8. Running coverage from the repository root loaded statement-only defaults and reported 91.37%, which did not reproduce CI. Running from `backend/` enabled the configured branch policy and initially measured 89.10%. Focused assertion-bearing async service/webhook/repository tests covered security and terminal-state behavior that TestClient portal threads did not trace consistently; the exact CI-shaped run now passes 328 tests at 90.74%.
+9. The first bounded worker startup used a test token different from the already-running private service and correctly failed with `embedding_model_not_ready`. The authenticated retry connected to all declared dependencies, emitted `worker_started`, and stopped cleanly. No code change was needed.
 
-## Known static-analysis limitations
+## Known limitations and deferred work
 
-RepoLume identifies only statically resolvable direct relationships. It cannot prove runtime call behavior involving reflection, dynamic `getattr`, monkey patching, dependency injection, dynamically generated functions, metaclass/decorator-generated targets, unresolved wildcard imports, runtime module mutation, unknown receiver dispatch, arbitrary callbacks, or framework routing. Unique probable method matches retain a lower-confidence category. Ambiguous and unresolved sites are counted but never returned as certain callers. Impact answers must say that statically resolved callers may be affected, not that code will break.
+- Incremental mode selectively reuses vectors, but intentionally reparses the complete bounded target tree and rebuilds the full graph. This is correctness-first selective embedding, not a claim of fully incremental static analysis.
+- GitHub compare metadata is advisory; the independently cloned target tree and server-owned active/default-branch state remain authoritative. Force-push and uncertain ancestry paths rebuild fully.
+- Static caller analysis still cannot prove reflection, monkey patching, dependency injection, generated functions, runtime dispatch, or framework routing.
+- Immediate access revocation is implemented. The complete final deletion SLA and retention workflow remain deferred to the dedicated later milestone.
+- Controlled cryptographic fixtures are not proof of live GitHub delivery ordering, rate-limit behavior, installation-token policy, or production latency.
+- Local container execution remains blocked by the host Podman runtime. The Milestone 8 base commit has green hosted image builds/non-root assertions; Milestone 9 hosted CI awaits a manual push.
 
-## External configuration and acceptance still required
+## External acceptance still required
 
-- A real least-privilege GitHub App installed on a controlled repository for live cloning/indexing authorization and revocation acceptance.
-- A real OpenAI credential in the API-only secret store for structured three-tool behavior, static-impact wording, injection resistance, citation validity, latency, cost, and outage acceptance.
-- A representative labelled Python repository corpus for human-reviewed caller precision/recall across real language patterns. Fixture-contract metrics are not universal accuracy claims.
-- Hosted CI for the local Milestone 8 commit, managed PostgreSQL/Redis/Qdrant/private embeddings, deployment, telemetry/alerts, rate/usage controls, backups/restores, deletion drills, and incident response.
+- Install a real least-privilege GitHub App on a controlled repository and verify signed pushes, comparisons, default-branch changes, installation removal/suspension, token scoping, rate limits, and replay/out-of-order behavior.
+- Supply a real hosted-model credential in the API-only secret store and verify three-tool answers, injection resistance, freshness citations, latency, cost, timeout, and outage behavior.
+- Run hosted CI for the local Milestone 9 commit, then validate managed PostgreSQL/Redis/Qdrant/private embeddings, deployment networking, telemetry/alerts, backup/restore, deletion drills, and incident response.
+- Evaluate representative private repositories and webhook workloads; fixture-contract accuracy is structural evidence, not universal product accuracy or reliability.
 
 ## Production-readiness statement
 
-Milestone 8 is a tested local static-call-graph foundation, not a production SaaS. Do not launch publicly or describe caller results as complete runtime behavior until hosted CI and deployment, live GitHub/LLM acceptance, representative quality/load evaluation, privacy operations, and remaining security gates pass.
+Milestone 9 is a dependency-backed local freshness foundation, not a production SaaS. It must not be launched publicly until the unpushed commit passes hosted CI and the live GitHub, hosted-model, deployment, privacy, reliability, and remaining milestone gates are complete.
 
 ## Next milestone gate
 
-Milestone 9 is not authorized and has not started. Webhook-driven incremental indexing, changed-file graph/vector replacement, freshness state, and push ordering remain absent.
+Milestone 10 is not authorized and has not started. No frontend directory, pages, components, or product UI were added.

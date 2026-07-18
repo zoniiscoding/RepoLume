@@ -5,6 +5,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -17,7 +18,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
-from app.db.models.enums import IndexingJobStatus, IndexingJobType, database_enum
+from app.db.models.enums import IndexingJobStatus, IndexingJobType, IndexingMode, database_enum
 
 
 class IndexingJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -54,6 +55,10 @@ class IndexingJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "embedding_dimension IS NULL OR embedding_dimension > 0",
             name="embedding_dimension_positive",
         ),
+        CheckConstraint("refresh_generation >= 0", name="refresh_generation_nonnegative"),
+        CheckConstraint("changed_file_count >= 0", name="changed_file_count_nonnegative"),
+        CheckConstraint("reused_chunk_count >= 0", name="reused_chunk_count_nonnegative"),
+        CheckConstraint("reembedded_chunk_count >= 0", name="reembedded_chunk_count_nonnegative"),
         Index("ix_indexing_jobs_repository_status", "repository_id", "status", "created_at"),
         Index("ix_indexing_jobs_requester_created", "requested_by_user_id", "created_at"),
         Index("ix_indexing_jobs_status_next_attempt", "status", "next_attempt_at"),
@@ -61,7 +66,7 @@ class IndexingJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "uq_indexing_jobs_repository_active",
             "repository_id",
             unique=True,
-            postgresql_where=text("status IN ('queued', 'running', 'retrying')"),
+            postgresql_where=text("status = 'running'"),
         ),
     )
 
@@ -87,6 +92,32 @@ class IndexingJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     stage: Mapped[str | None] = mapped_column(String(64))
     source_commit_sha: Mapped[str | None] = mapped_column(String(64))
     target_commit_sha: Mapped[str | None] = mapped_column(String(64))
+    target_branch: Mapped[str | None] = mapped_column(String(255))
+    requested_mode: Mapped[IndexingMode | None] = mapped_column(
+        database_enum(IndexingMode, name="requested_indexing_mode")
+    )
+    actual_mode: Mapped[IndexingMode | None] = mapped_column(
+        database_enum(IndexingMode, name="actual_indexing_mode")
+    )
+    full_rebuild_reason: Mapped[str | None] = mapped_column(String(64))
+    refresh_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    changed_file_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    changed_files_json: Mapped[dict[str, int]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    reused_chunk_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    reembedded_chunk_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    graph_rebuilt: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     error_code: Mapped[str | None] = mapped_column(String(64))
     safe_error_message: Mapped[str | None] = mapped_column(String(512))
     locked_by: Mapped[str | None] = mapped_column(String(128))

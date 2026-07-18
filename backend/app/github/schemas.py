@@ -164,3 +164,41 @@ class GitHubHistoryBundle(BaseModel):
 
     commit: GitHubCommit
     pull_requests: list[GitHubPullRequest] = Field(default_factory=list, max_length=10)
+
+
+class GitHubCompareFile(BaseModel):
+    """One bounded provider comparison entry; paths remain untrusted until validated."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    filename: str = Field(min_length=1, max_length=4096)
+    previous_filename: str | None = Field(default=None, min_length=1, max_length=4096)
+    status: Literal["added", "modified", "removed", "renamed", "copied", "changed"]
+    changes: int = Field(default=0, ge=0)
+
+    @field_validator("filename", "previous_filename")
+    @classmethod
+    def validate_compare_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if (
+            value.startswith(("/", "\\"))
+            or "\\" in value
+            or "\x00" in value
+            or any(part in {"", ".", ".."} for part in value.split("/"))
+            or any(ord(character) < _ASCII_CONTROL_LIMIT for character in value)
+        ):
+            raise ValueError("invalid_repository_path")
+        return value
+
+
+class GitHubCommitComparison(BaseModel):
+    """Bounded authoritative comparison between two server-selected revisions."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    status: Literal["ahead", "behind", "diverged", "identical"]
+    ahead_by: int = Field(ge=0)
+    behind_by: int = Field(ge=0)
+    total_commits: int = Field(ge=0)
+    files: list[GitHubCompareFile] = Field(default_factory=list, max_length=3000)

@@ -1,6 +1,9 @@
 """PostgreSQL, Redis, API, worker, and controlled Git fixture integration tests."""
 
 import asyncio
+import hashlib
+import hmac
+import json
 import os
 import shutil
 import subprocess
@@ -10,7 +13,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -40,11 +43,12 @@ from app.db.models.repository import Repository
 from app.db.models.repository_index_build import RepositoryIndexBuild
 from app.db.models.symbol_definition import SymbolDefinition
 from app.db.models.user import User
+from app.db.models.webhook_delivery import WebhookDelivery
 from app.db.session import Database
 from app.embeddings.client import EmbeddingProviderProtocol, EmbeddingServiceClient
 from app.embeddings.preprocessing import PreparedEmbedding
+from app.github.schemas import GitHubCommitComparison, GitHubRepository, GitHubUser
 from app.github.schemas import GitHubInstallation as GitHubInstallationData
-from app.github.schemas import GitHubRepository, GitHubUser
 from app.indexing.analyzer import ProcessIsolatedAnalyzer
 from app.indexing.clone import ClonedRepository, CloneRequest
 from app.indexing.discovery import DiscoveryResult, FileDiscovery
@@ -104,6 +108,7 @@ def integration_settings(**overrides: object) -> Settings:
         worker_abandoned_after_seconds=5,
         worker_retry_base_seconds=1,
         worker_retry_max_seconds=1,
+        rag_retrieval_score_threshold=0.0,
         **overrides,
     )
 
@@ -125,6 +130,8 @@ class FakeGitHub:
             ),
         )
         self.token_requests = 0
+        self.compare_status: Literal["ahead", "behind", "diverged", "identical"] = "ahead"
+        self.compare_files: list[dict[str, object]] = []
 
     def authorization_url(self, *, state: str, code_challenge: str) -> str:
         return f"https://github.com/login/oauth/authorize?state={state}&code={code_challenge}"
@@ -147,6 +154,32 @@ class FakeGitHub:
         assert installation_id == 501
         self.token_requests += 1
         return SecretStr("installation-token-sensitive-sentinel")
+
+    async def create_repository_installation_token(
+        self, installation_id: int, *, repository_id: int
+    ) -> SecretStr:
+        assert repository_id == 9001
+        return await self.create_installation_token(installation_id)
+
+    async def compare_repository_commits(
+        self,
+        installation_token: SecretStr,
+        *,
+        owner: str,
+        repository: str,
+        base: str,
+        head: str,
+    ) -> GitHubCommitComparison:
+        del installation_token, owner, repository, base, head
+        return GitHubCommitComparison.model_validate(
+            {
+                "status": self.compare_status,
+                "ahead_by": 1,
+                "behind_by": 0,
+                "total_commits": 1,
+                "files": self.compare_files,
+            }
+        )
 
     async def list_installation_repositories(
         self, installation_token: SecretStr
@@ -235,6 +268,7 @@ def api_runtime() -> Iterator[tuple[TestClient, Settings, FakeGitHub, uuid.UUID,
         github_client=github,
         job_queue=queue,
         vector_store=vectors,
+        embedding_provider=DeterministicEmbeddings(),
     )
     with TestClient(app) as client:
         yield client, settings, github, user_id, installation_id
@@ -268,6 +302,22 @@ async def scalar(statement: Any) -> Any:
         value = await session.scalar(statement)
     await engine.dispose()
     return value
+
+
+async def _all_jobs_for_repository(repository_id: uuid.UUID) -> list[IndexingJob]:
+    engine = create_async_engine(database_url())
+    async with AsyncSession(engine) as session:
+        jobs = list(
+            (
+                await session.scalars(
+                    select(IndexingJob)
+                    .where(IndexingJob.repository_id == repository_id)
+                    .order_by(IndexingJob.created_at)
+                )
+            ).all()
+        )
+    await engine.dispose()
+    return jobs
 
 
 def create_git_fixture(root: Path, marker: Path) -> Path:
@@ -393,14 +443,13 @@ class DeterministicEmbeddings:
         results: dict[str, tuple[float, ...]] = {}
         for document in documents:
             vector = [0.0] * 768
-            vector[int(document.item_id) % 768] = 1.0
+            vector[0 if "answer" in document.text else 1] = 1.0
             results[document.item_id] = tuple(vector)
         return results
 
     async def embed_query(self, query: PreparedEmbedding) -> tuple[float, ...]:
-        del query
         vector = [0.0] * 768
-        vector[0] = 1.0
+        vector[0 if "answer" in query.text else 1] = 1.0
         return tuple(vector)
 
     async def close(self) -> None:
@@ -453,6 +502,38 @@ async def process_two_deliveries(
     await worker.process_delivery(second)
     await queue.close()
     await embedding_provider.close()
+    await vectors.close()
+    await database.dispose()
+
+
+async def process_one_delivery(
+    settings: Settings,
+    github: FakeGitHub,
+    cloner: ControlledFixtureCloner,
+) -> None:
+    database = Database(
+        engine=create_async_engine(database_url(), pool_pre_ping=True),
+        ready_timeout_seconds=2,
+    )
+    queue = RedisJobQueue.from_settings(settings)
+    vectors = QdrantVectorStore(settings)
+    worker = IndexingWorker(
+        settings=settings,
+        queue=queue,
+        store=IndexingJobStore(database, settings),
+        github=github,
+        cloner=cloner,
+        discovery=FileDiscovery(settings),
+        analyzer=ProcessIsolatedAnalyzer(settings),
+        embeddings=DeterministicEmbeddings(),
+        vectors=vectors,
+        worker_id="freshness-integration-worker",
+    )
+    await queue.ensure_group()
+    delivery = await queue.receive("freshness-integration-worker")
+    assert delivery is not None
+    await worker.process_delivery(delivery)
+    await queue.close()
     await vectors.close()
     await database.dispose()
 
@@ -546,6 +627,250 @@ def test_api_is_fast_idempotent_tenant_safe_and_queues_only_job_id(
     )
     assert denied.status_code == 404
     assert job_id not in denied.text
+
+
+def test_signed_push_incrementally_activates_complete_new_version_and_replay_is_stale(  # noqa: PLR0915 -- one end-to-end freshness contract
+    api_runtime: tuple[TestClient, Settings, FakeGitHub, uuid.UUID, uuid.UUID],
+    tmp_path: Path,
+) -> None:
+    client, settings, github, user_id, installation_id = api_runtime
+    marker = tmp_path / "must-not-exist"
+    fixture = create_git_fixture(tmp_path, marker)
+    clone_root = tmp_path / "clones"
+    clone_root.mkdir()
+    cloner = ControlledFixtureCloner(fixture, clone_root)
+    selected, _ = select_repository(client, settings, user_id, installation_id)
+    select_repository(client, settings, user_id, installation_id)
+    asyncio.run(process_two_deliveries(settings, github, cloner))
+    repository_id = uuid.UUID(selected["repository"]["id"])
+    commit_a = str(asyncio.run(scalar(select(Repository.last_indexed_commit_sha))))
+    question_headers = authorization(settings, user_id)
+    answer_at_a = client.post(
+        f"/api/v1/repositories/{repository_id}/questions",
+        headers=question_headers,
+        json={"question": "def answer return 42"},
+    )
+    assert answer_at_a.status_code == 200
+    assert answer_at_a.json()["indexed_commit_sha"] == commit_a
+    assert answer_at_a.json()["citations"], answer_at_a.json()
+    assert {item["file_path"] for item in answer_at_a.json()["citations"]} == {"safe.py"}
+
+    subprocess.run(  # noqa: S603
+        ["/usr/bin/git", "-C", str(fixture), "mv", "safe.py", "renamed.py"],
+        check=True,
+    )
+    (fixture / "renamed.py").write_text(
+        "def answer():\n    return 43\n\ndef call_answer():\n    return answer() + 1\n"
+    )
+    (fixture / "added.py").write_text(
+        "from renamed import answer\n\ndef use_answer():\n    return answer()\n"
+    )
+    (fixture / "README.md").unlink()
+    subprocess.run(  # noqa: S603
+        ["/usr/bin/git", "-C", str(fixture), "add", "--", "."],
+        check=True,
+    )
+    subprocess.run(  # noqa: S603
+        [
+            "/usr/bin/git",
+            "-C",
+            str(fixture),
+            "-c",
+            "user.name=RepoLume Test",
+            "-c",
+            "user.email=test@repolume.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture refresh",
+        ],
+        check=True,
+    )
+    revision = subprocess.run(  # noqa: S603
+        ["/usr/bin/git", "-C", str(fixture), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    commit_b = revision.stdout.strip()
+    github.compare_files = [
+        {
+            "filename": "renamed.py",
+            "previous_filename": "safe.py",
+            "status": "renamed",
+            "changes": 4,
+        },
+        {"filename": "added.py", "status": "added", "changes": 3},
+        {"filename": "README.md", "status": "removed", "changes": 1},
+    ]
+    body = json.dumps(
+        {
+            "ref": "refs/heads/main",
+            "before": commit_a,
+            "after": commit_b,
+            "forced": False,
+            "deleted": False,
+            "installation": {
+                "id": 501,
+                "account": {"id": 1, "login": "octocat", "type": "User"},
+                "permissions": {"contents": "read", "metadata": "read"},
+                "repository_selection": "selected",
+                "suspended_at": None,
+            },
+            "repository": {
+                "id": 9001,
+                "owner": {"login": "octocat"},
+                "name": "fixture-repository",
+                "full_name": "octocat/fixture-repository",
+                "html_url": "https://github.com/octocat/fixture-repository",
+                "private": True,
+                "default_branch": "main",
+            },
+        },
+        separators=(",", ":"),
+    ).encode()
+    signature = (
+        "sha256="
+        + hmac.new(
+            settings.github_webhook_secret.get_secret_value().encode(),
+            body,
+            hashlib.sha256,
+        ).hexdigest()
+    )
+    response = client.post(
+        "/api/v1/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": signature,
+            "X-GitHub-Event": "push",
+            "X-GitHub-Delivery": "m9-a-to-b",
+        },
+    )
+    assert response.status_code == 202
+    before_processing = client.get(
+        f"/api/v1/repositories/{repository_id}/status",
+        headers=authorization(settings, user_id),
+    ).json()
+    assert before_processing["active_commit_sha"] == commit_a
+    assert before_processing["searchable"] is True
+    answer_while_building = client.post(
+        f"/api/v1/repositories/{repository_id}/questions",
+        headers=question_headers,
+        json={"question": "def answer return 42"},
+    )
+    assert answer_while_building.status_code == 200
+    assert answer_while_building.json()["indexed_commit_sha"] == commit_a
+    assert {item["file_path"] for item in answer_while_building.json()["citations"]} == {"safe.py"}
+
+    asyncio.run(process_one_delivery(settings, github, cloner))
+
+    after_processing = client.get(
+        f"/api/v1/repositories/{repository_id}/status",
+        headers=authorization(settings, user_id),
+    ).json()
+    assert after_processing["active_commit_sha"] == commit_b
+    assert after_processing["active_index_version"] == 2
+    assert after_processing["actual_mode"] == "incremental"
+    assert after_processing["changed_file_counts"] == {"added": 1, "removed": 1, "renamed": 1}
+    assert after_processing["reused_chunk_count"] >= 1
+    assert after_processing["reembedded_chunk_count"] >= 1
+    assert after_processing["graph_rebuilt"] is True
+    answer_at_b = client.post(
+        f"/api/v1/repositories/{repository_id}/questions",
+        headers=question_headers,
+        json={"question": "def answer return 43"},
+    )
+    assert answer_at_b.status_code == 200
+    assert answer_at_b.json()["indexed_commit_sha"] == commit_b
+    answer_b_paths = {item["file_path"] for item in answer_at_b.json()["citations"]}
+    assert "renamed.py" in answer_b_paths
+    assert "safe.py" not in answer_b_paths
+    callers_at_b = client.post(
+        f"/api/v1/repositories/{repository_id}/questions",
+        headers=question_headers,
+        json={"question": "What calls answer?"},
+    )
+    assert callers_at_b.status_code == 200
+    caller_paths = {item["caller_file_path"] for item in callers_at_b.json()["citations"]}
+    assert caller_paths == {"added.py", "renamed.py"}
+    assert "safe.py" not in callers_at_b.text
+    assert (
+        asyncio.run(
+            scalar(
+                select(func.count(SymbolDefinition.id)).where(
+                    SymbolDefinition.repository_id == repository_id,
+                    SymbolDefinition.index_version == 2,
+                    SymbolDefinition.file_path == "safe.py",
+                )
+            )
+        )
+        == 0
+    )
+    assert (
+        asyncio.run(
+            scalar(
+                select(func.count(SymbolDefinition.id)).where(
+                    SymbolDefinition.repository_id == repository_id,
+                    SymbolDefinition.index_version == 2,
+                    SymbolDefinition.file_path == "renamed.py",
+                )
+            )
+        )
+        > 0
+    )
+    assert marker.exists() is False
+
+    replay = client.post(
+        "/api/v1/webhooks/github",
+        content=body,
+        headers={
+            "X-Hub-Signature-256": signature,
+            "X-GitHub-Event": "push",
+            "X-GitHub-Delivery": "m9-stale-replay",
+        },
+    )
+    assert replay.status_code == 202
+    assert (
+        asyncio.run(
+            scalar(
+                select(WebhookDelivery.status).where(
+                    WebhookDelivery.delivery_id == "m9-stale-replay"
+                )
+            )
+        )
+        == "stale"
+    )
+    assert asyncio.run(scalar(select(func.count(IndexingJob.id)))) == 2
+
+
+def test_manual_reindex_supersedes_older_queued_generation_without_conflicting_activation(
+    api_runtime: tuple[TestClient, Settings, FakeGitHub, uuid.UUID, uuid.UUID],
+    tmp_path: Path,
+) -> None:
+    client, settings, github, user_id, installation_id = api_runtime
+    fixture = create_git_fixture(tmp_path, tmp_path / "must-not-exist")
+    clone_root = tmp_path / "clones"
+    clone_root.mkdir()
+    cloner = ControlledFixtureCloner(fixture, clone_root)
+    selected, _ = select_repository(client, settings, user_id, installation_id)
+    repository_id = selected["repository"]["id"]
+
+    manual = client.post(
+        f"/api/v1/repositories/{repository_id}/reindex",
+        headers=authorization(settings, user_id),
+    )
+    assert manual.status_code == 202
+    assert manual.json()["job"]["requested_mode"] == "full"
+    asyncio.run(process_two_deliveries(settings, github, cloner))
+
+    jobs = asyncio.run(_all_jobs_for_repository(uuid.UUID(repository_id)))
+    assert [job.status for job in jobs] == [
+        IndexingJobStatus.CANCELLED,
+        IndexingJobStatus.COMPLETE,
+    ]
+    assert jobs[0].error_code == "refresh_superseded"
+    assert jobs[1].actual_mode is not None
+    assert jobs[1].actual_mode.value == "full"
 
 
 def test_real_worker_clones_controlled_fixture_without_execution_and_cleans_up(

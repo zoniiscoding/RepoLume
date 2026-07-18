@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request, Response, status
 from app.core.config import Settings
 from app.core.errors import APIError
 from app.db.session import Database
+from app.queue import JobQueueProtocol
 from app.schemas.errors import ErrorCode
 from app.schemas.webhooks import WebhookResponse
 from app.services.webhooks import (
@@ -41,6 +42,7 @@ async def github_webhook(request: Request, response: Response) -> WebhookRespons
     service = WebhookService(
         cast(Database, request.app.state.database),
         cast(Settings, request.app.state.settings),
+        cast(JobQueueProtocol, request.app.state.job_queue),
     )
     try:
         result = await service.handle(

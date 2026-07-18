@@ -1,16 +1,16 @@
 # RepoLume Operations
 
-**Status:** Milestone 8 local full-index graph construction, graph validation, caller queries, API/worker/PostgreSQL/Redis/Qdrant/private-embedding operations, mocked GitHub history, and deterministic decisions are implemented. No live GitHub/hosted-LLM acceptance, Milestone 8 hosted CI run, hosted environment, dashboard, alert, backup, or production runbook has been verified.
+**Status:** Milestone 9 local signed-delivery ingestion, generation-ordered default-branch refresh, changed-file planning, selective vector reuse, complete graph replacement, prior-active availability, and API/worker/PostgreSQL/Redis/Qdrant/private-embedding operations are implemented. No live GitHub/hosted-LLM acceptance, Milestone 9 hosted CI run, hosted environment, dashboard, alert, backup, or production runbook has been verified.
 
 ## Service inventory
 
 | Service | Exposure | Planned owner responsibility | Current state |
 | --- | --- | --- | --- |
 | React frontend | Public via Vercel | User interface and safe rendering | Not created |
-| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status/questions, bounded three-tool agent, health | Milestone 8 code/history/static-caller questions and three-dependency readiness verified locally; not deployed |
+| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status/questions/manual refresh, bounded three-tool agent, health | Milestone 9 signed freshness and active-version questions verified locally; not deployed |
 | Indexing worker | Railway private service | Durable jobs, safe static ingestion, embedding/vector validation, atomic activation, cleanup | Implemented and locally verified; not deployed |
 | Embedding service | Railway private service | Authenticated bounded fixed-model embeddings | Implemented, real pinned model verified, UID 10002 image built; not deployed |
-| PostgreSQL | Neon private credentials | Durable identity, access, delivery, job/build/count/activation/cleanup truth, symbols and call edges | Six-revision schema verified on disposable PostgreSQL 18; managed production instance not provisioned |
+| PostgreSQL | Neon private credentials | Durable identity, access, delivery/generation, job/build/count/activation/cleanup truth, symbols and call edges | Seven-revision schema through `4cafdf2faa66` verified on disposable PostgreSQL 18; managed production instance not provisioned |
 | Redis | Private managed service | Opaque job-ID Stream delivery; later cache/rate-limit support | Redis 8.8 locally verified; managed authenticated TLS service not provisioned |
 | Qdrant | Qdrant Cloud authenticated | Installation/repository/version-scoped vectors and private citation chunks | Qdrant 1.18.2 locally verified; managed authenticated service not provisioned |
 | Hosted LLM | Server-side provider API | Strict structured tool/final decisions | OpenAI adapter/pinned model configured in code; no real credential or hosted acceptance run |
@@ -31,7 +31,7 @@ Structured logs include request IDs plus safe startup/HTTP metadata and worker j
 
 Logs must exclude tokens, cookies, secrets, clone credential material, full repository chunks, full prompts/responses, private file contents, and complete chat messages.
 
-Uvicorn access logging is disabled because its raw target can include OAuth codes and unbounded query data. `httpx`, `httpx2`, and `httpcore` INFO logs are suppressed. Milestone 8 verification inspects logs for complete questions/answers/prompts, call expressions, history bodies/patches, evidence/source/vectors, infrastructure URLs or keys, credentials, parser/model internals, askpass values, and provider bodies. Only allowlisted operational metadata is permitted.
+Uvicorn access logging is disabled because its raw target can include OAuth codes and unbounded query data. `httpx`, `httpx2`, and `httpcore` INFO logs are suppressed. Milestone 9 verification inspects logs for webhook bodies, source, paths, patches, commit messages, questions/answers/prompts, call expressions, evidence/vectors, infrastructure URLs/keys, credentials, askpass values, and provider bodies. Only allowlisted operational metadata is permitted.
 
 Metrics remain planned: request and tool latency/error rates, job queue age/duration, worker heartbeat/stuck jobs, embedding throughput, vector operations, model token/cost usage, indexing stages, webhook outcomes, and deletion backlog. Names, cardinality limits, alert thresholds, and retention require deployed telemetry.
 
@@ -54,6 +54,9 @@ Implemented state behavior:
 - `running` jobs whose heartbeat exceeds `WORKER_ABANDONED_AFTER_SECONDS` become retryable until `WORKER_MAX_ATTEMPTS`; exhausted jobs become permanently `failed`.
 - Retry uses bounded exponential backoff plus jitter. Do not manually change attempts or mark a job complete.
 - Duplicate Redis delivery is acknowledged after a conditional PostgreSQL claim fails; it does not start another clone.
+- A job whose `refresh_generation` no longer matches the locked repository is terminally superseded before external work or before activation. Do not manually lower generations or force activation.
+- Only one job per repository may be `running`; newer queued jobs are reconciled after the running job exits. PostgreSQL uniqueness and row locks, not process-local locks, are the concurrency boundary.
+- `comparison_unavailable`, `non_fast_forward`, `comparison_file_limit`, `changed_bytes_limit`, `unsafe_comparison`, `missing_active_index`, `requested_full_rebuild`, `default_branch_changed`, and `previous_artifact_missing` are visible full-fallback categories, not reasons to guess a delta.
 - Access-revoked work becomes `cancelled` before token minting or clone.
 - Static processing exposes `parsing`, `chunking`, and `building_graph` durable stages. File-local malformed/oversized/unsupported cases increment safe categories; repository chunk/call-site overflow and unsafe paths fail closed.
 - `parser_timeout` and `internal_parser_failure` are nonretryable for the same immutable commit/config. Operators must inspect capacity/configuration without collecting source or raw parser exceptions before submitting fresh work.
@@ -173,7 +176,7 @@ The API never runs Alembic during application startup. From the repository root,
 
 Review generated SQL and backup/restore compatibility before any future production migration. The initial migration downgrade was exercised by the integration suite against a disposable database; that does not make production downgrades universally safe.
 
-## Local Milestone 8 procedure
+## Local Milestone 9 procedure
 
 Use Python 3.13 for the reproducible baseline. Install the hashed development lock:
 
@@ -213,6 +216,8 @@ export LLM_PROVIDER='openai'
 export LLM_API_KEY='<api-only-secret-store-value-at-least-32-characters>'
 export LLM_MODEL='gpt-5.4-mini-2026-03-17'
 export LLM_PROMPT_VERSION='repolume-grounded-v1'
+export FRESHNESS_MAX_CHANGED_FILES=300
+export FRESHNESS_MAX_CHANGED_BYTES=67108864
 ```
 
 Start the pinned model service before the worker. Artifact download needs network access only during initial cache population; runtime is local-files-only:
@@ -252,13 +257,16 @@ Use `LLM_PROVIDER=deterministic` only for automated acceptance under `APP_ENV=te
 PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
   --cases backend/evaluation/milestone7_cases.json \
   --observations /path/to/content-free-observations.json
+PYTHONPATH=backend .venv/bin/python -m app.indexing.evaluation \
+  --cases backend/evaluation/milestone9_cases.json \
+  --observations backend/evaluation/milestone9_fixture_observations.json
 ```
 
 Stop processes with `Ctrl-C`; shutdown closes database, GitHub, Redis, embedding HTTP, Qdrant, and model resources. Docker Compose can start `postgres`, `redis`, `qdrant`, `embedding-service`, `api`, and `worker` after non-empty local secrets and container-addressable URLs are supplied. The embedding image preloads the model during build. Do not commit any credential.
 
 For live GitHub verification, configure the App callback and webhook URLs to the public HTTPS API; grant read-only Metadata, Contents, and Pull requests permissions; subscribe to Installation, Installation repositories, Push, and Repository events; then install it on a controlled test account/organization. Automated tests require no real credentials and use injected mocked responses.
 
-## Milestone 8 verification commands
+## Milestone 9 verification commands
 
 ```sh
 .venv/bin/ruff format --check backend
@@ -279,16 +287,25 @@ HF_HUB_OFFLINE=1 REPOLUME_TEST_MODEL_CACHE=/tmp/repolume-models .venv/bin/pytest
 .venv/bin/pip-audit --requirement embedding_service/requirements.lock --disable-pip
 PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation --cases backend/evaluation/milestone7_cases.json --observations /path/to/content-free-observations.json
 PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation --cases backend/evaluation/milestone8_cases.json --observations backend/evaluation/milestone8_fixture_observations.json
+PYTHONPATH=backend .venv/bin/python -m app.indexing.evaluation --cases backend/evaluation/milestone9_cases.json --observations backend/evaluation/milestone9_fixture_observations.json
 ```
 
-The actual Milestone 8 results, including migration downgrade/re-upgrade, dependency-backed tests, coverage, graph/caller isolation, health requests, and external-provider limits, are recorded in `docs/BUILD_STATUS.md`. GitHub Actions is configured to repeat Python 3.13 quality gates, PostgreSQL/Redis/Qdrant/private-model integration, migrations, complete suites, audits, image builds/non-root checks, and immutable-action scans. Baseline Milestone 7 commit `54f847c` has successful hosted run `29650105386`; the local Milestone 8 commit is intentionally not pushed, so no Milestone 8 hosted run exists. Local container verification is not retried because the prior contradictory Podman VM/socket state remains a host-runtime block.
+The actual Milestone 9 results, including migration downgrade/re-upgrade, dependency-backed tests, coverage, signed A-to-B refresh, active-version isolation, health requests, and external-provider limits, are recorded in `docs/BUILD_STATUS.md`. GitHub Actions repeats Python 3.13 quality gates, PostgreSQL/Redis/Qdrant/private-model integration, migrations, complete suites, audits, image builds/non-root checks, and immutable-action scans. Baseline Milestone 8 commit `8f222dd2e9a7675c098cca4bd3687916a99461d3` has successful hosted run `29652564767`; the local Milestone 9 commit is intentionally not pushed, so no Milestone 9 hosted run exists. Local container verification is not retried because the prior contradictory Podman VM/socket state remains a host-runtime block.
 
 ### Call-graph validation failure
 
 1. Inspect only repository/job/build IDs, version, stage, graph counts, fingerprint mismatch category, and safe timing. Do not print source, call expressions, questions, or credentials.
 2. Keep the prior active build queryable. A failed graph must never be marked ready or active; verify `graph_validated=false` and inactive symbol/edge cleanup state.
 3. Confirm parser call-site and process bounds, deterministic symbol IDs, edge counts, commit identity, and migration head. Do not bypass validation or set the flag manually.
-4. Retry only through the normal full re-index path after fixing the deterministic cause. Milestone 9 incremental repair does not exist.
+4. Retry through a server-authorized manual full reindex after fixing the deterministic cause. Never mutate graph rows or invoke refresh through a model tool.
+
+### Webhook freshness incident
+
+1. Use only delivery ID, internal repository/job IDs, event, bounded ref/SHA prefix, generation, requested/actual mode, status, counts, safe error code, and timing. Never capture the body, token, source, patch, or commit message.
+2. Confirm the delivery is unique, the installation/repository remain active, the ref equals the server-owned default branch, and the job generation equals the repository generation.
+3. A duplicate needs no new work. `stale`, `superseded`, `ignored`, and `unauthorized` are terminal. `retryable` queue/provider failures remain durable and are recovered by reconciliation within bounded attempts.
+4. During a replacement, verify the old `active` build stays queryable and the new build is `building` or `ready`, never returned by question scope. After completion, verify one active build/commit and scoped superseded cleanup.
+5. For compare uncertainty or missing prior artifacts, allow the recorded full fallback. Do not manually copy vectors, broaden Qdrant filters, change target branches, or mark a delivery complete.
 
 ### Caller-query outage or semantic non-answer
 

@@ -14,6 +14,7 @@ from pydantic import SecretStr, ValidationError
 from app.core.config import Settings
 from app.github.schemas import (
     GitHubCommit,
+    GitHubCommitComparison,
     GitHubHistoryBundle,
     GitHubInstallation,
     GitHubInstallationToken,
@@ -51,6 +52,20 @@ class GitHubClientProtocol(Protocol):
     ) -> Sequence[GitHubInstallation]: ...
 
     async def create_installation_token(self, installation_id: int) -> SecretStr: ...
+
+    async def create_repository_installation_token(
+        self, installation_id: int, *, repository_id: int
+    ) -> SecretStr: ...
+
+    async def compare_repository_commits(
+        self,
+        installation_token: SecretStr,
+        *,
+        owner: str,
+        repository: str,
+        base: str,
+        head: str,
+    ) -> GitHubCommitComparison: ...
 
     async def list_installation_repositories(
         self,
@@ -278,6 +293,35 @@ class GitHubClient:
             except (TypeError, ValueError, ValidationError) as error:
                 raise GitHubAPIError from error
         return tuple(bundles)
+
+    async def compare_repository_commits(
+        self,
+        installation_token: SecretStr,
+        *,
+        owner: str,
+        repository: str,
+        base: str,
+        head: str,
+    ) -> GitHubCommitComparison:
+        """Compare server-selected SHAs through one fixed repository API path."""
+        if (
+            _REPOSITORY_SEGMENT.fullmatch(owner) is None
+            or _REPOSITORY_SEGMENT.fullmatch(repository) is None
+            or re.fullmatch(r"[0-9a-f]{40}", base) is None
+            or re.fullmatch(r"[0-9a-f]{40}", head) is None
+        ):
+            raise GitHubAPIError
+        response = await self._request(
+            "GET",
+            f"{GITHUB_API_ROOT}/repos/{owner}/{repository}/compare/{base}...{head}",
+            token=installation_token,
+            params={"per_page": 100, "page": 1},
+            retry_attempts=2,
+        )
+        try:
+            return GitHubCommitComparison.model_validate(response.json())
+        except (TypeError, ValueError, ValidationError) as error:
+            raise GitHubAPIError from error
 
     @staticmethod
     def _validate_history_identity(

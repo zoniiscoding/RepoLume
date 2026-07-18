@@ -114,9 +114,20 @@ class ResolutionType(StrEnum):
 class WebhookDeliveryStatus(StrEnum):
     RECEIVED = "received"
     QUEUED = "queued"
+    PROCESSING = "processing"
     PROCESSED = "processed"
+    COMPLETED = "completed"
+    STALE = "stale"
+    SUPERSEDED = "superseded"
+    UNAUTHORIZED = "unauthorized"
+    RETRYABLE = "retryable"
     IGNORED = "ignored"
     FAILED = "failed"
+
+
+class IndexingMode(StrEnum):
+    INCREMENTAL = "incremental"
+    FULL = "full"
 
 
 StringEnum = TypeVar("StringEnum", bound=StrEnum)

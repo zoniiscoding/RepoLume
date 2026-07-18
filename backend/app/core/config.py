@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     worker_retry_base_seconds: int = Field(default=2, ge=1, le=300)
     worker_retry_max_seconds: int = Field(default=60, ge=1, le=3_600)
     worker_stream_max_length: int = Field(default=10_000, ge=100, le=1_000_000)
+    freshness_max_changed_files: int = Field(default=300, ge=1, le=3_000)
+    freshness_max_changed_bytes: int = Field(
+        default=64 * 1024 * 1024, ge=1024, le=512 * 1024 * 1024
+    )
 
     clone_git_executable: Path = Path("/usr/bin/git")
     clone_timeout_seconds: int = Field(default=120, ge=5, le=900)

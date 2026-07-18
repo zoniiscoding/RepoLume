@@ -7,7 +7,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import delete, exists, or_, select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config import Settings
 from app.db.models.call_edge import CallEdge
@@ -15,15 +16,18 @@ from app.db.models.enums import (
     IndexBuildState,
     IndexCleanupStatus,
     IndexingJobStatus,
+    IndexingMode,
     InstallationStatus,
     RepositoryIndexingStatus,
     ResolutionType,
+    WebhookDeliveryStatus,
 )
 from app.db.models.github_installation import GitHubInstallation, InstallationMember
 from app.db.models.indexing_job import IndexingJob
 from app.db.models.repository import Repository
 from app.db.models.repository_index_build import RepositoryIndexBuild
 from app.db.models.symbol_definition import SymbolDefinition
+from app.db.models.webhook_delivery import WebhookDelivery
 from app.db.session import Database
 from app.indexing.call_graph import deterministic_symbol_id
 from app.indexing.discovery import DiscoveryResult
@@ -48,6 +52,12 @@ class JobContext:
     name: str
     default_branch: str
     index_version: int
+    github_repository_id: int = 1
+    refresh_generation: int = 0
+    active_index_version: int = 0
+    active_commit_sha: str | None = None
+    indexed_branch: str | None = None
+    requested_mode: IndexingMode = IndexingMode.FULL
 
 
 class IndexingJobStore:
@@ -67,28 +77,34 @@ class IndexingJobStore:
     async def claim(self, job_id: uuid.UUID, worker_id: str) -> ClaimedJob | None:
         now = datetime.now(UTC)
         async with self._database.session() as session:
-            result = await session.execute(
-                update(IndexingJob)
-                .where(
-                    IndexingJob.id == job_id,
-                    IndexingJob.status.in_((IndexingJobStatus.QUEUED, IndexingJobStatus.RETRYING)),
-                    or_(
-                        IndexingJob.next_attempt_at.is_(None),
-                        IndexingJob.next_attempt_at <= now,
-                    ),
+            try:
+                result = await session.execute(
+                    update(IndexingJob)
+                    .where(
+                        IndexingJob.id == job_id,
+                        IndexingJob.status.in_(
+                            (IndexingJobStatus.QUEUED, IndexingJobStatus.RETRYING)
+                        ),
+                        or_(
+                            IndexingJob.next_attempt_at.is_(None),
+                            IndexingJob.next_attempt_at <= now,
+                        ),
+                    )
+                    .values(
+                        status=IndexingJobStatus.RUNNING,
+                        attempt=IndexingJob.attempt + 1,
+                        locked_by=worker_id,
+                        started_at=now,
+                        heartbeat_at=now,
+                        next_attempt_at=None,
+                        error_code=None,
+                        safe_error_message=None,
+                    )
+                    .returning(IndexingJob.id, IndexingJob.repository_id, IndexingJob.attempt)
                 )
-                .values(
-                    status=IndexingJobStatus.RUNNING,
-                    attempt=IndexingJob.attempt + 1,
-                    locked_by=worker_id,
-                    started_at=now,
-                    heartbeat_at=now,
-                    next_attempt_at=None,
-                    error_code=None,
-                    safe_error_message=None,
-                )
-                .returning(IndexingJob.id, IndexingJob.repository_id, IndexingJob.attempt)
-            )
+            except IntegrityError:
+                await session.rollback()
+                return None
             row = result.one_or_none()
             if row is None:
                 await session.rollback()
@@ -104,6 +120,11 @@ class IndexingJobStore:
                     indexing_error_message=None,
                 )
             )
+            await session.execute(
+                update(WebhookDelivery)
+                .where(WebhookDelivery.indexing_job_id == row.id)
+                .values(status=WebhookDeliveryStatus.PROCESSING)
+            )
             await session.commit()
             return ClaimedJob(id=row.id, repository_id=row.repository_id, attempt=row.attempt)
 
@@ -118,13 +139,6 @@ class IndexingJobStore:
                         GitHubInstallation,
                         GitHubInstallation.id == Repository.installation_id,
                     )
-                    .join(
-                        InstallationMember,
-                        and_(
-                            InstallationMember.installation_id == GitHubInstallation.id,
-                            InstallationMember.user_id == IndexingJob.requested_by_user_id,
-                        ),
-                    )
                     .where(
                         IndexingJob.id == claimed.id,
                         IndexingJob.status == IndexingJobStatus.RUNNING,
@@ -132,7 +146,16 @@ class IndexingJobStore:
                         Repository.deleted_at.is_(None),
                         GitHubInstallation.status == InstallationStatus.ACTIVE,
                         GitHubInstallation.deleted_at.is_(None),
-                        InstallationMember.verified_at >= cutoff,
+                        exists(
+                            select(InstallationMember.id).where(
+                                InstallationMember.installation_id == GitHubInstallation.id,
+                                InstallationMember.verified_at >= cutoff,
+                                or_(
+                                    IndexingJob.requested_by_user_id.is_(None),
+                                    InstallationMember.user_id == IndexingJob.requested_by_user_id,
+                                ),
+                            )
+                        ),
                     )
                     .with_for_update(of=IndexingJob)
                 )
@@ -148,10 +171,16 @@ class IndexingJobStore:
                 repository_id=repository.id,
                 installation_id=installation.id,
                 github_installation_id=installation.github_installation_id,
+                github_repository_id=repository.github_repository_id,
                 owner=repository.github_owner,
                 name=repository.github_name,
                 default_branch=repository.default_branch,
                 index_version=job.target_index_version,
+                refresh_generation=job.refresh_generation,
+                active_index_version=repository.index_version,
+                active_commit_sha=repository.last_indexed_commit_sha,
+                indexed_branch=repository.indexed_branch,
+                requested_mode=job.requested_mode or IndexingMode.FULL,
             )
             await session.commit()
             return context
@@ -166,6 +195,92 @@ class IndexingJobStore:
                     IndexingJob.locked_by == worker_id,
                 )
                 .values(heartbeat_at=datetime.now(UTC))
+            )
+            await session.commit()
+
+    async def is_current(self, claimed: ClaimedJob, worker_id: str) -> bool:
+        """Check the repository generation before external or activation work."""
+        async with self._database.session() as session:
+            current = await session.scalar(
+                select(IndexingJob.id)
+                .join(Repository, Repository.id == IndexingJob.repository_id)
+                .where(
+                    IndexingJob.id == claimed.id,
+                    IndexingJob.status == IndexingJobStatus.RUNNING,
+                    IndexingJob.locked_by == worker_id,
+                    IndexingJob.refresh_generation == Repository.refresh_generation,
+                    or_(
+                        IndexingJob.target_branch.is_(None),
+                        IndexingJob.target_branch == Repository.default_branch,
+                    ),
+                )
+            )
+            return current is not None
+
+    async def mark_stale(
+        self,
+        claimed: ClaimedJob,
+        worker_id: str,
+        *,
+        code: str,
+        superseded: bool = False,
+    ) -> None:
+        now = datetime.now(UTC)
+        async with self._database.session() as session:
+            job = await session.scalar(
+                select(IndexingJob)
+                .where(
+                    IndexingJob.id == claimed.id,
+                    IndexingJob.status == IndexingJobStatus.RUNNING,
+                    IndexingJob.locked_by == worker_id,
+                )
+                .with_for_update()
+            )
+            if job is None:
+                return
+            job.status = IndexingJobStatus.CANCELLED
+            job.stage = "superseded" if superseded else "stale"
+            job.error_code = code
+            job.safe_error_message = "A newer repository state superseded this refresh"
+            job.completed_at = now
+            job.heartbeat_at = now
+            job.locked_by = None
+            delivery = await session.scalar(
+                select(WebhookDelivery).where(WebhookDelivery.indexing_job_id == job.id)
+            )
+            if delivery is not None:
+                delivery.status = (
+                    WebhookDeliveryStatus.SUPERSEDED if superseded else WebhookDeliveryStatus.STALE
+                )
+                delivery.safe_error_code = code
+                delivery.processed_at = now
+            await session.commit()
+
+    async def record_freshness_plan(
+        self,
+        claimed: ClaimedJob,
+        worker_id: str,
+        *,
+        actual_mode: IndexingMode,
+        fallback_reason: str | None,
+        changed_counts: dict[str, int],
+        changed_file_count: int,
+    ) -> None:
+        async with self._database.session() as session:
+            await session.execute(
+                update(IndexingJob)
+                .where(
+                    IndexingJob.id == claimed.id,
+                    IndexingJob.status == IndexingJobStatus.RUNNING,
+                    IndexingJob.locked_by == worker_id,
+                )
+                .values(
+                    actual_mode=actual_mode,
+                    full_rebuild_reason=fallback_reason,
+                    changed_files_json=changed_counts,
+                    changed_file_count=changed_file_count,
+                    graph_rebuilt=True,
+                )
             )
             await session.commit()
 
@@ -210,6 +325,13 @@ class IndexingJobStore:
                 await session.execute(
                     update(Repository).where(Repository.id == repository_id).values(**values)
                 )
+                delivery = await session.scalar(
+                    select(WebhookDelivery).where(WebhookDelivery.indexing_job_id == claimed.id)
+                )
+                if delivery is not None:
+                    delivery.status = WebhookDeliveryStatus.UNAUTHORIZED
+                    delivery.safe_error_code = "repository_access_revoked"
+                    delivery.processed_at = now
             await session.commit()
 
     async def prepare_build(  # noqa: PLR0915 -- one atomic persistence transaction
@@ -453,6 +575,8 @@ class IndexingJobStore:
         *,
         embedded_chunk_count: int,
         vector_count: int,
+        reused_chunk_count: int = 0,
+        reembedded_chunk_count: int | None = None,
     ) -> None:
         async with self._database.session() as session:
             job = await session.scalar(
@@ -480,6 +604,10 @@ class IndexingJobStore:
                 raise self._activation_race()
             job.embedded_chunk_count = embedded_chunk_count
             job.vector_count = vector_count
+            job.reused_chunk_count = reused_chunk_count
+            job.reembedded_chunk_count = (
+                embedded_chunk_count if reembedded_chunk_count is None else reembedded_chunk_count
+            )
             build.embedded_chunk_count = embedded_chunk_count
             build.vector_count = vector_count
             await session.commit()
@@ -544,7 +672,14 @@ class IndexingJobStore:
                 raise self._activation_race()
             job, repository = row
             target = job.target_index_version
-            if target is None or repository.index_version + 1 != target:
+            if (
+                target is None
+                or repository.index_version + 1 != target
+                or job.refresh_generation != repository.refresh_generation
+                or (
+                    job.target_branch is not None and job.target_branch != repository.default_branch
+                )
+            ):
                 raise self._activation_race()
             build = await session.scalar(
                 select(RepositoryIndexBuild)
@@ -588,6 +723,8 @@ class IndexingJobStore:
             build.activated_at = now
             repository.index_version = target
             repository.last_indexed_commit_sha = commit_sha
+            repository.current_remote_sha = commit_sha
+            repository.indexed_branch = repository.default_branch
             repository.last_indexed_at = now
             repository.active_vector_count = build.vector_count
             repository.indexing_status = RepositoryIndexingStatus.COMPLETE
@@ -602,6 +739,15 @@ class IndexingJobStore:
             job.heartbeat_at = now
             job.completed_at = now
             job.locked_by = None
+            delivery = await session.scalar(
+                select(WebhookDelivery).where(WebhookDelivery.indexing_job_id == job.id)
+            )
+            if delivery is not None:
+                delivery.status = WebhookDeliveryStatus.COMPLETED
+                delivery.safe_error_code = None
+                delivery.processed_at = now
+                repository.last_delivery_status = WebhookDeliveryStatus.COMPLETED.value
+                repository.last_delivery_at = now
             await session.commit()
             return int(previous_version)
 
@@ -704,6 +850,13 @@ class IndexingJobStore:
                         indexing_error_message="Repository access is no longer authorized",
                     )
                 )
+                delivery = await session.scalar(
+                    select(WebhookDelivery).where(WebhookDelivery.indexing_job_id == claimed.id)
+                )
+                if delivery is not None:
+                    delivery.status = WebhookDeliveryStatus.UNAUTHORIZED
+                    delivery.safe_error_code = "repository_access_revoked"
+                    delivery.processed_at = now
             await session.commit()
 
     async def fail(
@@ -755,6 +908,18 @@ class IndexingJobStore:
                         indexing_error_message=safe_message,
                     )
                 )
+                delivery = await session.scalar(
+                    select(WebhookDelivery).where(WebhookDelivery.indexing_job_id == claimed.id)
+                )
+                if delivery is not None:
+                    delivery.status = (
+                        WebhookDeliveryStatus.RETRYABLE
+                        if should_retry
+                        else WebhookDeliveryStatus.FAILED
+                    )
+                    delivery.safe_error_code = code
+                    delivery.retry_count = claimed.attempt
+                    delivery.processed_at = None if should_retry else now
             await session.commit()
         return should_retry
 
@@ -796,6 +961,20 @@ class IndexingJobStore:
                         indexing_stage=job.stage,
                         indexing_error_code=job.error_code,
                         indexing_error_message=job.safe_error_message,
+                    )
+                )
+                await session.execute(
+                    update(WebhookDelivery)
+                    .where(WebhookDelivery.indexing_job_id == job.id)
+                    .values(
+                        status=(
+                            WebhookDeliveryStatus.RETRYABLE
+                            if retry
+                            else WebhookDeliveryStatus.FAILED
+                        ),
+                        retry_count=job.attempt,
+                        safe_error_code="worker_abandoned",
+                        processed_at=None if retry else datetime.now(UTC),
                     )
                 )
             await session.commit()

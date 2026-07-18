@@ -351,6 +351,9 @@ async def mutate_repository_state(repository_id: uuid.UUID, state: str) -> None:
             repository.deleted_at = datetime.now(UTC)
         elif state == "not_indexed":
             repository.indexing_status = RepositoryIndexingStatus.NOT_INDEXED
+        elif state == "replacement_building":
+            repository.indexing_status = RepositoryIndexingStatus.EMBEDDING
+            repository.indexing_stage = "embedding"
         elif state == "incomplete_build":
             build.state = IndexBuildState.READY
         elif state == "stale_version":
@@ -1003,6 +1006,43 @@ def test_repository_question_fails_closed_for_revoked_or_unsearchable_state(
     assert embeddings.queries == []
     assert vectors.scopes == []
     assert llm.requests == []
+
+
+def test_repository_question_keeps_using_prior_active_version_during_replacement() -> None:
+    settings = make_settings()
+    owner_id, _, repository_id = asyncio.run(seed_active_repository())
+    asyncio.run(mutate_repository_state(repository_id, "replacement_building"))
+    embeddings = FakeEmbeddings()
+    vectors = FakeVectors()
+    llm = FakeLLM()
+    database = Database(
+        engine=create_async_engine(database_url(), pool_pre_ping=True),
+        ready_timeout_seconds=2,
+    )
+    app = create_app(
+        settings=settings,
+        database=database,
+        github_client=FakeGitHub(),  # type: ignore[arg-type]
+        vector_store=vectors,
+        embedding_provider=embeddings,  # type: ignore[arg-type]
+        llm_provider=llm,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/repositories/{repository_id}/questions",
+            headers={
+                "Authorization": (
+                    f"Bearer {TokenService(settings).issue_access_token(owner_id).value}"
+                )
+            },
+            json={"question": "How does validate inspect the response?"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["answerability"] == "answered"
+    assert response.json()["active_index_version"] == 1
+    assert response.json()["indexed_commit_sha"] == "a" * 40
+    assert vectors.scopes[0].index_version == 1
 
 
 def test_repository_question_requires_authentication_and_rejects_extra_fields() -> None:

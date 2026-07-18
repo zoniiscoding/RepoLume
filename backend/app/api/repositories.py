@@ -33,6 +33,7 @@ def _is_searchable(repository: Repository) -> bool:
         and repository.last_indexed_commit_sha is not None
         and repository.indexing_status
         not in {
+            RepositoryIndexingStatus.NOT_INDEXED,
             RepositoryIndexingStatus.ACCESS_REVOKED,
             RepositoryIndexingStatus.DELETING,
         }
@@ -72,6 +73,8 @@ def _repository_response(repository: Repository) -> RepositoryDetailResponse:
         size_bytes=repository.size_bytes,
         active_commit_sha=repository.last_indexed_commit_sha,
         active_index_version=repository.index_version,
+        indexed_branch=repository.indexed_branch,
+        latest_remote_commit_sha=repository.current_remote_sha,
         vector_count=repository.active_vector_count,
         searchable=_is_searchable(repository),
     )
@@ -114,6 +117,18 @@ def _status_response(repository: Repository, job: IndexingJob | None) -> Indexin
         last_failure_category=(repository.indexing_error_code if job is None else job.error_code),
         heartbeat_at=None if job is None else job.heartbeat_at,
         completed_at=None if job is None else job.completed_at,
+        requested_mode=None if job is None else job.requested_mode,
+        actual_mode=None if job is None else job.actual_mode,
+        full_rebuild_reason=None if job is None else job.full_rebuild_reason,
+        changed_file_count=0 if job is None else job.changed_file_count,
+        changed_file_counts={} if job is None else job.changed_files_json,
+        reused_chunk_count=0 if job is None else job.reused_chunk_count,
+        reembedded_chunk_count=0 if job is None else job.reembedded_chunk_count,
+        graph_rebuilt=False if job is None else job.graph_rebuilt,
+        indexed_branch=repository.indexed_branch,
+        latest_remote_commit_sha=repository.current_remote_sha,
+        last_delivery_status=repository.last_delivery_status,
+        last_delivery_at=repository.last_delivery_at,
     )
 
 
@@ -200,3 +215,32 @@ async def get_repository_status(
         return _status_response(result.repository, result.job)
     repository, job = result
     return _status_response(repository, job)
+
+
+@router.post("/{repository_id}/reindex", status_code=status.HTTP_202_ACCEPTED)
+async def reindex_repository(
+    repository_id: uuid.UUID,
+    request: Request,
+    user: CurrentUser,
+) -> RepositoryCreateResponse:
+    try:
+        refreshed = await _service(request).reindex(
+            user_id=user.id,
+            repository_id=repository_id,
+        )
+    except RepositoryAccessError as error:
+        raise APIError(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code=ErrorCode.NOT_FOUND,
+            message="Repository was not found",
+        ) from error
+    except QueueUnavailableError as error:
+        raise APIError(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            message="Indexing queue is temporarily unavailable",
+        ) from error
+    return RepositoryCreateResponse(
+        repository=_repository_response(refreshed.repository),
+        job=_status_response(refreshed.repository, refreshed.job),
+    )

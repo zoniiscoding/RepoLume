@@ -23,22 +23,25 @@ from app.auth.cookies import AUTH_COOKIE_PATH, PKCE_COOKIE_NAME
 from app.auth.tokens import TokenService
 from app.db.models.auth import OAuthState, RefreshToken
 from app.db.models.enums import (
+    IndexingMode,
     InstallationStatus,
     RepositoryIndexingStatus,
     WebhookDeliveryStatus,
 )
 from app.db.models.github_installation import GitHubInstallation, InstallationMember
+from app.db.models.indexing_job import IndexingJob
 from app.db.models.repository import Repository
 from app.db.models.user import User
 from app.db.models.webhook_delivery import WebhookDelivery
 from app.db.session import Database
 from app.github.client import GitHubAPIError
+from app.github.schemas import GitHubCommitComparison, GitHubRepository, GitHubUser
 from app.github.schemas import GitHubInstallation as GitHubInstallationData
-from app.github.schemas import GitHubRepository, GitHubUser
 from app.services.auth import AuthService, OAuthStateError, RefreshTokenError
 from app.services.installations import InstallationAccessError, InstallationService
+from app.services.repositories import RepositoryAccessError, RepositoryJob, RepositoryService
 from app.services.webhooks import WebhookService
-from tests.conftest import make_settings
+from tests.conftest import FakeJobQueue, make_settings
 
 pytestmark = pytest.mark.integration
 
@@ -73,6 +76,26 @@ async def _database_scalar(statement: Executable) -> object:
         value = await session.scalar(statement)
     await engine.dispose()
     return value
+
+
+async def _database_scalars(statement: Executable) -> list[Any]:
+    engine = create_async_engine(_database_url())
+    async with AsyncSession(engine) as session:
+        values = list((await session.scalars(statement)).all())
+    await engine.dispose()
+    return values
+
+
+async def _update_repository(github_repository_id: int, **values: object) -> None:
+    engine = create_async_engine(_database_url())
+    async with AsyncSession(engine) as session:
+        await session.execute(
+            update(Repository)
+            .where(Repository.github_repository_id == github_repository_id)
+            .values(**values)
+        )
+        await session.commit()
+    await engine.dispose()
 
 
 class FakeGitHubClient:
@@ -152,6 +175,26 @@ class FakeGitHubClient:
         self.installation_token_requests.append(installation_id)
         return SecretStr(GITHUB_INSTALLATION_TOKEN)
 
+    async def create_repository_installation_token(
+        self, installation_id: int, *, repository_id: int
+    ) -> SecretStr:
+        assert repository_id > 0
+        return await self.create_installation_token(installation_id)
+
+    async def compare_repository_commits(
+        self,
+        installation_token: SecretStr,
+        *,
+        owner: str,
+        repository: str,
+        base: str,
+        head: str,
+    ) -> GitHubCommitComparison:
+        del installation_token, owner, repository, base, head
+        return GitHubCommitComparison(
+            status="ahead", ahead_by=1, behind_by=0, total_commits=1, files=[]
+        )
+
     async def list_installation_repositories(
         self,
         installation_token: SecretStr,
@@ -182,7 +225,12 @@ def auth_client(github: FakeGitHubClient) -> Iterator[TestClient]:
         engine=create_async_engine(_database_url(), pool_pre_ping=True),
         ready_timeout_seconds=2,
     )
-    app = create_app(settings=settings, database=database, github_client=github)
+    app = create_app(
+        settings=settings,
+        database=database,
+        github_client=github,
+        job_queue=FakeJobQueue(),
+    )
     with TestClient(app) as client:
         yield client
 
@@ -238,6 +286,39 @@ def _installation_payload(action: str, *, suspended: bool = False) -> bytes:
             },
             "sender": {"id": 101, "login": "octocat"},
         }
+    ).encode()
+
+
+def _push_payload(
+    *,
+    before: str = "a" * 40,
+    after: str = "b" * 40,
+    ref: str = "refs/heads/main",
+    forced: bool = False,
+    deleted: bool = False,
+    installation_id: int = 501,
+    repository_id: int = 9001,
+) -> bytes:
+    installation = json.loads(_installation_payload("created"))["installation"]
+    return json.dumps(
+        {
+            "ref": ref,
+            "before": before,
+            "after": after,
+            "forced": forced,
+            "deleted": deleted,
+            "installation": {**installation, "id": installation_id},
+            "repository": {
+                "id": repository_id,
+                "owner": {"login": "octocat"},
+                "name": "private-repo",
+                "full_name": "octocat/private-repo",
+                "html_url": "https://github.com/octocat/private-repo",
+                "private": True,
+                "default_branch": "main",
+            },
+        },
+        separators=(",", ":"),
     ).encode()
 
 
@@ -831,6 +912,27 @@ def test_repository_access_addition_deletion_and_ignored_webhook_paths(
     )
     assert isinstance(added_id, uuid.UUID)
 
+    branch_changed_repository = {**added_repository, "default_branch": "trunk"}
+    branch_changed = _post_webhook(
+        auth_client,
+        json.dumps(
+            {
+                "action": "edited",
+                "installation": installation_payload,
+                "repository": branch_changed_repository,
+            }
+        ).encode(),
+        delivery_id="delivery-default-branch-changed",
+        event="repository",
+    )
+    assert branch_changed.status_code == 202
+    full_job = asyncio.run(
+        _database_scalar(select(IndexingJob).where(IndexingJob.repository_id == added_id))
+    )
+    assert isinstance(full_job, IndexingJob)
+    assert full_job.requested_mode == "full"
+    assert full_job.full_rebuild_reason == "default_branch_changed"
+
     deleted_body = json.dumps(
         {
             "action": "deleted",
@@ -870,7 +972,7 @@ def test_repository_access_addition_deletion_and_ignored_webhook_paths(
             )
         )
     )
-    assert queue_status == WebhookDeliveryStatus.QUEUED
+    assert queue_status == WebhookDeliveryStatus.UNAUTHORIZED
 
     assert (
         auth_client.get(
@@ -921,8 +1023,21 @@ def test_repository_listing_github_failure_and_empty_sync_revoke_access(
 def test_push_webhook_records_durable_queued_state_without_worker(
     auth_client: TestClient,
 ) -> None:
+    access_token, _, _ = _login(auth_client)
+    installation_id = auth_client.get(
+        "/api/v1/installations", headers=_authorization(access_token)
+    ).json()[0]["id"]
+    auth_client.get(
+        f"/api/v1/installations/{installation_id}/repositories",
+        headers=_authorization(access_token),
+    )
     body = json.dumps(
         {
+            "ref": "refs/heads/main",
+            "before": "a" * 40,
+            "after": "b" * 40,
+            "forced": False,
+            "deleted": False,
             "installation": json.loads(_installation_payload("created"))["installation"],
             "repository": {
                 "id": 9001,
@@ -949,6 +1064,478 @@ def test_push_webhook_records_durable_queued_state_without_worker(
         )
     )
     assert delivery_status == WebhookDeliveryStatus.QUEUED
+    job_count = asyncio.run(_database_scalar(select(func.count()).select_from(IndexingJob)))
+    assert job_count == 1
+
+    duplicate = _post_webhook(
+        auth_client,
+        body,
+        delivery_id="delivery-push",
+        event="push",
+    )
+    same_commit = _post_webhook(
+        auth_client,
+        body,
+        delivery_id="delivery-push-same-commit",
+        event="push",
+    )
+    feature_body = body.replace(b"refs/heads/main", b"refs/heads/feature")
+    non_default = _post_webhook(
+        auth_client,
+        feature_body,
+        delivery_id="delivery-push-feature",
+        event="push",
+    )
+    assert duplicate.json() == {"status": "duplicate"}
+    assert same_commit.status_code == 202
+    assert non_default.status_code == 202
+    assert asyncio.run(_database_scalar(select(func.count()).select_from(IndexingJob))) == 1
+    feature_status = asyncio.run(
+        _database_scalar(
+            select(WebhookDelivery.status).where(
+                WebhookDelivery.delivery_id == "delivery-push-feature"
+            )
+        )
+    )
+    assert feature_status == WebhookDeliveryStatus.IGNORED
+
+
+def test_push_webhook_orders_terminal_states_and_selects_safe_modes(
+    auth_client: TestClient,
+) -> None:
+    access_token, _, _ = _login(auth_client)
+    installation_id = auth_client.get(
+        "/api/v1/installations", headers=_authorization(access_token)
+    ).json()[0]["id"]
+    auth_client.get(
+        f"/api/v1/installations/{installation_id}/repositories",
+        headers=_authorization(access_token),
+    )
+    asyncio.run(
+        _update_repository(
+            9001,
+            indexing_status=RepositoryIndexingStatus.COMPLETE,
+            index_version=1,
+            last_indexed_commit_sha="a" * 40,
+            indexed_branch="main",
+            current_remote_sha="a" * 40,
+            active_vector_count=1,
+        )
+    )
+    installation = json.loads(_installation_payload("created"))["installation"]
+
+    def payload(
+        *,
+        before: str = "a" * 40,
+        after: str = "b" * 40,
+        ref: str = "refs/heads/main",
+        forced: bool = False,
+        deleted: bool = False,
+        installation_id: int = 501,
+        repository_id: int = 9001,
+    ) -> bytes:
+        return json.dumps(
+            {
+                "ref": ref,
+                "before": before,
+                "after": after,
+                "forced": forced,
+                "deleted": deleted,
+                "installation": {**installation, "id": installation_id},
+                "repository": {
+                    "id": repository_id,
+                    "owner": {"login": "octocat"},
+                    "name": "private-repo",
+                    "full_name": "octocat/private-repo",
+                    "html_url": "https://github.com/octocat/private-repo",
+                    "private": True,
+                    "default_branch": "main",
+                },
+            },
+            separators=(",", ":"),
+        ).encode()
+
+    assert (
+        _post_webhook(
+            auth_client, payload(), delivery_id="ordered-incremental", event="push"
+        ).status_code
+        == 202
+    )
+    assert (
+        _post_webhook(
+            auth_client, payload(), delivery_id="ordered-same-target", event="push"
+        ).status_code
+        == 202
+    )
+    assert (
+        _post_webhook(
+            auth_client,
+            payload(after="0" * 40, deleted=True),
+            delivery_id="ordered-deleted-branch",
+            event="push",
+        ).status_code
+        == 202
+    )
+    assert (
+        _post_webhook(
+            auth_client,
+            payload(ref="refs/heads/feature"),
+            delivery_id="ordered-non-default",
+            event="push",
+        ).status_code
+        == 202
+    )
+    assert (
+        _post_webhook(
+            auth_client,
+            payload(after="a" * 40),
+            delivery_id="ordered-already-active",
+            event="push",
+        ).status_code
+        == 202
+    )
+    assert (
+        _post_webhook(
+            auth_client,
+            payload(after="c" * 40, forced=True),
+            delivery_id="ordered-force",
+            event="push",
+        ).status_code
+        == 202
+    )
+    assert (
+        _post_webhook(
+            auth_client,
+            payload(before="f" * 40, after="d" * 40),
+            delivery_id="ordered-unanchored",
+            event="push",
+        ).status_code
+        == 202
+    )
+    assert (
+        _post_webhook(
+            auth_client,
+            payload(after="e" * 40, repository_id=9999),
+            delivery_id="ordered-wrong-repository",
+            event="push",
+        ).status_code
+        == 202
+    )
+    assert (
+        _post_webhook(
+            auth_client,
+            payload(after="e" * 40, installation_id=9999),
+            delivery_id="ordered-wrong-installation",
+            event="push",
+        ).status_code
+        == 202
+    )
+
+    jobs = asyncio.run(_database_scalars(select(IndexingJob).order_by(IndexingJob.created_at)))
+    assert [job.requested_mode for job in jobs] == [
+        IndexingMode.INCREMENTAL,
+        IndexingMode.FULL,
+        IndexingMode.FULL,
+    ]
+    assert [job.target_commit_sha for job in jobs] == ["b" * 40, "c" * 40, "d" * 40]
+    statuses = asyncio.run(
+        _database_scalars(
+            select(WebhookDelivery).where(WebhookDelivery.delivery_id.like("ordered-%"))
+        )
+    )
+    by_delivery = {item.delivery_id: item.status for item in statuses}
+    assert by_delivery == {
+        "ordered-already-active": WebhookDeliveryStatus.STALE,
+        "ordered-deleted-branch": WebhookDeliveryStatus.IGNORED,
+        "ordered-force": WebhookDeliveryStatus.QUEUED,
+        "ordered-incremental": WebhookDeliveryStatus.QUEUED,
+        "ordered-non-default": WebhookDeliveryStatus.IGNORED,
+        "ordered-same-target": WebhookDeliveryStatus.QUEUED,
+        "ordered-unanchored": WebhookDeliveryStatus.QUEUED,
+        "ordered-wrong-installation": WebhookDeliveryStatus.UNAUTHORIZED,
+        "ordered-wrong-repository": WebhookDeliveryStatus.UNAUTHORIZED,
+    }
+
+
+@pytest.mark.asyncio
+async def test_webhook_service_directly_enforces_push_freshness_and_scope(
+    github: FakeGitHubClient,
+) -> None:
+    settings = make_settings()
+    database = Database(
+        engine=create_async_engine(_database_url()),
+        ready_timeout_seconds=2,
+    )
+    auth = AuthService(database, github, TokenService(settings), settings)
+    start = await auth.start_oauth()
+    authenticated = await auth.authenticate_callback(
+        code="direct-push-code",
+        state=start.credentials.state,
+        code_verifier=start.credentials.code_verifier,
+    )
+    installations = InstallationService(database, github, settings)
+    authorized = await installations.list_authorized_installations(authenticated.user.id)
+    await installations.synchronize_repositories(
+        user_id=authenticated.user.id,
+        installation_id=authorized[0].id,
+    )
+    await _update_repository(
+        9001,
+        indexing_status=RepositoryIndexingStatus.COMPLETE,
+        index_version=1,
+        last_indexed_commit_sha="a" * 40,
+        indexed_branch="main",
+        current_remote_sha="a" * 40,
+        active_vector_count=1,
+    )
+    queue = FakeJobQueue()
+    service = WebhookService(database, settings, queue)
+    secret = settings.github_webhook_secret.get_secret_value()
+
+    async def handle(delivery_id: str, body: bytes) -> str:
+        return await service.handle(
+            body=body,
+            signature=_webhook_signature(secret, body),
+            delivery_id=delivery_id,
+            event_name="push",
+        )
+
+    assert await handle("direct-push-incremental", _push_payload()) == "accepted"
+    assert await handle("direct-push-same-target", _push_payload()) == "accepted"
+    assert (
+        await handle(
+            "direct-push-deleted",
+            _push_payload(after="0" * 40, deleted=True),
+        )
+        == "accepted"
+    )
+    assert (
+        await handle("direct-push-non-default", _push_payload(ref="refs/heads/feature"))
+        == "accepted"
+    )
+    assert await handle("direct-push-stale", _push_payload(after="a" * 40)) == "accepted"
+    assert (
+        await handle("direct-push-force", _push_payload(after="c" * 40, forced=True)) == "accepted"
+    )
+    assert (
+        await handle(
+            "direct-push-unanchored",
+            _push_payload(before="f" * 40, after="d" * 40),
+        )
+        == "accepted"
+    )
+    assert (
+        await handle(
+            "direct-push-wrong-repository",
+            _push_payload(after="e" * 40, repository_id=9999),
+        )
+        == "accepted"
+    )
+    assert (
+        await handle(
+            "direct-push-wrong-installation",
+            _push_payload(after="e" * 40, installation_id=9999),
+        )
+        == "accepted"
+    )
+
+    async with database.session() as session:
+        jobs = list(
+            (await session.scalars(select(IndexingJob).order_by(IndexingJob.created_at))).all()
+        )
+        deliveries = list(
+            (
+                await session.scalars(
+                    select(WebhookDelivery).where(WebhookDelivery.delivery_id.like("direct-push-%"))
+                )
+            ).all()
+        )
+    assert [job.requested_mode for job in jobs] == [
+        IndexingMode.INCREMENTAL,
+        IndexingMode.FULL,
+        IndexingMode.FULL,
+    ]
+    assert len(queue.enqueued) == 3
+    statuses = {item.delivery_id: item.status for item in deliveries}
+    assert statuses["direct-push-same-target"] is WebhookDeliveryStatus.QUEUED
+    assert statuses["direct-push-deleted"] is WebhookDeliveryStatus.IGNORED
+    assert statuses["direct-push-non-default"] is WebhookDeliveryStatus.IGNORED
+    assert statuses["direct-push-stale"] is WebhookDeliveryStatus.STALE
+    assert statuses["direct-push-wrong-repository"] is WebhookDeliveryStatus.UNAUTHORIZED
+    assert statuses["direct-push-wrong-installation"] is WebhookDeliveryStatus.UNAUTHORIZED
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_webhook_service_directly_tracks_default_branch_metadata(
+    github: FakeGitHubClient,
+) -> None:
+    settings = make_settings()
+    database = Database(
+        engine=create_async_engine(_database_url()),
+        ready_timeout_seconds=2,
+    )
+    auth = AuthService(database, github, TokenService(settings), settings)
+    start = await auth.start_oauth()
+    authenticated = await auth.authenticate_callback(
+        code="direct-metadata-code",
+        state=start.credentials.state,
+        code_verifier=start.credentials.code_verifier,
+    )
+    installations = InstallationService(database, github, settings)
+    authorized = await installations.list_authorized_installations(authenticated.user.id)
+    await installations.synchronize_repositories(
+        user_id=authenticated.user.id,
+        installation_id=authorized[0].id,
+    )
+    queue = FakeJobQueue()
+    service = WebhookService(database, settings, queue)
+    secret = settings.github_webhook_secret.get_secret_value()
+
+    def metadata_body(*, installation_id: int = 501, repository_id: int = 9001) -> bytes:
+        installation = json.loads(_installation_payload("created"))["installation"]
+        return json.dumps(
+            {
+                "action": "edited",
+                "installation": {**installation, "id": installation_id},
+                "repository": {
+                    "id": repository_id,
+                    "owner": {"login": "renamed-owner"},
+                    "name": "renamed-repo",
+                    "full_name": "renamed-owner/renamed-repo",
+                    "html_url": "https://github.com/renamed-owner/renamed-repo",
+                    "private": True,
+                    "default_branch": "trunk",
+                },
+            },
+            separators=(",", ":"),
+        ).encode()
+
+    async def handle(delivery_id: str, body: bytes) -> str:
+        return await service.handle(
+            body=body,
+            signature=_webhook_signature(secret, body),
+            delivery_id=delivery_id,
+            event_name="repository",
+        )
+
+    assert await handle("direct-metadata-changed", metadata_body()) == "accepted"
+    assert await handle("direct-metadata-unchanged", metadata_body()) == "accepted"
+    assert (
+        await handle(
+            "direct-metadata-wrong-repository",
+            metadata_body(repository_id=9999),
+        )
+        == "accepted"
+    )
+    assert (
+        await handle(
+            "direct-metadata-wrong-installation",
+            metadata_body(installation_id=9999),
+        )
+        == "accepted"
+    )
+
+    async with database.session() as session:
+        repository = await session.scalar(
+            select(Repository).where(Repository.github_repository_id == 9001)
+        )
+        jobs = list((await session.scalars(select(IndexingJob))).all())
+        deliveries = list(
+            (
+                await session.scalars(
+                    select(WebhookDelivery).where(
+                        WebhookDelivery.delivery_id.like("direct-metadata-%")
+                    )
+                )
+            ).all()
+        )
+    assert repository is not None
+    assert repository.default_branch == "trunk"
+    assert repository.github_full_name == "renamed-owner/renamed-repo"
+    assert repository.refresh_generation == 1
+    assert len(jobs) == 1
+    assert jobs[0].requested_mode is IndexingMode.FULL
+    assert jobs[0].full_rebuild_reason == "default_branch_changed"
+    assert queue.enqueued == [jobs[0].id]
+    statuses = {item.delivery_id: item.status for item in deliveries}
+    assert statuses == {
+        "direct-metadata-changed": WebhookDeliveryStatus.QUEUED,
+        "direct-metadata-unchanged": WebhookDeliveryStatus.PROCESSED,
+        "direct-metadata-wrong-installation": WebhookDeliveryStatus.UNAUTHORIZED,
+        "direct-metadata-wrong-repository": WebhookDeliveryStatus.UNAUTHORIZED,
+    }
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_repository_service_direct_selection_manual_refresh_and_status(
+    github: FakeGitHubClient,
+) -> None:
+    settings = make_settings()
+    database = Database(
+        engine=create_async_engine(_database_url()),
+        ready_timeout_seconds=2,
+    )
+    auth = AuthService(database, github, TokenService(settings), settings)
+    start = await auth.start_oauth()
+    authenticated = await auth.authenticate_callback(
+        code="direct-repository-code",
+        state=start.credentials.state,
+        code_verifier=start.credentials.code_verifier,
+    )
+    installations = InstallationService(database, github, settings)
+    authorized = await installations.list_authorized_installations(authenticated.user.id)
+    repositories = await installations.synchronize_repositories(
+        user_id=authenticated.user.id,
+        installation_id=authorized[0].id,
+    )
+    queue = FakeJobQueue()
+    service = RepositoryService(
+        database=database,
+        queue=queue,
+        installations=installations,
+        settings=settings,
+    )
+
+    status_without_job = await service.get_status(
+        user_id=authenticated.user.id,
+        repository_id=repositories[0].id,
+    )
+    assert isinstance(status_without_job, tuple)
+    status_repository, status_job = status_without_job
+    assert status_repository.id == repositories[0].id
+    assert status_job is None
+    selected = await service.select_repository(
+        user_id=authenticated.user.id,
+        installation_id=authorized[0].id,
+        github_repository_id=9001,
+    )
+    refreshed = await service.reindex(
+        user_id=authenticated.user.id,
+        repository_id=repositories[0].id,
+    )
+    latest = await service.get_status(
+        user_id=authenticated.user.id,
+        repository_id=repositories[0].id,
+    )
+
+    assert selected.job.refresh_generation == 0
+    assert refreshed.job.requested_mode is IndexingMode.FULL
+    assert refreshed.job.full_rebuild_reason == "manual_reindex"
+    assert refreshed.repository.refresh_generation == 1
+    assert isinstance(latest, RepositoryJob)
+    assert latest.job.id == refreshed.job.id
+    assert [item.id for item in await service.list_authorized(authenticated.user.id)] == [
+        repositories[0].id
+    ]
+    assert queue.enqueued == [selected.job.id, refreshed.job.id]
+    with pytest.raises(RepositoryAccessError):
+        await service.get_authorized(
+            user_id=authenticated.user.id,
+            repository_id=uuid.uuid4(),
+        )
+    await database.dispose()
 
 
 @pytest.mark.asyncio

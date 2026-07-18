@@ -3,6 +3,7 @@
 import uuid
 from collections.abc import Callable
 from typing import cast
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -18,6 +19,7 @@ from app.vector.qdrant import (
     VectorScope,
     build_vector_record,
     deterministic_point_id,
+    embedding_model_fingerprint,
     retrieval_filter,
     scope_filter,
 )
@@ -150,6 +152,44 @@ async def test_readiness_fails_closed_when_collection_validation_fails(
 
     monkeypatch.setattr(store, "ensure_collection", unavailable)
     assert await store.is_ready() is False
+
+
+@pytest.mark.asyncio
+async def test_reusable_vectors_require_exact_scope_content_and_preprocessing() -> None:
+    installation = uuid.uuid4()
+    repository = uuid.uuid4()
+    scope = VectorScope(installation, repository, 2)
+    document = prepared(repository)
+    settings = make_settings()
+    payload = build_vector_record(
+        scope=scope,
+        prepared=document,
+        vector=(1.0,) + (0.0,) * 767,
+        settings=settings,
+        policy_fingerprint=EmbeddingPreprocessor(settings).policy_fingerprint,
+    ).payload
+    client = AsyncMock()
+    client.scroll.return_value = (
+        [models.Record(id=str(uuid.uuid4()), payload=payload, vector=[1.0] + [0.0] * 767)],
+        None,
+    )
+    store = QdrantVectorStore(settings, client=cast(AsyncQdrantClient, client))
+
+    result = await store.reusable_vectors(
+        scope,
+        prepared=(document,),
+        commit_sha="a" * 40,
+        model_fingerprint=embedding_model_fingerprint(
+            settings, EmbeddingPreprocessor(settings).policy_fingerprint
+        ),
+        preprocessing_fingerprint=EmbeddingPreprocessor(settings).policy_fingerprint,
+    )
+
+    assert result == {"0": (1.0,) + (0.0,) * 767}
+    scroll_filter = client.scroll.await_args.kwargs["scroll_filter"].model_dump(mode="json")
+    conditions = {item["key"]: item["match"]["value"] for item in scroll_filter["must"]}
+    assert conditions["repository_id"] == str(repository)
+    assert conditions["index_version"] == 2
 
 
 @pytest.mark.asyncio

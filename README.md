@@ -2,7 +2,7 @@
 
 RepoLume is a multi-tenant, read-only developer SaaS for understanding authorized GitHub repositories through evidence-backed answers.
 
-This repository is at **Milestone 8: static call graph and caller analysis**. It implements the FastAPI/PostgreSQL foundation, GitHub App authentication and access controls, durable full indexing, private ONNX embeddings, atomically activated Qdrant indexes, and an authenticated direct agent loop with exactly three read-only tools: `search_code`, `get_history`, and `find_callers`. Python calls are extracted with Tree-sitter without executing connected code, resolved conservatively, stored by repository/index version/commit, and returned as explicitly best-effort static caller citations. Incremental indexing, chat persistence, and frontend functionality are not implemented.
+This repository is at **Milestone 9: signed GitHub webhook freshness and safe incremental replacement**. It implements the FastAPI/PostgreSQL foundation, GitHub App authentication and access controls, durable indexing, private ONNX embeddings, atomically activated Qdrant indexes, a three-tool read-only agent, and default-branch push refreshes. Signed deliveries are deduplicated in PostgreSQL, ordered by a repository generation, compared through a repository-restricted GitHub token, and built as complete inactive versions. Unchanged vectors are reused only under exact content/model/policy scope; changed chunks are re-embedded; static parsing and the call graph are conservatively rebuilt for correctness. The prior active version remains queryable until the replacement validates and activates. Chat persistence, frontend functionality, deployment, and later launch work are not implemented.
 
 Read [the product specification](docs/PRODUCT_SPEC.md), [current build status](docs/BUILD_STATUS.md), [security posture](docs/SECURITY.md), and [engineering rules](AGENTS.md) before changing code.
 
@@ -45,6 +45,8 @@ For live use, create a GitHub App with:
 - No repository write permission
 
 Set `GITHUB_APP_ID`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_OAUTH_CALLBACK_URL`, `ACCESS_TOKEN_SECRET`, and `TOKEN_HASH_SECRET` in the runtime secret store. GitHub user and installation tokens remain server-side and are not persisted.
+
+The webhook route accepts only `installation`, `installation_repositories`, `push`, and `repository`. It authenticates the exact raw body with `X-Hub-Signature-256`, caps the body at 1 MiB, validates bounded event/delivery headers and typed fields, and stores normalized content-free delivery metadata rather than payloads. Only the server-owned default branch is indexed. Non-default and deleted-branch pushes are ignored; forced, unanchored, unavailable, unsafe, or over-limit comparisons use a visible full-rebuild fallback. Manual full refresh is available at `POST /api/v1/repositories/{repository_id}/reindex`; no model tool can invoke it.
 
 ## Database and API
 
@@ -127,10 +129,13 @@ PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
 PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
   --cases backend/evaluation/milestone8_cases.json \
   --observations backend/evaluation/milestone8_fixture_observations.json
+PYTHONPATH=backend .venv/bin/python -m app.indexing.evaluation \
+  --cases backend/evaluation/milestone9_cases.json \
+  --observations backend/evaluation/milestone9_fixture_observations.json
 ```
 
 Integration tests truncate PostgreSQL, flush Redis, and delete the configured Qdrant test collection; they fail rather than silently using SQLite, an in-process queue, or an in-memory vector store. Never point a test URL at development, staging, or production data.
 
 ## Security boundary
 
-Connected repositories, GitHub history, user questions, and model output are untrusted data. RepoLume never executes, imports, installs, builds, tests, or invokes connected code. The immutable registry contains only `search_code`, `get_history`, and `find_callers`; none exposes shell, arbitrary network, secrets, writes, raw filters, repository/installation/version/commit selectors, URLs, or limits. GitHub history uses fixed API paths and an ephemeral token restricted to the already authorized repository. Qdrant and caller reads retain server-derived installation/repository/active-version/commit scope. The model may select a typed tool and reference evidence IDs, but the server owns scope and citation metadata and reauthorizes before returning. Static caller results can miss dynamic dispatch, monkey patching, reflection, generated code, decorators, and unresolved polymorphism; they are evidence, not runtime truth.
+Connected repositories, webhook payloads, GitHub history, user questions, and model output are untrusted data. RepoLume never executes, imports, installs, builds, tests, or invokes connected code. The immutable registry contains only `search_code`, `get_history`, and `find_callers`; none exposes shell, arbitrary network, secrets, writes, refresh controls, raw filters, repository/installation/version/commit selectors, URLs, or limits. GitHub comparison/history calls use fixed paths and ephemeral repository-restricted tokens. Every vector reuse/read/write/delete retains server-derived installation/repository/version/commit/model/policy scope. Activation rechecks durable authorization, branch, generation, build, vector, and graph state; stale workers clean only their inactive scope. Static caller results can miss dynamic dispatch, monkey patching, reflection, generated code, decorators, and unresolved polymorphism; they are evidence, not runtime truth.

@@ -1,6 +1,6 @@
 # RepoLume Security
 
-**Status:** Milestone 8 adds isolated static call extraction, validated version-scoped graph persistence, a third immutable read-only `find_callers` tool, and caller-citation integrity to the verified Milestone 7 boundary. Live GitHub history, real hosted-LLM behavior, runtime call completeness, and hosted production controls remain unverified.
+**Status:** Milestone 9 adds signed bounded webhook freshness, normalized delivery persistence, server-owned default-branch/generation authority, repository-restricted comparisons, exact-scope vector reuse, stale-worker rejection, and atomic complete-version replacement. Live GitHub App/hosted-LLM behavior, runtime call completeness, deployment, and hosted production controls remain unverified.
 
 ## Security invariants
 
@@ -12,7 +12,7 @@
 6. Revocation blocks use immediately; deletion is a verified asynchronous purge.
 7. Production readiness cannot be claimed until controls have implementation and executed evidence.
 
-Milestone 8 keeps the authenticated repository question route and derives every scope from authorization and PostgreSQL active state. The model may select only `search_code`, `get_history`, or `find_callers`; server context supplies all tenant, repository, version, commit, token, destination, limit, filter, SQL, and citation authority. Questions, source, call expressions, commits, patches, PRs, and model output are untrusted. Connected code is never imported/executed and question/history/agent artifacts remain ephemeral.
+Milestone 9 keeps the immutable `search_code`, `get_history`, and `find_callers` registry and adds no model-controlled refresh capability. Webhook bodies, paths, branch/SHA/installation/repository claims, source, questions, call expressions, history, and model output are untrusted. Trusted authorization, repository identity, default branch, generation, active commit/version, token destination, limits, filters, SQL, and activation all come from server-owned state. Connected code is never imported/executed.
 
 ## Primary assets
 
@@ -44,8 +44,8 @@ Legend: **Verified M7** means the implemented subset passed local automated/manu
 | Authentication | Hashed expiring one-time state + S256 PKCE; server exchange; short access JWT; hashed rotating refresh family/reuse detection | Verified M2 | `test_auth_github.py`, `test_tokens.py`, `test_cookies.py` |
 | Browser security | Restricted CORS/hosts, production HTTPS/HSTS, scoped Secure/HttpOnly/SameSite cookie, exact Origin on refresh/logout | Verified M2 | HTTP/cookie/origin tests; hosted browser flow pending |
 | Authorization | Join authenticated actor through fresh membership and active installation; reauthorize repository sync; non-enumerating denial | Verified M2 subset | Cross-user, cross-installation, stale membership, and repository-service tests; session authorization later |
-| Revocation | Fail closed on installation suspension/deletion and repository removal/deletion | Verified M2 access state | Signed webhook tests; later indexed-data purge Milestone 9 |
-| Webhooks | Raw HMAC before parse, bounded body/headers, delivery-ID idempotency, short durable transitions | Verified M2 | Invalid/malformed/duplicate/created/suspended/removed/deleted/queued tests |
+| Revocation | Fail closed on installation suspension/deletion and repository removal/deletion before processing/activation | Verified M9 access/freshness state | Signed webhook, worker reauthorization, and prior-index denial tests; final purge SLA remains M13 |
+| Webhooks | Raw HMAC before parse, 1 MiB body and bounded headers, typed payloads, normalized persistence, delivery uniqueness, branch/generation ordering | Verified M9 controlled | Invalid/malformed/duplicate/replay/push/branch/revocation/suspension/removal tests; live GitHub acceptance pending |
 | SSRF | Fixed GitHub hosts/paths, no redirects, bounded pagination/timeouts, server-owned IDs | Verified M2 GitHub subset | Mock-transport host/header/error tests; clone egress Milestone 3 |
 | Clone isolation | Fixed shallow single-branch clone, disabled config/hooks/templates/submodules/protocols/LFS, askpass-only token, process/time/size limits, cleanup | Verified M4 inherited | Clone command/timeout/limit/argv/cleanup tests and controlled Git worker run |
 | Filesystem | Fresh mode-0700 root, containment/symlink protection, non-following traversal, directory/type/binary/file/count/byte limits | Verified M4 inherited | Discovery and parser-path security tests plus controlled Git worker run |
@@ -54,7 +54,7 @@ Legend: **Verified M7** means the implemented subset passed local automated/manu
 | Prompt injection | Source/history text is untrusted JSON; fixed instructions, two server-mediated typed tools, strict output, independent citations | Verified M7 | Code/commit/patch/PR injection tests and controlled answer/no-answer pipeline; hosted-model acceptance pending |
 | Vector isolation | Typed installation + repository + active-version + commit + model + preprocessing filters on every search | Verified M6 | Real Qdrant cross-repository/version/model searches and malformed-payload rejection |
 | Grounding | Bounded deterministic evidence, structured answer states, unknown-citation rejection, server-owned metadata | Verified M7 local provider | Mixed grounding/citation tests plus versioned Milestone 6 and 7 evaluation contracts |
-| Index integrity | Inactive build, exact count/metadata validation, PostgreSQL transaction, one-active constraint, rollback/cleanup | Verified M5 | Success/replacement/failure/stale/duplicate/revocation/activation-order integration tests |
+| Index integrity | Complete inactive build, exact count/metadata/graph validation, generation CAS, one-active constraint, rollback/scoped cleanup | Verified M9 controlled | A-to-B signed push, reuse/re-embed, stale worker, manual conflict, failure preservation, and activation-order tests |
 | Database | Async parameterized ORM, FKs, unique/check/composite constraints, Alembic | Verified foundation | PostgreSQL migration/model/integration tests; production least privilege later |
 | API abuse | Webhook 1 MiB/body and bounded header/schema validation; mutation idempotency where implemented | Partial | Rate/usage controls remain Milestone 13 |
 | Error safety | Stable envelope, sanitized validation issues, hidden internal messages, request correlation | Verified foundation | `test_http_foundation.py` |
@@ -62,13 +62,13 @@ Legend: **Verified M7** means the implemented subset passed local automated/manu
 | Secrets | Secret-valued config, digest-only auth state, ephemeral GitHub tokens, askpass token outside argv/storage/logs | Verified M3 | Config/token/log/persistence/clone-argv tests; final log scan recorded in build report |
 | Agent/tool boundary | Immutable three-tool registry; strict arguments/decisions; four-call, eight-second/tool, total-time, byte, caller-result, and output ceilings; no shell/arbitrary network/write/secret/SQL tools | Verified M8 | Agent schema, graph authorization, timeout, cancellation, repetition, cap, and prompt-injection tests |
 | GitHub history | One-repository ephemeral token, fixed API paths, bounded retries/data, validated GitHub/repository identity, no persistence | Mock-verified M7 | GitHub client/tool/API integration tests; live GitHub App still pending |
-| Observability | Structured IDs/fingerprints/timing/status/counts without questions, commit/PR bodies, patches, prompts, answers, provider bodies, paths/content, vectors, or secrets | Verified M7 | Backend/service logging tests plus actual API/model log inspection |
+| Observability | Structured IDs/fingerprints/timing/mode/status/counts without webhook bodies, questions, commit/PR bodies, patches, prompts, answers, paths/content, vectors, URLs, or secrets | Verified M9 local | Logging tests plus controlled API/worker inspection |
 | Containers | Hashed install, supported Debian 13/Python 3.13.14, non-root API/worker/model runtime, fixed High/Critical scan | Verified M5 subset | Local Podman builds/inspection and socket-free Grype archive scans; hosted hardening later |
 | Headers | API CSP, production HSTS, nosniff, frame, referrer, permissions policy | Verified foundation | `test_http_foundation.py`, live curl headers |
-| Deletion | Durable retryable purge across all stores | Planned | Milestone 9 |
+| Deletion | Immediate authorization denial; durable final purge across stores | Partial | Access boundary verified M9; final deletion SLA remains Milestone 13 |
 | Supply chain | Locked dependencies, Dependabot, audit, minimal workflow permissions | Verified foundation | Hashed locks, `pip-audit`, CI inspection; hosted CI run pending |
 
-## Implemented controls through Milestone 8
+## Implemented controls through Milestone 9
 
 - `DATABASE_URL` is a Pydantic `SecretStr`; safe configuration summaries never contain it.
 - Configuration accepts only `postgresql+asyncpg` plus Redis/Redis-TLS URLs and applies stricter production validation: non-local credentialed database, authenticated `rediss://`, JSON logs, disabled interactive docs, explicit trusted hosts, HTTPS CORS/callback origins, minimum authentication-secret lengths, absolute Git path, and PEM-shaped GitHub App key material.
@@ -89,6 +89,12 @@ Legend: **Verified M7** means the implemented subset passed local automated/manu
 - GitHub requests use fixed destinations, no redirects, five-second timeouts, bounded pagination, and server-owned URL construction. Installation tokens request only read access to metadata, contents, and pull requests and are never persisted.
 - Installation/repository queries require an active undeleted installation and fresh actor membership. Repository synchronization repeats authorization after network I/O. Stale and cross-tenant access fails closed without disclosing existence.
 - Webhooks authenticate the exact raw body with constant-time HMAC comparison before parsing, limit bodies to 1 MiB, validate delivery/event headers, and deduplicate through a unique PostgreSQL insert.
+- Delivery rows retain only bounded event/action, GitHub numeric identities, trusted internal repository/job references, ref, before/after SHA, timestamps, retry count, state, and safe error category. Raw payloads, patches, commit messages, paths, tokens, and credentials are not stored.
+- Push scheduling row-locks the server-owned repository, accepts only its current default-branch ref, derives installation/repository authorization from active relational rows, and increments a monotonic refresh generation. A valid signature alone cannot authorize or make a replay current.
+- Workers mint a short-lived token restricted to the already authorized GitHub repository, call only the fixed compare path, and clone the independently resolved default-branch head. Provider/payload URLs and credentials are never accepted.
+- Comparison paths reject absolute, traversal, NUL, backslash, overlong, or malformed rename values. Incomplete, unsafe, unavailable, non-fast-forward, forced, unanchored, over-count, or over-byte deltas select a complete rebuild instead of guessed reuse.
+- Incremental builds never mutate active state. Reused vectors require exact prior repository/version/commit/path/type/hash/location/qualified/model/preprocessing identity and are copied under the new scope. Every delete/count/scroll/upsert/validation remains installation/repository/version scoped.
+- Activation rechecks authorization, repository branch, job lease, refresh generation, inactive build readiness, vector count/metadata, and graph validation. A newer event/manual refresh marks older work stale or superseded and cleans only its inactive version.
 - Installation and repository revocation is committed before webhook acknowledgement. Worker authorization reload refuses a suspended/deleted installation, stale/missing membership, or revoked/deleted repository before token minting or clone.
 - Repository selection re-lists current installation repositories using a fresh server-only installation token, locks the selected PostgreSQL row, creates at most one initial job, commits before Redis, and exposes no tenant existence on denial.
 - Redis Streams carries one `job_id` field. Conditional PostgreSQL claims, a partial unique active-job index, heartbeat, bounded retry, abandoned recovery, and reconciliation provide duplicate/concurrent/restart safety.
@@ -144,9 +150,9 @@ Every milestone updates this file with implementation and executed evidence. Mil
 
 ## Current security posture
 
-The verified Milestone 8 subset provides authentication, authorization, durable full ingestion, private embeddings, scoped active-version retrieval, validated static caller persistence, bounded code/history/caller orchestration, prompt separation, mixed citation integrity, refusal behavior, and content-minimizing traces/logs. It is not a complete public SaaS boundary: static calls are not runtime truth; hosted LLM/GitHub behavior, deployment/private networking, rate/usage controls, backup/restore, alerting, deletion, and incremental freshness remain absent or unverified.
+The verified Milestone 9 subset provides authentication, authorization, signed content-free delivery ingestion, durable generation-ordered refresh jobs, complete inactive replacements, exact-scope vector reuse, private embeddings, scoped active-version retrieval, validated static caller persistence, bounded code/history/caller orchestration, and content-minimizing traces/logs. It is not a complete public SaaS boundary: controlled fixtures are not live GitHub reliability evidence; static calls are not runtime truth; hosted LLM behavior, deployment/private networking, rate/usage controls, backup/restore, alerting, and final data purge remain absent or unverified.
 
-## Milestone 8 call-graph controls and limits
+## Milestone 8/9 call-graph controls and limits
 
 - Call extraction runs inside the existing resource-limited child and uses Tree-sitter only. It never imports, evaluates, tests, builds, or invokes connected code.
 - Per-file call sites, repository call sites, call-expression bytes, process CPU/memory, and wall time are validated. Exceeding a repository bound fails safely; oversized/unsupported file-level data is classified without logging source.

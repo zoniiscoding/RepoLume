@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import ClassVar, Protocol, TypeAlias, TypeVar
+from typing import ClassVar, Protocol, TypeAlias, TypeVar, cast
 
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.conversions.common_types import PointId
@@ -68,6 +68,16 @@ class VectorStoreProtocol(Protocol):
     async def upsert(self, scope: VectorScope, records: Sequence[VectorRecord]) -> None: ...
 
     async def count_scope(self, scope: VectorScope) -> int: ...
+
+    async def reusable_vectors(
+        self,
+        scope: VectorScope,
+        *,
+        prepared: Sequence[PreparedEmbedding],
+        commit_sha: str,
+        model_fingerprint: str,
+        preprocessing_fingerprint: str,
+    ) -> dict[str, tuple[float, ...]]: ...
 
     async def search(
         self,
@@ -373,6 +383,95 @@ class QdrantVectorStore:
             code="qdrant_validation_failed",
         )
         return result.count
+
+    async def reusable_vectors(
+        self,
+        scope: VectorScope,
+        *,
+        prepared: Sequence[PreparedEmbedding],
+        commit_sha: str,
+        model_fingerprint: str,
+        preprocessing_fingerprint: str,
+    ) -> dict[str, tuple[float, ...]]:
+        """Load compatible old vectors by content identity under an exact source scope."""
+        wanted: dict[tuple[object, ...], str] = {}
+        for document in prepared:
+            chunk = document.chunk
+            if chunk is None:
+                raise ValueError("missing_chunk_metadata")
+            wanted[
+                (
+                    chunk.file_path,
+                    chunk.chunk_type.value,
+                    chunk.content_hash,
+                    chunk.start_line,
+                    chunk.end_line,
+                    chunk.qualified_name,
+                    document.fingerprint,
+                )
+            ] = document.item_id
+        result: dict[str, tuple[float, ...]] = {}
+        offset: PointId | None = None
+        while True:
+            records, next_offset = await self._run(
+                partial(
+                    self._client.scroll,
+                    collection_name=self._collection,
+                    scroll_filter=retrieval_filter(
+                        scope,
+                        commit_sha=commit_sha,
+                        model_fingerprint=model_fingerprint,
+                        preprocessing_fingerprint=preprocessing_fingerprint,
+                    ),
+                    limit=min(self._batch_size, 256),
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=True,
+                    timeout=self._timeout,
+                ),
+                code="qdrant_reuse_failed",
+            )
+            for record in records:
+                payload = record.payload or {}
+                key = (
+                    payload.get("file_path"),
+                    payload.get("chunk_type"),
+                    payload.get("stable_chunk_hash"),
+                    payload.get("start_line"),
+                    payload.get("end_line"),
+                    payload.get("qualified_symbol_name"),
+                    payload.get("preprocessing_fingerprint"),
+                )
+                item_id = wanted.get(key)
+                vector = record.vector
+                if item_id is None:
+                    continue
+                if (
+                    not isinstance(vector, list)
+                    or len(vector) != self._dimension
+                    or any(
+                        not isinstance(value, int | float) or not math.isfinite(value)
+                        for value in vector
+                    )
+                ):
+                    raise IndexingError(
+                        code="qdrant_reuse_invalid",
+                        message="A reusable vector failed validation",
+                        retryable=False,
+                    )
+                typed = tuple(float(value) for value in cast(list[float], vector))
+                norm = math.sqrt(sum(value * value for value in typed))
+                if not math.isclose(norm, 1.0, rel_tol=1e-4, abs_tol=1e-4):
+                    raise IndexingError(
+                        code="qdrant_reuse_invalid",
+                        message="A reusable vector failed validation",
+                        retryable=False,
+                    )
+                result[item_id] = typed
+            if next_offset is None:
+                break
+            offset = next_offset
+        return result
 
     async def search(
         self,

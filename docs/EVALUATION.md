@@ -1,12 +1,14 @@
 # RepoLume Evaluation
 
-**Status:** The Milestone 6 and 7 baselines remain unchanged. Milestone 8 adds a separate static-caller corpus, caller/exact/ambiguity/unresolved/isolation metrics, and graph/caller regressions. Fixture-contract observations are structural expectations with `null` latency; they are not live GitHub, hosted-LLM, runtime-call, or representative accuracy evidence.
+**Status:** Milestone 6–8 baselines remain unchanged. Milestone 9 adds a separate 30-case freshness corpus and content-free metrics for changed-file classification, mode/delivery selection, activation/preservation, graph/citation freshness, retries, determinism, and leakage. Fixture-contract observations are structural expectations with `null` latency; they are not live GitHub reliability, hosted-LLM quality, or production performance evidence.
 
 ## Controlled corpus
 
 `backend/evaluation/milestone6_cases.json` contains the original 20 cases over the committed Milestone 4 synthetic fixture and a separately scoped confusing repository. Its history case remains labelled unsupported because it records the Milestone 6 baseline and is not retroactively changed.
 
 `backend/evaluation/milestone7_cases.json` remains the unchanged 27-case code/history baseline. `backend/evaluation/milestone8_cases.json` adds 20 contracts spanning same-file/direct/aliased/qualified/nested/constructor/method calls; probable, unresolved, duplicate-target, not-found, inactive-version, and cross-repository behavior; caller+code/history, impact wording, injection-shaped evidence, tool-loop resistance, runtime refusal, and fabricated citations. Cases contain expected paths/symbols/tool/citation types and caller identities without private repository content.
+
+`backend/evaluation/milestone9_cases.json` adds exactly 30 named contracts: modified/added/deleted/renamed Python, changed imports, graph edge add/remove, ambiguity introduce/resolve, non-Python/ignored changes, unsupported-to-supported, duplicate/stale/out-of-order/force/non-default/replay/concurrent deliveries, full fallbacks, failed-active preservation, revocation before processing/activation, cross-repository mismatch, traversal, injection-shaped source, old-citation exclusion, deterministic repeat, manual conflict, and oversized comparison. The paired fixture artifact contains 31 observations because the deterministic case is repeated.
 
 Coverage includes exact/similar/nested symbols, semantic implementation, signatures/decorators, behavior answerable from code, Markdown/plain documentation, Unicode, malformed-file recovery, prompt-injection-shaped documentation, missing symbols, runtime/external state, Git history reserved for Milestone 7, caller analysis reserved for Milestone 8, static-analysis limits, and a cross-repository distractor. The controlled search index contains four active fixture chunks; separate scopes contain a confusing other-repository chunk and an inactive-version distractor.
 
@@ -15,6 +17,8 @@ This corpus is synthetic, redistributable with this repository, and deliberately
 ## Harness and metrics
 
 `app.rag.evaluation` validates case/observation schemas and computes structural metrics without exact answer-text matching. Observation artifacts contain case IDs, paths, counts, answer states, content-free response fingerprints, leakage flags, claim counts, and latency only; they contain no question text, source, evidence excerpts, prompts, answers, embeddings, or credentials.
+
+`app.indexing.evaluation` separately validates freshness case/observation schemas. Its observations contain only case ID, mode, delivery state, changed-type counts, activation/preservation/retry booleans, graph/citation/leakage flags, a content-free fingerprint, optional latency, and an explicit `observed` or `fixture_contract` label.
 
 | Metric | Calculation |
 | --- | --- |
@@ -45,6 +49,9 @@ PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
 PYTHONPATH=backend .venv/bin/python -m app.rag.evaluation \
   --cases backend/evaluation/milestone8_cases.json \
   --observations backend/evaluation/milestone8_fixture_observations.json
+PYTHONPATH=backend .venv/bin/python -m app.indexing.evaluation \
+  --cases backend/evaluation/milestone9_cases.json \
+  --observations backend/evaluation/milestone9_fixture_observations.json
 ```
 
 ## Milestone 6 controlled baseline
@@ -75,14 +82,20 @@ Date: 2026-07-18. Runtime: Python 3.13.14 on local Apple Silicon. The complete b
 
 The 27-case Milestone 7 file and its explicitly labelled `fixture_contract` observations are schema-tested in CI and exercise every metric without inventing latency. These fixtures are structural expected outcomes, not observations from a live GitHub App or hosted model. Unit/integration fixtures establish tool selection and citation validity; they do not establish universal answer accuracy, historical exhaustiveness, semantic causation, latency under GitHub load, or provider quality.
 
+## Milestone 9 freshness contract
+
+The 30 cases and 31 explicitly labelled `fixture_contract` observations produce 1.0 for changed-file classification, mode selection, delivery state, activation, active preservation, retry classification, graph freshness, citation freshness, and deterministic consistency; old-version and cross-repository leakage counts are zero. All 31 observations are fixture contracts and both latency values are `null`. These are schema-checked expected invariants backed by independent unit/integration tests, not 100% claims about real GitHub delivery reliability or arbitrary repositories.
+
+The controlled signed A-to-B integration independently indexes commit A, answers against A, applies a signed push that modifies/renames/adds/deletes files and changes callers, proves A remains queryable while B is queued, creates a complete inactive B, selectively reuses/re-embeds vectors, rebuilds/validates the graph, atomically activates B, verifies current citations/callers and old-path exclusion, and rejects replay. GitHub comparison/token responses and agent/embedding behavior are deterministic fixtures in that test; a separate integration still exercises the real private embedding service.
+
 ## Limits and next evaluation work
 
 Milestone 8's 20 explicitly labelled `fixture_contract` observations exercise caller precision/recall, exact-edge precision, ambiguity/unresolved classifications, repository/active-version isolation, mixed tool selection, runtime refusal, loop bounds, injection resistance, and fabricated-citation rejection. All fixture metrics are deterministic structural labels; latency is intentionally `null`. Unit/integration tests independently exercise Tree-sitter extraction, conservative resolution, PostgreSQL graph lifecycle, authorization, active-version filtering, and API citations.
 
 - No real OpenAI request ran, so hosted answer faithfulness, refusal quality, token/cost behavior, provider latency, and rate-limit behavior remain pending.
-- Repeatable local container verification remains blocked by contradictory Podman VM/socket state. Milestone 7 hosted run `29650105386` passed for `54f847c`; no Milestone 8 hosted run exists because this local commit is not pushed.
+- Repeatable local container verification remains blocked by contradictory Podman VM/socket state and was not retried. Milestone 8 hosted run `29652564767` passed for `8f222dd2e9a7675c098cca4bd3687916a99461d3`; no Milestone 9 hosted run exists because this local commit is not pushed.
 - The fixture is four active whole-file vectors plus isolated distractors, not a representative repository population or load test.
 - Citation precision and unsupported-claim labels are deterministic structural labels in this baseline; independent human/provider evaluation remains necessary before launch.
-- No runtime-call recall, MRR, p95/p99 latency, multilingual breadth, long-context capacity, freshness, representative caller quality, or end-user usefulness score is claimed.
+- No live delivery-loss rate, event-to-activation distribution, runtime-call recall, MRR, p95/p99 latency, multilingual breadth, long-context capacity, representative freshness/caller quality, or end-user usefulness score is claimed.
 - A controlled live GitHub App plus hosted-model run must produce content-free Milestone 7 observations before launch; do not synthesize or hand-author performance observations.
-- Milestone 9 must evaluate incremental graph freshness and active-version transitions without relabelling Milestone 6–8 records; Milestone 9 is not implemented.
+- Live GitHub App delivery/ordering/rate-limit behavior, representative large-repository change sets, and failure-recovery latency require external acceptance before launch. Milestone 10 frontend work has not started.

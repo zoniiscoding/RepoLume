@@ -206,7 +206,12 @@ class QuestionService:
 
     async def _load_active_index(self, repository: Repository) -> ActiveIndex | None:
         if (
-            repository.indexing_status is not RepositoryIndexingStatus.COMPLETE
+            repository.indexing_status
+            in {
+                RepositoryIndexingStatus.NOT_INDEXED,
+                RepositoryIndexingStatus.ACCESS_REVOKED,
+                RepositoryIndexingStatus.DELETING,
+            }
             or repository.index_version < 1
             or repository.last_indexed_commit_sha is None
             or repository.active_vector_count < 1

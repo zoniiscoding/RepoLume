@@ -11,6 +11,7 @@ from app.core.config import Settings
 from app.db.models.enums import (
     IndexingJobStatus,
     IndexingJobType,
+    IndexingMode,
     InstallationStatus,
     RepositoryIndexingStatus,
 )
@@ -107,6 +108,8 @@ class RepositoryService:
                     job_type=IndexingJobType.INITIAL_INDEX,
                     status=IndexingJobStatus.QUEUED,
                     stage="queued",
+                    target_branch=locked_repository.default_branch,
+                    refresh_generation=locked_repository.refresh_generation,
                 )
                 session.add(job)
                 locked_repository.indexing_status = RepositoryIndexingStatus.QUEUED
@@ -140,6 +143,47 @@ class RepositoryService:
             )
         except InstallationAccessError as error:
             raise RepositoryAccessError from error
+
+    async def reindex(
+        self,
+        *,
+        user_id: uuid.UUID,
+        repository_id: uuid.UUID,
+    ) -> RepositoryJob:
+        """Create a server-scoped full refresh that supersedes older generations."""
+        await self.get_authorized(user_id=user_id, repository_id=repository_id)
+        async with self._database.session() as session:
+            repository = await session.get(Repository, repository_id, with_for_update=True)
+            if repository is None:
+                raise RepositoryAccessError
+            repository.refresh_generation += 1
+            job = IndexingJob(
+                repository_id=repository.id,
+                requested_by_user_id=user_id,
+                job_type=IndexingJobType.MANUAL_REINDEX,
+                status=IndexingJobStatus.QUEUED,
+                stage="queued",
+                target_commit_sha=repository.current_remote_sha,
+                target_branch=repository.default_branch,
+                requested_mode=IndexingMode.FULL,
+                full_rebuild_reason="manual_reindex",
+                refresh_generation=repository.refresh_generation,
+            )
+            session.add(job)
+            repository.indexing_status = RepositoryIndexingStatus.QUEUED
+            repository.indexing_progress = 0
+            repository.indexing_stage = "queued_full_rebuild"
+            await session.flush()
+            await session.commit()
+        await self._queue.enqueue(job.id)
+        async with self._database.session() as session:
+            await session.execute(
+                update(IndexingJob)
+                .where(IndexingJob.id == job.id)
+                .values(last_enqueued_at=datetime.now(UTC))
+            )
+            await session.commit()
+        return RepositoryJob(repository=repository, job=job)
 
     async def get_status(
         self,
