@@ -13,6 +13,7 @@ from pydantic import SecretStr
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.agent.models import AgentDecision, AgentGenerationRequest
 from app.application import create_app
 from app.auth.tokens import TokenService
 from app.db.models.call_edge import CallEdge
@@ -42,6 +43,7 @@ from app.llm.client import (
     GroundedAnswerDraft,
     GroundedGenerationRequest,
 )
+from app.rag.models import Answerability, AnswerUncertainty
 from app.vector.qdrant import RetrievalHit, VectorScope
 from tests.conftest import make_settings
 
@@ -194,6 +196,16 @@ class FakeLLM:
             answer="The validate function returns the response validity flag.",
             answerability=DraftAnswerability.ANSWERED,
             uncertainty=DraftUncertainty.LOW,
+            evidence_ids=self.evidence_ids,
+        )
+
+    async def decide(self, request: AgentGenerationRequest) -> AgentDecision:
+        del request
+        return AgentDecision(
+            action="final",
+            answer="The validate function returns the response validity flag.",
+            answerability=Answerability.ANSWERED,
+            uncertainty=AnswerUncertainty.LOW,
             evidence_ids=self.evidence_ids,
         )
 
