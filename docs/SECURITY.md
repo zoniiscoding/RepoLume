@@ -1,6 +1,6 @@
 # RepoLume Security
 
-**Status:** Milestone 11 completed the repository security/privacy review and locally verified its remediations. Exact hosted CI for the uncommitted audit work, live GitHub App/hosted-LLM behavior, deployment, final cross-store deletion, and hosted production controls remain unverified; see `SECURITY_AUDIT_M11.md`.
+**Status:** Milestone 11 completed the repository security/privacy review and its remediations passed hosted CI. Milestone 12 deployment-source hardening passed hosted CI run `29945450738`; live GitHub App/hosted-LLM behavior, deployment, final cross-store deletion, and hosted production controls remain unverified; see `SECURITY_AUDIT_M11.md` and `DEPLOYMENT_M12.md`.
 
 ## Security invariants
 
@@ -63,10 +63,10 @@ Legend: **Verified M7** means the implemented subset passed local automated/manu
 | Agent/tool boundary | Immutable three-tool registry; strict arguments/decisions; four-call, eight-second/tool, total-time, byte, caller-result, and output ceilings; no shell/arbitrary network/write/secret/SQL tools | Verified M8 | Agent schema, graph authorization, timeout, cancellation, repetition, cap, and prompt-injection tests |
 | GitHub history | One-repository ephemeral token, fixed API paths, bounded retries/data, validated GitHub/repository identity, no persistence | Mock-verified M7 | GitHub client/tool/API integration tests; live GitHub App still pending |
 | Observability | Structured IDs/fingerprints/timing/mode/status/counts without webhook bodies, questions, commit/PR bodies, patches, prompts, answers, paths/content, vectors, URLs, or secrets | Verified M9 local | Logging tests plus controlled API/worker inspection |
-| Containers | Hashed install, supported Debian 13/Python 3.13.14, non-root API/worker/model runtime, fixed High/Critical scan | Verified M5 subset | Local Podman builds/inspection and socket-free Grype archive scans; hosted hardening later |
+| Containers | Hashed install, digest-pinned Debian 13/Python 3.13.14 base, non-root API/worker/model runtime, fixed High/Critical scan | Verified M12 source/CI | Hosted run `29945450738` built both images, verified all three runtime roles, and passed all three configured scans; deployed-image identity is pending |
 | Headers | API CSP, production HSTS, nosniff, frame, referrer, permissions policy | Verified foundation | `test_http_foundation.py`, live curl headers |
 | Deletion | Immediate authorization denial; durable final purge across stores | Partial | Access boundary verified M9; final deletion SLA remains Milestone 13 |
-| Supply chain | Locked dependencies, Dependabot, audit, minimal workflow permissions | Verified foundation | Hashed locks, `pip-audit`, CI inspection; hosted CI run pending |
+| Supply chain | Locked dependencies, Dependabot, audit, minimal workflow permissions | Verified M12 source/CI | Hashed locks, Python/npm audits, immutable actions, and hosted run `29945450738` passed |
 
 ## Implemented controls through Milestone 9
 
@@ -177,7 +177,7 @@ The source-side deployment deferrals are closed: both production images pin the 
 
 Least privilege is narrower than Milestone 11. `SERVICE_ROLE=worker` omits GitHub OAuth/webhook, RepoLume session/hash, Google, and hosted-LLM secrets. Alembic loads only the direct migration database URL. Production plaintext service URLs are not generally allowed: the sole exception is an authenticated explicit-port exact Railway private hostname on its encrypted mesh. Suffix-lookalike tests fail closed. Public Qdrant/Neon/OAuth/LLM traffic retains TLS and exact-destination validation.
 
-No production secret, provider resource, public domain, edge header, private-network exposure, image scan for these changes, backup, alert, live OAuth, webhook, GitHub repository, or hosted-model flow has been verified. The M11 deletion/retention limitation remains. Production launch is blocked until `DEPLOYMENT_M12.md` acceptance and recovery evidence exists.
+No production secret, provider resource, public domain, live edge header, private-network exposure, deployed-image identity, backup, alert, live OAuth, webhook, GitHub repository, or hosted-model flow has been verified. Source-image CI scans passed in run `29945450738`; that is not evidence about a deployed artifact. The M11 deletion/retention limitation remains. Production launch is blocked until `DEPLOYMENT_M12.md` acceptance and recovery evidence exists.
 
 ## Milestone 8/9 call-graph controls and limits
 

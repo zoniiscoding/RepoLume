@@ -4,7 +4,7 @@
 
 **Authorized milestone:** Milestone 12 — production deployment
 
-**Overall status:** Milestone 11 is complete at `246455ca22f2a995c4047a05a84ac91c74db7d5f`, whose hosted CI run `29939543437` and all four required jobs passed. Milestone 12 repository-side deployment hardening is implemented and locally verified; hosted CI for these changes is pending. External infrastructure and live acceptance are blocked because this workspace has no Vercel/Railway linkage, no Neon/Qdrant/managed-Redis credentials, no production domains, and no hosted-model credential. Milestone 12 is not complete.
+**Overall status:** Milestone 11 is complete at `246455ca22f2a995c4047a05a84ac91c74db7d5f`. Milestone 12 repository-side deployment hardening is implemented at `9e55be049aabbe257be796c88591689697a8edb8`; hosted CI run `29945450738` passed all four required jobs. External infrastructure and live acceptance are blocked because this workspace has no Vercel/Railway linkage, no Neon/Qdrant/managed-Redis credentials, no production domains, and no hosted-model credential. Milestone 12 is not complete.
 
 **Production readiness:** Not production-ready. Production manifests, release automation, browser CSP, digest-pinned base images, secret-role separation, deliberate migrations, and smoke checks now exist in source. No public frontend/API or private worker/embedding service is deployed; no managed data store, alert, backup/restore drill, worker-restart drill, live authorized indexing, live deletion, GitHub/Google callback, webhook, or Gemini request has been verified.
 
@@ -31,8 +31,9 @@
 | Frontend | Clean `npm ci`; formatting/lint/build passed; 22 Vitest tests and 8 Chromium tests passed |
 | Dependency integrity/audits | `pip check` passed; both Python production lock audits and npm audit reported no known vulnerabilities |
 | Railway manifests | All three parsed and validated against Railway's live official JSON schema |
+| Hosted CI | Run `29945450738` passed all four jobs: backend 447 passed at 90.74% branch-aware coverage; embedding service 15 passed at 92.53%; frontend 22 Vitest and 8 Chromium tests passed; locked dependency audits passed |
 | Production deployment/live smoke | Blocked: provider accounts, resources, secrets, IDs, domains, and billing authorization are unavailable |
-| Container build/scan for these changes | Pending hosted CI; local container runtime was not repaired or retried |
+| Container build/scan for these changes | Hosted CI built the API/worker and embedding images, verified non-root/runtime entrypoints, and passed the configured backend, worker, and embedding vulnerability scans; local container runtime was not repaired or retried |
 
 The first frontend build used a contaminated pre-existing `node_modules` containing duplicate suffixed type directories and failed. A clean locked `npm ci` removed that local contamination; the exact build then passed without source or lockfile changes. The first embedding test command used service-runtime variables rather than the test suite's `REPOLUME_TEST_MODEL_CACHE`; the exact CI environment passed. Sandbox DNS initially blocked npm/Python advisory queries; approved network reruns passed.
 
