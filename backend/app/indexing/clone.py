@@ -167,7 +167,7 @@ class GitHubRepositoryCloner:
                 commit_sha=commit_sha,
             )
         except BaseException:
-            shutil.rmtree(workspace, ignore_errors=True)
+            self._remove_workspace(workspace)
             raise
 
     @staticmethod
@@ -301,4 +301,23 @@ class GitHubRepositoryCloner:
 
     @staticmethod
     def cleanup(cloned: ClonedRepository) -> None:
-        shutil.rmtree(cloned.workspace, ignore_errors=True)
+        GitHubRepositoryCloner._remove_workspace(cloned.workspace)
+
+    @staticmethod
+    def _remove_workspace(workspace: Path) -> None:
+        try:
+            shutil.rmtree(workspace)
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise IndexingError(
+                code="clone_cleanup_failed",
+                message="Repository clone cleanup failed",
+                retryable=True,
+            ) from error
+        if workspace.exists():
+            raise IndexingError(
+                code="clone_cleanup_failed",
+                message="Repository clone cleanup failed",
+                retryable=True,
+            )

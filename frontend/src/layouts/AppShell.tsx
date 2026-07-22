@@ -6,6 +6,7 @@ import type { Repository } from "../api/contracts";
 import { useAuth } from "../auth/useAuth";
 import { StatusBadge } from "../components/StatusBadge";
 import { Button } from "../components/ui";
+import { trustedAvatarUrl } from "../utils/format";
 
 function SidebarLink({
   to,
@@ -32,6 +33,7 @@ export function AppShell(): React.JSX.Element {
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
+  const avatarUrl = trustedAvatarUrl(user?.avatar_url);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -107,8 +109,8 @@ export function AppShell(): React.JSX.Element {
         </div>
         <div className="sidebar__user">
           <div className="user-summary">
-            {user?.avatar_url ? (
-              <img alt="" src={user.avatar_url} />
+            {avatarUrl ? (
+              <img alt="" referrerPolicy="no-referrer" src={avatarUrl} />
             ) : (
               <span className="avatar-fallback">
                 {(user?.github_login ?? user?.display_name ?? "R").slice(0, 1).toUpperCase()}

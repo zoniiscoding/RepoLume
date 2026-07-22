@@ -37,12 +37,19 @@ from app.queue import JobQueueProtocol, QueueUnavailableError
 
 DELIVERY_PATTERN = re.compile(r"^[A-Za-z0-9-]{1,255}$")
 EVENT_PATTERN = re.compile(r"^[a-z_]{1,64}$")
+SIGNATURE_PATTERN = re.compile(r"^sha256=[0-9a-f]{64}$")
 SUPPORTED_EVENTS = {
     "installation",
     "installation_repositories",
     "push",
     "repository",
 }
+INSTALLATION_ACTIONS = frozenset({"created", "deleted", "suspend", "unsuspend"})
+INSTALLATION_REPOSITORY_ACTIONS = frozenset({"added", "removed"})
+REPOSITORY_ACTIONS = frozenset(
+    {"archived", "deleted", "edited", "privatized", "publicized", "renamed", "unarchived"}
+)
+MAX_REPOSITORIES_PER_DELIVERY = 500
 
 
 class WebhookSignatureError(ValueError):
@@ -51,6 +58,10 @@ class WebhookSignatureError(ValueError):
 
 class WebhookPayloadError(ValueError):
     """Raised for invalid headers or signed-but-malformed JSON."""
+
+
+class WebhookMediaTypeError(ValueError):
+    """Raised after authentication for a non-JSON webhook body."""
 
 
 class GitHubRepositoryReference(BaseModel):
@@ -66,8 +77,12 @@ class GitHubWebhookPayload(BaseModel):
     installation: GitHubInstallationData | None = None
     sender: GitHubUser | None = None
     repository: GitHubRepository | None = None
-    repositories_added: list[GitHubRepository] = Field(default_factory=list)
-    repositories_removed: list[GitHubRepositoryReference] = Field(default_factory=list)
+    repositories_added: list[GitHubRepository] = Field(
+        default_factory=list, max_length=MAX_REPOSITORIES_PER_DELIVERY
+    )
+    repositories_removed: list[GitHubRepositoryReference] = Field(
+        default_factory=list, max_length=MAX_REPOSITORIES_PER_DELIVERY
+    )
     ref: str | None = Field(
         default=None,
         pattern=r"^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$",
@@ -93,21 +108,25 @@ class WebhookService:
 
     def verify_signature(self, body: bytes, signature: str | None) -> None:
         """Authenticate the exact raw bytes with GitHub's HMAC-SHA256 contract."""
-        if signature is None or not signature.startswith("sha256="):
+        if signature is None or SIGNATURE_PATTERN.fullmatch(signature) is None:
             raise WebhookSignatureError
         expected = "sha256=" + hmac.new(self._secret, body, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(expected, signature):
             raise WebhookSignatureError
 
-    async def handle(  # noqa: PLR0912 -- authentication and durable ack policy are centralized
+    async def handle(
         self,
         *,
         body: bytes,
         signature: str | None,
         delivery_id: str | None,
         event_name: str | None,
+        content_type: str | None,
     ) -> Literal["accepted", "duplicate", "ignored"]:
         self.verify_signature(body, signature)
+        media_type = content_type.partition(";")[0].strip().lower() if content_type else ""
+        if media_type != "application/json":
+            raise WebhookMediaTypeError
         if (
             delivery_id is None
             or DELIVERY_PATTERN.fullmatch(delivery_id) is None
@@ -119,10 +138,7 @@ class WebhookService:
             payload = GitHubWebhookPayload.model_validate(json.loads(body))
         except (json.JSONDecodeError, TypeError, ValidationError) as error:
             raise WebhookPayloadError from error
-        if event_name in SUPPORTED_EVENTS and payload.installation is None:
-            raise WebhookPayloadError
-        if event_name in {"push", "repository"} and payload.repository is None:
-            raise WebhookPayloadError
+        self._validate_supported_payload(event_name, payload)
 
         github_installation_id = payload.installation.id if payload.installation else None
         github_repository_id = payload.repository.id if payload.repository else None
@@ -181,6 +197,64 @@ class WebhookService:
                     )
                     await session.commit()
         return "accepted"
+
+    @staticmethod
+    def _validate_supported_payload(
+        event_name: str,
+        payload: GitHubWebhookPayload,
+    ) -> None:
+        if event_name not in SUPPORTED_EVENTS:
+            return
+        if payload.installation is None:
+            raise WebhookPayloadError
+        if event_name == "installation":
+            if (
+                payload.action not in INSTALLATION_ACTIONS
+                or payload.repository is not None
+                or payload.repositories_added
+                or payload.repositories_removed
+                or payload.ref is not None
+                or payload.before is not None
+                or payload.after is not None
+            ):
+                raise WebhookPayloadError
+            return
+        if event_name == "installation_repositories":
+            added = payload.action == "added"
+            removed = payload.action == "removed"
+            if (
+                payload.action not in INSTALLATION_REPOSITORY_ACTIONS
+                or payload.repository is not None
+                or payload.ref is not None
+                or payload.before is not None
+                or payload.after is not None
+                or (added and (not payload.repositories_added or payload.repositories_removed))
+                or (removed and (not payload.repositories_removed or payload.repositories_added))
+            ):
+                raise WebhookPayloadError
+            return
+        if event_name == "push":
+            if (
+                payload.action is not None
+                or payload.repository is None
+                or payload.ref is None
+                or payload.before is None
+                or payload.after is None
+                or payload.repositories_added
+                or payload.repositories_removed
+            ):
+                raise WebhookPayloadError
+            return
+        if (
+            payload.action not in REPOSITORY_ACTIONS
+            or payload.repository is None
+            or payload.repositories_added
+            or payload.repositories_removed
+            or payload.ref is not None
+            or payload.before is not None
+            or payload.after is not None
+        ):
+            raise WebhookPayloadError
 
     async def _apply_event(
         self,

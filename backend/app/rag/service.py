@@ -110,6 +110,7 @@ class QuestionService:
         repository = await self._installations.get_authorized_repository(
             user_id=user_id,
             repository_id=repository_id,
+            require_fresh_public_visibility=True,
         )
         active = await self._load_active_index(repository)
         if active is None:
@@ -166,6 +167,24 @@ class QuestionService:
                 state=Answerability.INSUFFICIENT_EVIDENCE,
                 active=active,
             )
+        current_repository = await self._installations.get_authorized_repository(
+            user_id=user_id,
+            repository_id=repository_id,
+            require_fresh_public_visibility=True,
+        )
+        current_active = await self._load_active_index(current_repository)
+        if (
+            current_repository.id != repository.id
+            or current_repository.installation_id != repository.installation_id
+            or current_repository.access_mode != repository.access_mode
+            or current_repository.github_repository_id != repository.github_repository_id
+            or current_active != active
+        ):
+            return self._no_answer(
+                repository_id=repository_id,
+                state=Answerability.TEMPORARILY_UNAVAILABLE,
+                repository=current_repository,
+            )
         try:
             draft = await self._llm.generate(self._prompt.build(question, evidence))
         except LLMProviderError as error:
@@ -184,6 +203,7 @@ class QuestionService:
         final_repository = await self._installations.get_authorized_repository(
             user_id=user_id,
             repository_id=repository_id,
+            require_fresh_public_visibility=True,
         )
         final_active = await self._load_active_index(final_repository)
         if final_active != active:

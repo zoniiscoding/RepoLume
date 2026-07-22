@@ -437,3 +437,43 @@ Decisions are append-only. If a decision changes, add a superseding entry instea
 - **Decision:** Keep indexing-pipeline integration deliveries on a test-only Redis stream and consumer group, and run browser verification through Playwright/Chromium with API interception only. Keep screenshots, traces, reports, and browser binaries out of Git.
 - **Rationale:** A developer worker using the production-named stream can otherwise claim a local test wakeup; browser tests need deterministic authenticated states without GitHub credentials or repository access.
 - **Consequence:** PostgreSQL remains the durable job authority and production queue semantics are unchanged. CI installs Chromium as a development test tool only; browser fixtures never call GitHub or execute connected content.
+
+## D-057 — Allowlist exact hosted-LLM endpoints and fail closed on production trust inputs
+
+- **Date:** 2026-07-22
+- **Status:** Accepted and implemented in Milestone 11
+- **Decision:** Production accepts only the exact reviewed OpenAI and Gemini-compatible API base URLs. It also requires explicit PostgreSQL TLS, credentialed TLS Redis, origin-only CORS/frontend values, exact trusted OAuth callback paths and hosts, complete hosted-model credentials, and non-placeholder critical secrets. Google ID tokens must have the configured client as the exact audience and, when present, authorized party.
+- **Rationale:** HTTPS alone does not establish the intended evidence recipient, and syntactically valid callbacks, secrets, or database URLs can still cross the wrong trust boundary.
+- **Consequence:** Self-hosted or alternate LLM gateways now require a reviewed code/configuration change. Development and test injection remain available, but production startup rejects unsafe ambiguity before constructing the app.
+
+## D-058 — Revalidate public visibility at every new disclosure boundary
+
+- **Date:** 2026-07-22
+- **Status:** Accepted and implemented in Milestone 11
+- **Decision:** Keep the visibility cache for low-risk listing/synchronization work, but bypass it for repository detail/status/reindex authorization and before, during, and after question/tool evidence disclosure. Require the same GitHub repository identity and active index throughout. Public vector sharing remains separate from each user's `user_repositories` membership.
+- **Rationale:** A repository can become private during the visibility TTL. Cached public state must not authorize a new source/evidence read or disclosure to an LLM.
+- **Consequence:** Public questions may make several bounded GitHub metadata checks and fail closed during provider outages. Removing one user's membership denies only that user and does not delete or grant the shared public index.
+
+## D-059 — Validate signed webhook semantics and delete clones before activation
+
+- **Date:** 2026-07-22
+- **Status:** Accepted and implemented in Milestone 11
+- **Decision:** A GitHub signature authenticates bytes but not supported semantics. Enforce exact signature syntax, JSON media type, event-specific action allowlists, field combinations, and repository-list bounds before durable dispatch. Treat clone deletion failure as a retryable safe error and require verified clone removal before any stale/completed terminal transition or index activation.
+- **Rationale:** Validly signed but unexpected actions must not reach broad event fallthrough, and private source residue must not be hidden by `ignore_errors=True` or coexist with a reported successful activation.
+- **Consequence:** Unsupported provider events return a safe invalid-request response. A filesystem cleanup failure prevents activation and requires operator remediation of the isolated worker volume.
+
+## D-060 — Defer deletion APIs until purge completion can be durable and cross-store
+
+- **Date:** 2026-07-22
+- **Status:** Accepted in Milestone 11; implementation deferred to Milestone 13
+- **Decision:** Preserve immediate authorization revocation and relational cascade behavior, but do not add a synchronous best-effort account/unlink/delete endpoint. The future operation must durably coordinate PostgreSQL identity/membership state, Qdrant scopes, job/build artifacts, and retry/verification state.
+- **Rationale:** Returning success before all sensitive stores are proven deleted would weaken the privacy contract and make partial failures unrecoverable.
+- **Consequence:** Account deletion, identity unlinking, automated retention, and a verified deletion SLA remain an explicit production-readiness blocker. Cross-user membership removal and access revocation are covered now.
+
+## D-061 — Pin CI actions and update every monorepo dependency ecosystem
+
+- **Date:** 2026-07-22
+- **Status:** Accepted and implemented in Milestone 11
+- **Decision:** Pin checkout and language-setup actions to verified immutable commits, retain the already pinned image scanner, and configure Dependabot for backend/embedding Python, frontend npm, both Dockerfiles, and GitHub Actions. Treat the API and worker as separately named/scanned artifacts even though they share one backend image.
+- **Rationale:** Floating action majors are privileged supply-chain inputs, and partial update coverage silently ages packages outside the backend.
+- **Consequence:** Dependency updates remain reviewable pull requests; production image digest pinning is deferred to the Milestone 12 deployment artifact where the target architecture and registry are known.

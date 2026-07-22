@@ -113,10 +113,16 @@ class GoogleOIDCClient:
             raise GoogleOIDCError from error
         nonce = claims.get("nonce")
         issuer = claims.get("iss")
+        audience = claims.get("aud")
+        authorized_party = claims.get("azp")
         if (
             not isinstance(nonce, str)
             or not hmac.compare_digest(nonce, expected_nonce)
             or issuer not in GOOGLE_ISSUERS
+            or audience != self._settings.google_client_id
+            or (
+                authorized_party is not None and authorized_party != self._settings.google_client_id
+            )
             or claims.get("email_verified") is not True
         ):
             raise GoogleOIDCError

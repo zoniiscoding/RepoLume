@@ -195,6 +195,13 @@ async def test_worker_completes_discovery_and_cleans_clone(tmp_path: Path) -> No
     store.authorized_context.return_value = job_context(claimed)
     delivery = QueueDelivery(delivery_id="1-0", job_id=claimed.id)
 
+    async def activate_after_cleanup(*args: object, **kwargs: object) -> int:
+        del args, kwargs
+        assert cloner.cleanup.called
+        return 0
+
+    store.activate.side_effect = activate_after_cleanup
+
     await worker.process_delivery(delivery)
 
     assert store.stage.await_count == 8
@@ -225,6 +232,32 @@ async def test_worker_completes_discovery_and_cleans_clone(tmp_path: Path) -> No
     discovery.discover.assert_called_once_with(tmp_path)
     cloner.cleanup.assert_called_once()
     queue.acknowledge.assert_awaited_once_with("1-0")
+
+
+@pytest.mark.asyncio
+async def test_worker_does_not_activate_or_mark_terminal_before_clone_cleanup(
+    tmp_path: Path,
+) -> None:
+    worker, queue, store, _, cloner, _ = worker_dependencies(tmp_path)
+    claimed = claimed_job()
+    store.claim.return_value = claimed
+    store.authorized_context.return_value = job_context(claimed)
+    cloner.cleanup.side_effect = IndexingError(
+        code="clone_cleanup_failed",
+        message="Repository clone cleanup failed",
+        retryable=True,
+    )
+
+    await worker.process_delivery(QueueDelivery(delivery_id="cleanup-failed", job_id=claimed.id))
+
+    store.activate.assert_not_awaited()
+    store.mark_stale.assert_not_awaited()
+    assert store.fail.await_args.kwargs == {
+        "code": "clone_cleanup_failed",
+        "safe_message": "Repository clone cleanup failed",
+        "retryable": True,
+    }
+    queue.acknowledge.assert_awaited_once_with("cleanup-failed")
 
 
 @pytest.mark.asyncio

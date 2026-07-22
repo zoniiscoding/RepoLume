@@ -249,6 +249,7 @@ class InstallationService:
         *,
         user_id: uuid.UUID,
         repository_id: uuid.UUID,
+        require_fresh_public_visibility: bool = False,
     ) -> Repository:
         async with self._database.session() as session:
             access_mode = await session.scalar(
@@ -256,7 +257,9 @@ class InstallationService:
             )
         if access_mode == RepositoryAccessMode.PUBLIC:
             return await self._get_authorized_public_repository(
-                user_id=user_id, repository_id=repository_id
+                user_id=user_id,
+                repository_id=repository_id,
+                require_fresh_visibility=require_fresh_public_visibility,
             )
         cutoff = datetime.now(UTC) - self._membership_ttl
         async with self._database.session() as session:
@@ -285,7 +288,11 @@ class InstallationService:
         return repository
 
     async def _get_authorized_public_repository(
-        self, *, user_id: uuid.UUID, repository_id: uuid.UUID
+        self,
+        *,
+        user_id: uuid.UUID,
+        repository_id: uuid.UUID,
+        require_fresh_visibility: bool,
     ) -> Repository:
         async with self._database.session() as session:
             repository = await session.scalar(
@@ -303,7 +310,8 @@ class InstallationService:
             raise InstallationAccessError
         cutoff = datetime.now(UTC) - self._public_visibility_ttl
         if (
-            repository.visibility_checked_at is not None
+            not require_fresh_visibility
+            and repository.visibility_checked_at is not None
             and repository.visibility_checked_at >= cutoff
         ):
             return repository

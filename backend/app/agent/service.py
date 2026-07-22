@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import structlog
 from sqlalchemy import select
@@ -96,7 +96,7 @@ class AgentQuestionService:
                 started=started,
             )
 
-    async def _run(  # noqa: PLR0915 -- bounded loop keeps trace state in one place
+    async def _run(  # noqa: PLR0911,PLR0915 -- bounded fail-closed loop owns trace state
         self,
         *,
         user_id: uuid.UUID,
@@ -107,6 +107,7 @@ class AgentQuestionService:
         repository = await self._installations.get_authorized_repository(
             user_id=user_id,
             repository_id=repository_id,
+            require_fresh_public_visibility=True,
         )
         active = await self._load_active_index(repository)
         if active is None:
@@ -140,6 +141,24 @@ class AgentQuestionService:
         total_evidence_bytes = 0
 
         while len(trace) < self._settings.agent_max_tool_calls:
+            if evidence:
+                refreshed = await self._refresh_authorization(
+                    user_id=user_id,
+                    repository_id=repository_id,
+                    expected_repository=repository,
+                    expected_active=active,
+                )
+                if refreshed is None:
+                    return self._no_answer(
+                        repository_id=repository_id,
+                        state=Answerability.TEMPORARILY_UNAVAILABLE,
+                        started=started,
+                        active=active,
+                        evidence_count=len(evidence),
+                        trace=trace,
+                    )
+                repository = refreshed
+                context = replace(context, repository=repository)
             try:
                 async with asyncio.timeout(self._settings.agent_provider_timeout_seconds):
                     decision = await self._provider.decide(
@@ -215,6 +234,23 @@ class AgentQuestionService:
             fingerprints.add(fingerprint)
             tool_started = time.monotonic()
             try:
+                refreshed = await self._refresh_authorization(
+                    user_id=user_id,
+                    repository_id=repository_id,
+                    expected_repository=repository,
+                    expected_active=active,
+                )
+                if refreshed is None:
+                    return self._no_answer(
+                        repository_id=repository_id,
+                        state=Answerability.TEMPORARILY_UNAVAILABLE,
+                        started=started,
+                        active=active,
+                        evidence_count=len(evidence),
+                        trace=trace,
+                    )
+                repository = refreshed
+                context = replace(context, repository=repository)
                 async with asyncio.timeout(self._settings.agent_tool_timeout_seconds):
                     result = await self._registry.get(tool_name).execute(
                         context,
@@ -310,6 +346,7 @@ class AgentQuestionService:
         final_repository = await self._installations.get_authorized_repository(
             user_id=user_id,
             repository_id=repository_id,
+            require_fresh_public_visibility=True,
         )
         final_active = await self._load_active_index(final_repository)
         if final_repository.id != repository.id or final_active != active:
@@ -350,6 +387,30 @@ class AgentQuestionService:
             trace=tuple(trace),
             duration_ms=self._elapsed_ms(started),
         )
+
+    async def _refresh_authorization(
+        self,
+        *,
+        user_id: uuid.UUID,
+        repository_id: uuid.UUID,
+        expected_repository: Repository,
+        expected_active: ActiveIndex,
+    ) -> Repository | None:
+        current = await self._installations.get_authorized_repository(
+            user_id=user_id,
+            repository_id=repository_id,
+            require_fresh_public_visibility=True,
+        )
+        current_active = await self._load_active_index(current)
+        if (
+            current.id != expected_repository.id
+            or current.installation_id != expected_repository.installation_id
+            or current.access_mode != expected_repository.access_mode
+            or current.github_repository_id != expected_repository.github_repository_id
+            or current_active != expected_active
+        ):
+            return None
+        return current
 
     async def _load_active_index(self, repository: Repository) -> ActiveIndex | None:
         if (

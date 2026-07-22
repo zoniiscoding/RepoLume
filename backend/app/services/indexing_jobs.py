@@ -366,13 +366,6 @@ class IndexingJobStore:
                 await session.execute(
                     update(Repository).where(Repository.id == repository_id).values(**values)
                 )
-                delivery = await session.scalar(
-                    select(WebhookDelivery).where(WebhookDelivery.indexing_job_id == claimed.id)
-                )
-                if delivery is not None:
-                    delivery.status = WebhookDeliveryStatus.UNAUTHORIZED
-                    delivery.safe_error_code = "repository_access_revoked"
-                    delivery.processed_at = now
             await session.commit()
 
     async def prepare_build(  # noqa: PLR0915 -- one atomic persistence transaction

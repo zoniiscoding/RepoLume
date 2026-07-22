@@ -891,7 +891,7 @@ def test_webhook_signature_idempotency_suspension_unsuspension_and_removal(
     assert delivery_count == 4
 
 
-def test_repository_access_addition_deletion_and_ignored_webhook_paths(
+def test_repository_access_addition_deletion_and_ignored_webhook_paths(  # noqa: PLR0915
     auth_client: TestClient,
 ) -> None:
     access_token, _, _ = _login(auth_client)
@@ -922,6 +922,86 @@ def test_repository_access_addition_deletion_and_ignored_webhook_paths(
     assert invalid_header.status_code == 400
     assert oversized.status_code == 413
 
+    invalid_media_body = b"{}"
+    invalid_media = auth_client.post(
+        "/api/v1/webhooks/github",
+        content=invalid_media_body,
+        headers={
+            "Content-Type": "text/plain",
+            "X-GitHub-Delivery": "delivery-invalid-media",
+            "X-GitHub-Event": "issues",
+            "X-Hub-Signature-256": _webhook_signature(
+                make_settings().github_webhook_secret.get_secret_value(),
+                invalid_media_body,
+            ),
+        },
+    )
+    invalid_action = _post_webhook(
+        auth_client,
+        _installation_payload("reconfigured"),
+        delivery_id="delivery-invalid-action",
+        event="installation",
+    )
+    correctly_shaped_invalid_signature = auth_client.post(
+        "/api/v1/webhooks/github",
+        content=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "X-GitHub-Delivery": "delivery-invalid-hmac",
+            "X-GitHub-Event": "issues",
+            "X-Hub-Signature-256": f"sha256={'0' * 64}",
+        },
+    )
+    invalid_field_combination = _post_webhook(
+        auth_client,
+        json.dumps(
+            {
+                "action": "added",
+                "installation": json.loads(_installation_payload("created"))["installation"],
+                "repositories_removed": [{"id": 9001}],
+            }
+        ).encode(),
+        delivery_id="delivery-invalid-combination",
+        event="installation_repositories",
+    )
+    oversized_repository_list = _post_webhook(
+        auth_client,
+        json.dumps(
+            {
+                "action": "removed",
+                "installation": json.loads(_installation_payload("created"))["installation"],
+                "repositories_removed": [{"id": item + 1} for item in range(501)],
+            }
+        ).encode(),
+        delivery_id="delivery-too-many-repositories",
+        event="installation_repositories",
+    )
+    invalid_push_payload = json.loads(_push_payload())
+    invalid_push_payload["action"] = "created"
+    invalid_push = _post_webhook(
+        auth_client,
+        json.dumps(invalid_push_payload).encode(),
+        delivery_id="delivery-invalid-push-action",
+        event="push",
+    )
+    invalid_repository_payload = json.loads(_push_payload())
+    invalid_repository_payload["action"] = "reconfigured"
+    for field in ("ref", "before", "after", "forced", "deleted"):
+        invalid_repository_payload.pop(field)
+    invalid_repository = _post_webhook(
+        auth_client,
+        json.dumps(invalid_repository_payload).encode(),
+        delivery_id="delivery-invalid-repository-action",
+        event="repository",
+    )
+    assert invalid_media.status_code == 415
+    assert invalid_action.status_code == 400
+    assert correctly_shaped_invalid_signature.status_code == 401
+    assert invalid_field_combination.status_code == 400
+    assert oversized_repository_list.status_code == 400
+    assert invalid_push.status_code == 400
+    assert invalid_repository.status_code == 400
+
     ignored = _post_webhook(
         auth_client,
         b"{}",
@@ -930,6 +1010,21 @@ def test_repository_access_addition_deletion_and_ignored_webhook_paths(
     )
     assert ignored.status_code == 200
     assert ignored.json() == {"status": "ignored"}
+
+    charset_body = b"{}"
+    charset_json = auth_client.post(
+        "/api/v1/webhooks/github",
+        content=charset_body,
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "X-GitHub-Delivery": "delivery-json-charset",
+            "X-GitHub-Event": "issues",
+            "X-Hub-Signature-256": _webhook_signature(
+                make_settings().github_webhook_secret.get_secret_value(), charset_body
+            ),
+        },
+    )
+    assert charset_json.status_code == 200
 
     added_repository = {
         "id": 9002,
@@ -1347,6 +1442,7 @@ async def test_webhook_service_directly_enforces_push_freshness_and_scope(
             signature=_webhook_signature(secret, body),
             delivery_id=delivery_id,
             event_name="push",
+            content_type="application/json",
         )
 
     assert await handle("direct-push-incremental", _push_payload()) == "accepted"
@@ -1466,6 +1562,7 @@ async def test_webhook_service_directly_tracks_default_branch_metadata(
             signature=_webhook_signature(secret, body),
             delivery_id=delivery_id,
             event_name="repository",
+            content_type="application/json",
         )
 
     assert await handle("direct-metadata-changed", metadata_body()) == "accepted"
@@ -1758,6 +1855,7 @@ async def test_webhook_service_direct_durable_transitions(
             signature=_webhook_signature(secret, body),
             delivery_id=delivery_id,
             event_name=event,
+            content_type="application/json",
         )
 
     created_body = _installation_payload("created")

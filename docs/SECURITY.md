@@ -1,6 +1,6 @@
 # RepoLume Security
 
-**Status:** Milestone 10 adds a browser client with memory-only access tokens, safe OAuth callback handoff, sanitized answer rendering, and constrained citation links. Live GitHub App/hosted-LLM behavior, runtime call completeness, deployment, and hosted production controls remain unverified.
+**Status:** Milestone 11 completed the repository security/privacy review and locally verified its remediations. Exact hosted CI for the uncommitted audit work, live GitHub App/hosted-LLM behavior, deployment, final cross-store deletion, and hosted production controls remain unverified; see `SECURITY_AUDIT_M11.md`.
 
 ## Security invariants
 
@@ -71,7 +71,7 @@ Legend: **Verified M7** means the implemented subset passed local automated/manu
 ## Implemented controls through Milestone 9
 
 - `DATABASE_URL` is a Pydantic `SecretStr`; safe configuration summaries never contain it.
-- Configuration accepts only `postgresql+asyncpg` plus Redis/Redis-TLS URLs and applies stricter production validation: non-local credentialed database, authenticated `rediss://`, JSON logs, disabled interactive docs, explicit trusted hosts, HTTPS CORS/callback origins, minimum authentication-secret lengths, absolute Git path, and PEM-shaped GitHub App key material.
+- Configuration accepts only `postgresql+asyncpg` plus Redis/Redis-TLS URLs and applies stricter production validation: non-local credentialed database with explicit TLS, authenticated `rediss://`, JSON logs, disabled interactive docs, explicit trusted hosts, origin-only HTTPS CORS/frontend settings, exact OAuth callback paths on trusted hosts, exact reviewed OpenAI/Gemini endpoints, complete provider credentials, non-placeholder critical secrets, an absolute Git path, and PEM-shaped GitHub App key material.
 - Request IDs are accepted only when they match the bounded allowlist; invalid values are replaced with a generated UUID and never reflected into logs as untrusted text.
 - Validation error details contain locations, messages, and error types but omit raw request values. Internal exceptions produce a stable generic response and log the exception class, not its message.
 - Request logs contain method, route path, status, duration, and request ID. Uvicorn access logs are disabled, and third-party HTTP client INFO logs are suppressed, so OAuth query codes and authorization headers are not emitted.
@@ -106,7 +106,7 @@ Legend: **Verified M7** means the implemented subset passed local automated/manu
 - Clone processes have CPU, address-space, file-size, descriptor, repository-size, and wall-clock limits. Fresh workspaces are mode 0700 and removed after success, retryable failure, permanent failure, and timeout.
 - Discovery does not follow symlinks, rejects escapes, enforces root containment and file/count/total-byte ceilings, skips dependencies/build/cache/binary/unsupported/oversized inputs, never executes bytes, and persists counts only.
 - Deterministic preprocessing includes canonical trusted metadata and complete chunk content inside explicit inert-data delimiters. It has a stable policy/input fingerprint and rejects over-limit prepared inputs rather than silently truncating.
-- The private embedding process has only its internal bearer and model cache. It applies constant-time authentication, request/body/document/count/byte/token/time/concurrency bounds, fixed model/revision/dimension checks, CPU ONNX inference, a reviewed artifact allowlist, no remote code, and local-files-only production loading.
+- The private embedding process has only its internal bearer and model cache. It applies constant-time authentication, request/body/document/count/byte/token/time/concurrency bounds, fixed model/revision/dimension checks, CPU ONNX inference, a reviewed artifact allowlist, no remote code, an absolute cache path, non-placeholder production credentials, and mandatory local-files-only production loading.
 - The worker client disables redirects, uses independent bounded timeouts and retries, propagates cancellation, and rejects missing/extra/duplicate IDs, wrong model/revision/dimension, non-finite values, and non-unit vectors. Neither request text nor response vectors enter logs or Redis.
 - Qdrant collection configuration fixes 768-dimensional cosine distance plus exact model/revision/L2 metadata. Payload indexes support trusted installation/repository/version/commit/model filters. Every operation is constructed from `VectorScope`, and record scope is revalidated before writes.
 - Point identities are UUIDv5 values over installation, repository, index version, relative path, stable chunk hash, chunk type, and ordinal. Retry upserts are idempotent and cross-repository/version collisions are prevented by identity inputs and explicit filters.
@@ -152,7 +152,24 @@ Every milestone updates this file with implementation and executed evidence. Mil
 
 The verified Milestone 10 subset provides the Milestone 9 controls plus a no-persistent-token browser client. `FRONTEND_URL` is required in production, accepted only as an exact HTTPS CORS origin, and receives a fixed callback redirect after the API has consumed OAuth code/state and set the HTTP-only cookie. Access token, code, state, refresh token, GitHub token, and cookie values are excluded from frontend storage, routes, logs, and external links. Markdown/model/repository output remains inert; the browser does not render raw HTML or follow arbitrary source/model links.
 
-It is not a complete public SaaS boundary: controlled fixtures are not live GitHub reliability evidence; static calls are not runtime truth; hosted LLM behavior, deployment/private networking, rate/usage controls, backup/restore, alerting, and final data purge remain absent or unverified.
+It is not a complete public SaaS boundary: controlled fixtures are not live GitHub reliability evidence; static calls are not runtime truth; hosted LLM behavior, deployment/private networking, broad rate/usage controls, backup/restore, alerting, and final data purge remain absent or unverified.
+
+## Milestone 11 security and privacy audit
+
+The audit reviewed every externally reachable route, OAuth/OIDC/session lifecycle, GitHub App and public-import authorization path, webhook transition, PostgreSQL/Redis/Qdrant scope, clone/parser/worker boundary, embedding and LLM client, three-tool agent, browser renderer, log/error path, dependency lock, workflow, and production image. The detailed threat model, privacy inventory, severity table, regression mapping, and verification record are in `docs/SECURITY_AUDIT_M11.md`.
+
+Remediated controls include:
+
+- exact production LLM endpoint identity instead of arbitrary HTTPS destinations or suffix matching;
+- exact Google `aud` and `azp` semantics, while preserving PKCE, nonce, state expiry/one-time use, refresh rotation/replay detection, cookie scope, and explicit linking;
+- fresh current-public verification at repository/question/tool disclosure boundaries and independent per-user public membership checks;
+- event/action/field allowlists, exact HMAC syntax, JSON media type, bounded repository lists, raw-body constant-time verification, and durable delivery replay rejection;
+- verified clone deletion before activation, with safe retryable failure instead of suppressed filesystem errors;
+- canonical provider avatar and GitHub evidence URLs in the browser, no-referrer avatar requests, sanitized inert Markdown, and memory-only access tokens;
+- immutable GitHub Action revisions, expanded dependency update coverage, hashed Python locks, npm lock enforcement, and fixed-High/Critical image scans; and
+- regression coverage for cross-user membership removal, public-to-private transition without waiting for cache expiry, malformed/replayed ingress, clone-cleanup failure, provider endpoint exfiltration, multi-audience OIDC ambiguity, and canonical external URLs.
+
+No Critical finding was confirmed. Both High findings were remediated. Medium deletion/retention work is explicitly deferred because the safe design requires a durable, idempotent PostgreSQL/Qdrant purge coordinator; immediate access denial remains enforced. Broad launch quotas are Milestone 13 work, and deployment CSP/container-digest decisions remain Milestone 12 work. Those deferrals are production-readiness blockers, not claims of completion.
 
 ## Milestone 8/9 call-graph controls and limits
 

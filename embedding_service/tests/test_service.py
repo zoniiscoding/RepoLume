@@ -162,6 +162,21 @@ def test_configuration_rejects_unreviewed_model_and_unsafe_production() -> None:
         make_settings(model_revision="main")
     with pytest.raises(ValueError, match="LOG_JSON"):
         make_settings(environment="production", log_json=False)
+    with pytest.raises(ValueError, match="placeholder"):
+        make_settings(
+            environment="production",
+            log_json=True,
+            model_local_files_only=True,
+            service_token="embedding-test-only-placeholder-token-000000",  # noqa: S106
+        )
+    with pytest.raises(ValueError, match="LOCAL_FILES_ONLY"):
+        make_settings(
+            environment="production",
+            log_json=True,
+            service_token="EmbeddingProductionCredential-9f32b17a8c4e",  # noqa: S106
+        )
+    with pytest.raises(ValueError, match="absolute path"):
+        make_settings(model_cache_dir="relative/model-cache")
 
 
 def test_build_time_downloader_uses_only_pinned_allowlisted_artifacts(

@@ -2,9 +2,9 @@
 
 RepoLume is a multi-tenant, read-only developer SaaS for understanding authorized GitHub repositories through evidence-backed answers.
 
-This repository is at **Milestone 10: browser application and safe API handoff**. It implements the FastAPI/PostgreSQL foundation, GitHub App authentication and access controls, durable indexing, private ONNX embeddings, atomically activated Qdrant indexes, a three-tool read-only agent, default-branch push refreshes, and a React/TypeScript/Vite browser client for repository selection, progress, questions, and evidence inspection. The prior active version remains queryable until a replacement validates and activates. Chat persistence, deployment, and later launch work are not implemented.
+This repository is at **Milestone 11: security and privacy audit**. It implements the FastAPI/PostgreSQL foundation, GitHub and Google authentication, GitHub App private access, shared-but-membership-gated public imports, durable indexing, private ONNX embeddings, atomically activated Qdrant indexes, a three-tool read-only agent, default-branch push refreshes, and a React/TypeScript/Vite browser client. Milestone 11 adds exact provider/configuration trust boundaries, current-public revalidation, semantic webhook validation, verified pre-activation clone cleanup, canonical browser URLs, and pinned CI actions. Chat persistence, deployment, final deletion orchestration, and later launch work are not implemented.
 
-Read [the product specification](docs/PRODUCT_SPEC.md), [current build status](docs/BUILD_STATUS.md), [security posture](docs/SECURITY.md), and [engineering rules](AGENTS.md) before changing code.
+Read [the product specification](docs/PRODUCT_SPEC.md), [current build status](docs/BUILD_STATUS.md), [security posture](docs/SECURITY.md), [Milestone 11 audit](docs/SECURITY_AUDIT_M11.md), and [engineering rules](AGENTS.md) before changing code.
 
 ## Requirements
 
@@ -16,7 +16,7 @@ Read [the product specification](docs/PRODUCT_SPEC.md), [current build status](d
 - The reviewed `jinaai/jina-embeddings-v2-base-code` model at immutable revision `516f4baf13dec4ddddda8631e019b5737c8bc250` (Apache-2.0, 768 dimensions, 8,192-token model limit).
 - Git available at the absolute path configured by `CLONE_GIT_EXECUTABLE` (the container uses `/usr/bin/git`).
 - A GitHub App is required only for live OAuth, installation, and webhook verification; automated tests use mocked GitHub responses.
-- An OpenAI API credential is required for production agent decisions and answer synthesis. Automated and local acceptance tests use a deterministic provider and never require or fabricate a hosted-model result.
+- An OpenAI or Gemini API credential is required for production agent decisions and answer synthesis. Production accepts only the reviewed exact provider base URLs. Automated and local acceptance tests use a deterministic provider and never require or fabricate a hosted-model result.
 - Docker Compose or Podman/Docker is optional for containerized local startup.
 
 ## Local setup
@@ -32,7 +32,7 @@ cp .env.example .env
 
 Fill the untracked `.env` with disposable/local PostgreSQL, Redis, Qdrant, and private embedding-service settings plus local-only authentication values. Secret fields must be independent values of at least 32 characters. Never commit `.env`.
 
-For the question API, set `LLM_PROVIDER=openai`, place `LLM_API_KEY` only in the API secret store, and keep the pinned `LLM_MODEL=gpt-5.4-mini-2026-03-17` unless an intentional compatibility review changes it. `LLM_PROVIDER=deterministic` is accepted only in tests and is not a production model substitute. Agent defaults cap each question at four tool calls, eight seconds per tool, 45 seconds total, 32 KiB per tool result, 64 KiB total evidence, 20 caller results, and 1,200 output tokens.
+For the question API, set `LLM_PROVIDER=openai`, place `LLM_API_KEY` only in the API secret store, and select exactly `https://api.openai.com/v1` or the reviewed Gemini-compatible endpoint. Keep the configured reviewed model unless an intentional compatibility review changes it. `LLM_PROVIDER=deterministic` is accepted only in tests and is not a production model substitute. Agent defaults cap each question at four tool calls, eight seconds per tool, 45 seconds total, 32 KiB per tool result, 64 KiB total evidence, 20 caller results, and 1,200 output tokens.
 
 ## Frontend
 
@@ -45,6 +45,8 @@ npm run dev
 ```
 
 Set `VITE_API_BASE_URL` to the API `/api/v1` base when it is not `http://127.0.0.1:8000/api/v1`. For the normal local browser flow, set `FRONTEND_URL=http://127.0.0.1:5173` and include that exact origin in `CORS_ORIGINS`; production requires a deployed HTTPS origin in both settings. The API consumes GitHub OAuth code/state, sets the HTTP-only refresh cookie, and redirects to the fixed browser callback route without any credential in the URL. The client keeps access tokens only in memory and never writes them to browser storage.
+
+Google sign-in is optional and controlled by `GOOGLE_AUTH_ENABLED`; enabling it requires the client ID, server-only secret, and exact API callback. It does not gate GitHub routes. Public imports accept canonical `https://github.com/<owner>/<repository>` URLs only. A shared public index never grants membership: every user needs an independent membership, and repository reads/questions force a current GitHub public-visibility check before evidence is disclosed.
 
 Run the browser quality gates with:
 
@@ -71,7 +73,7 @@ For live use, create a GitHub App with:
 
 Set `GITHUB_APP_ID`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_OAUTH_CALLBACK_URL`, `ACCESS_TOKEN_SECRET`, and `TOKEN_HASH_SECRET` in the runtime secret store. GitHub user and installation tokens remain server-side and are not persisted.
 
-The webhook route accepts only `installation`, `installation_repositories`, `push`, and `repository`. It authenticates the exact raw body with `X-Hub-Signature-256`, caps the body at 1 MiB, validates bounded event/delivery headers and typed fields, and stores normalized content-free delivery metadata rather than payloads. Only the server-owned default branch is indexed. Non-default and deleted-branch pushes are ignored; forced, unanchored, unavailable, unsafe, or over-limit comparisons use a visible full-rebuild fallback. Manual full refresh is available at `POST /api/v1/repositories/{repository_id}/reindex`; no model tool can invoke it.
+The webhook route accepts only `installation`, `installation_repositories`, `push`, and `repository`. It authenticates the exact raw body with a lowercase SHA-256 HMAC, caps the body at 1 MiB, requires JSON, validates bounded event/delivery headers, event-specific actions and field combinations, and stores normalized content-free delivery metadata rather than payloads. Only the server-owned default branch is indexed. Non-default and deleted-branch pushes are ignored; forced, unanchored, unavailable, unsafe, or over-limit comparisons use a visible full-rebuild fallback. Manual full refresh is available at `POST /api/v1/repositories/{repository_id}/reindex`; no model tool can invoke it.
 
 ## Database and API
 
@@ -163,4 +165,6 @@ Integration tests truncate PostgreSQL, flush Redis, and delete the configured Qd
 
 ## Security boundary
 
-Connected repositories, webhook payloads, GitHub history, user questions, and model output are untrusted data. RepoLume never executes, imports, installs, builds, tests, or invokes connected code. The immutable registry contains only `search_code`, `get_history`, and `find_callers`; none exposes shell, arbitrary network, secrets, writes, refresh controls, raw filters, repository/installation/version/commit selectors, URLs, or limits. GitHub comparison/history calls use fixed paths and ephemeral repository-restricted tokens. Every vector reuse/read/write/delete retains server-derived installation/repository/version/commit/model/policy scope. Activation rechecks durable authorization, branch, generation, build, vector, and graph state; stale workers clean only their inactive scope. Static caller results can miss dynamic dispatch, monkey patching, reflection, generated code, decorators, and unresolved polymorphism; they are evidence, not runtime truth.
+Connected repositories, webhook payloads, GitHub history, user questions, and model output are untrusted data. RepoLume never executes, imports, installs, builds, tests, or invokes connected code. The immutable registry contains only `search_code`, `get_history`, and `find_callers`; none exposes shell, arbitrary network, secrets, writes, refresh controls, raw filters, repository/installation/version/commit selectors, URLs, or limits. GitHub comparison/history calls use fixed paths and ephemeral repository-restricted tokens. Every vector reuse/read/write/delete retains server-derived installation/repository/version/commit/model/policy scope. Public visibility and membership are rechecked around evidence disclosure. Clone removal is verified before activation. Activation rechecks durable authorization, branch, generation, build, vector, and graph state; stale workers clean only their inactive scope. Static caller results can miss dynamic dispatch, monkey patching, reflection, generated code, decorators, and unresolved polymorphism; they are evidence, not runtime truth.
+
+The audit found no confirmed Critical issue, remediated both High issues, and fixed or explicitly justified every Medium issue. Final account/identity unlink and cross-store deletion, automated retention, broad launch quotas, deployment CSP, and image-digest policy remain explicit later-milestone blockers. Local fixture verification is not live GitHub, hosted-model, or deployment evidence.

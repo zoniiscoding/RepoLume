@@ -768,6 +768,7 @@ def test_signed_push_incrementally_activates_complete_new_version_and_replay_is_
         "/api/v1/webhooks/github",
         content=body,
         headers={
+            "Content-Type": "application/json",
             "X-Hub-Signature-256": signature,
             "X-GitHub-Event": "push",
             "X-GitHub-Delivery": "m9-a-to-b",
@@ -790,6 +791,13 @@ def test_signed_push_incrementally_activates_complete_new_version_and_replay_is_
     assert {item["file_path"] for item in answer_while_building.json()["citations"]} == {"safe.py"}
 
     asyncio.run(process_one_delivery(settings, github, cloner))
+
+    assert (
+        asyncio.run(
+            scalar(select(WebhookDelivery.status).where(WebhookDelivery.delivery_id == "m9-a-to-b"))
+        )
+        == "completed"
+    )
 
     after_processing = client.get(
         f"/api/v1/repositories/{repository_id}/status",
@@ -851,6 +859,7 @@ def test_signed_push_incrementally_activates_complete_new_version_and_replay_is_
         "/api/v1/webhooks/github",
         content=body,
         headers={
+            "Content-Type": "application/json",
             "X-Hub-Signature-256": signature,
             "X-GitHub-Event": "push",
             "X-GitHub-Delivery": "m9-stale-replay",

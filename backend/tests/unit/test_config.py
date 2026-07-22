@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import AppEnvironment, Settings, load_settings
-from tests.conftest import TEST_PRIVATE_KEY, make_settings
+from tests.conftest import make_settings, production_test_private_key
 
 SECRET = "configuration-secret-sentinel"
 
@@ -112,7 +112,10 @@ def test_load_settings_raises_generic_error_without_rejected_value(
 def test_production_settings_accept_secure_explicit_values() -> None:
     settings = make_settings(
         app_env=AppEnvironment.PRODUCTION,
-        database_url="postgresql+asyncpg://service:secret@db.example.com/repolume",
+        database_url=(
+            "postgresql+asyncpg://service:DatabaseProductionFixtureCredential@"
+            "db.example.com/repolume?ssl=require"
+        ),
         log_json=True,
         docs_enabled=False,
         cors_origins=["https://app.repolume.example"],
@@ -135,6 +138,16 @@ def test_production_settings_accept_secure_explicit_values() -> None:
         ("trusted_hosts", ["localhost"]),
         ("database_url", "postgresql+asyncpg://service:secret@127.0.0.1/repolume"),
         ("database_url", "postgresql+asyncpg://service@db.example.com/repolume"),
+        ("database_url", "postgresql+asyncpg://service:secret@db.example.com/repolume"),
+        (
+            "database_url",
+            "postgresql+asyncpg://service:secret@db.example.com/repolume?ssl=require",
+        ),
+        (
+            "database_url",
+            "postgresql+asyncpg://service:StrongProductionCredential@"
+            "db.example.com/repolume?sslmode=require",
+        ),
         ("github_oauth_callback_url", "http://api.repolume.example/callback"),
         ("frontend_url", None),
         ("frontend_url", "http://app.repolume.example"),
@@ -142,28 +155,118 @@ def test_production_settings_accept_secure_explicit_values() -> None:
         ("redis_url", "redis://service:secret@redis.example.com/0"),
         ("redis_url", "rediss://127.0.0.1/0"),
         ("redis_url", "rediss://redis.example.com/0"),
+        ("redis_url", "rediss://service:secret@redis.example.com/0"),
+        ("embedding_service_url", "http://embeddings.example.com"),
+        ("qdrant_url", "http://qdrant.example.com"),
+        ("qdrant_api_key", ""),
+        ("llm_provider", "deterministic"),
+        ("llm_api_url", "http://api.openai.com/v1"),
     ],
 )
 def test_production_settings_fail_closed(override: str, value: object) -> None:
     values: dict[str, object] = {
         "app_env": AppEnvironment.PRODUCTION,
-        "database_url": "postgresql+asyncpg://service:secret@db.example.com/repolume",
-        "redis_url": "rediss://service:secret@redis.example.com/0",
+        "database_url": (
+            "postgresql+asyncpg://service:DatabaseProductionFixtureCredential@"
+            "db.example.com/repolume?ssl=require"
+        ),
+        "redis_url": ("rediss://service:RedisProductionFixtureCredential@redis.example.com/0"),
         "log_json": True,
         "docs_enabled": False,
         "cors_origins": ["https://app.repolume.example"],
         "trusted_hosts": ["api.repolume.example"],
         "github_app_id": 12345,
-        "github_client_id": "test-client-id",
-        "github_client_secret": "github-client-secret-for-tests-only-000000",
-        "github_app_private_key": TEST_PRIVATE_KEY,
-        "github_webhook_secret": "github-webhook-secret-for-tests-only-0000",
+        "github_client_id": "Iv1.production-fixture-client",
+        "github_client_secret": "G1thubProductionFixtureCredential-0001",
+        "github_app_private_key": production_test_private_key(),
+        "github_webhook_secret": "Webh00kProductionFixtureCredential-001",
         "github_oauth_callback_url": "https://api.repolume.example/api/v1/auth/github/callback",
         "frontend_url": "https://app.repolume.example",
-        "access_token_secret": "access-token-secret-for-tests-only-0000000",
-        "token_hash_secret": "token-hash-secret-for-tests-only-000000000",
+        "access_token_secret": "AccessProductionFixtureCredential-00001",
+        "token_hash_secret": "HashProductionFixtureCredential-0000001",
+        "embedding_service_url": "https://embeddings.example.com",
+        "embedding_service_token": "Emb3ddingProductionFixtureCredential-001",
+        "qdrant_url": "https://qdrant.example.com",
+        "qdrant_api_key": "Qdr4ntProductionFixtureCredential-00001",
+        "llm_api_key": "LlmProductionFixtureCredential-0000001",
     }
     values[override] = value
 
     with pytest.raises(ValidationError):
         Settings.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"llm_api_url": "https://attacker.example/v1"},
+        {"llm_api_key": ""},
+        {"access_token_secret": "change-me-change-me-change-me-change-me"},
+        {"github_public_api_token": "test-only-public-api-token-placeholder"},
+        {"github_client_id": "abababababababababababababababab"},
+        {"llm_api_url": "https://api.openai.com/v1?forward=unsafe"},
+        {"cors_origins": ["https://app.repolume.example/not-an-origin"]},
+        {
+            "github_oauth_callback_url": (
+                "https://api.repolume.example/api/v1/auth/github/callback?next=unsafe"
+            )
+        },
+        {
+            "github_oauth_callback_url": (
+                "https://untrusted.repolume.example/api/v1/auth/github/callback"
+            )
+        },
+    ],
+)
+def test_production_rejects_provider_exfiltration_and_placeholder_configuration(
+    overrides: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "app_env": AppEnvironment.PRODUCTION,
+        "log_json": True,
+        "docs_enabled": False,
+        "cors_origins": ["https://app.repolume.example"],
+        "trusted_hosts": ["api.repolume.example"],
+        "github_oauth_callback_url": ("https://api.repolume.example/api/v1/auth/github/callback"),
+    }
+    values.update(overrides)
+    with pytest.raises(ValidationError):
+        make_settings(**values)
+
+
+@pytest.mark.parametrize(
+    "llm_api_url",
+    [
+        "https://api.openai.com/v1",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+    ],
+)
+def test_production_accepts_only_reviewed_llm_provider_endpoints(llm_api_url: str) -> None:
+    settings = make_settings(
+        app_env=AppEnvironment.PRODUCTION,
+        log_json=True,
+        docs_enabled=False,
+        cors_origins=["https://app.repolume.example"],
+        trusted_hosts=["api.repolume.example"],
+        github_oauth_callback_url="https://api.repolume.example/api/v1/auth/github/callback",
+        llm_api_url=llm_api_url,
+    )
+
+    assert str(settings.llm_api_url).rstrip("/") == llm_api_url
+
+
+def test_production_accepts_complete_google_configuration_with_exact_callback() -> None:
+    settings = make_settings(
+        app_env=AppEnvironment.PRODUCTION,
+        log_json=True,
+        docs_enabled=False,
+        cors_origins=["https://app.repolume.example"],
+        trusted_hosts=["api.repolume.example"],
+        github_oauth_callback_url="https://api.repolume.example/api/v1/auth/github/callback",
+        google_auth_enabled=True,
+        google_client_id="GoogleProductionClientIdentifier-9241",
+        google_client_secret="GoogleProductionCredential-8f53c10a9472",  # noqa: S106
+        google_oauth_callback_url="https://api.repolume.example/api/v1/auth/google/callback",
+    )
+
+    assert settings.google_auth_enabled is True

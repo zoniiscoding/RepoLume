@@ -11,6 +11,7 @@ from app.queue import JobQueueProtocol
 from app.schemas.errors import ErrorCode
 from app.schemas.webhooks import WebhookResponse
 from app.services.webhooks import (
+    WebhookMediaTypeError,
     WebhookPayloadError,
     WebhookService,
     WebhookSignatureError,
@@ -50,6 +51,7 @@ async def github_webhook(request: Request, response: Response) -> WebhookRespons
             signature=request.headers.get("X-Hub-Signature-256"),
             delivery_id=request.headers.get("X-GitHub-Delivery"),
             event_name=request.headers.get("X-GitHub-Event"),
+            content_type=request.headers.get("Content-Type"),
         )
     except WebhookSignatureError as error:
         raise APIError(
@@ -62,6 +64,12 @@ async def github_webhook(request: Request, response: Response) -> WebhookRespons
             status_code=status.HTTP_400_BAD_REQUEST,
             code=ErrorCode.INVALID_REQUEST,
             message="Webhook request is invalid",
+        ) from error
+    except WebhookMediaTypeError as error:
+        raise APIError(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            code=ErrorCode.INVALID_REQUEST,
+            message="Webhook content type is not supported",
         ) from error
     if result == "accepted":
         response.status_code = status.HTTP_202_ACCEPTED

@@ -11,16 +11,52 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
 MINIMUM_SECRET_LENGTH = 32
+OPENAI_API_BASE_URL = "https://api.openai.com/v1"
+GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+SUPPORTED_LLM_API_BASE_URLS = frozenset({OPENAI_API_BASE_URL, GEMINI_API_BASE_URL})
+_PLACEHOLDER_MARKERS = (
+    "change-me",
+    "changeme",
+    "ci-only",
+    "example-secret",
+    "placeholder",
+    "replace-me",
+    "test-only",
+)
+_MAX_PLACEHOLDER_UNIQUE_CHARACTERS = 2
+_KNOWN_WEAK_VALUES = frozenset({"password", "password123", "postgres", "redis", "secret"})
 
 
 def _origin(url: AnyHttpUrl) -> str:
     """Return a normalized origin; frontend redirects must never carry a path or query."""
     parsed = urlsplit(str(url))
-    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment or parsed.username:
+    if (
+        parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or parsed.username
+        or parsed.password
+    ):
         raise ValueError(
             "FRONTEND_URL must be an origin without credentials, path, query, or fragment"
         )
     return f"{parsed.scheme}://{parsed.netloc}".lower()
+
+
+def _normalized_service_url(url: AnyHttpUrl) -> str:
+    parsed = urlsplit(str(url))
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Service URLs must not contain credentials, query, or fragment")
+    return str(url).rstrip("/")
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    normalized = value.strip().casefold()
+    return (
+        normalized in _KNOWN_WEAK_VALUES
+        or any(marker in normalized for marker in _PLACEHOLDER_MARKERS)
+        or len(set(normalized)) <= _MAX_PLACEHOLDER_UNIQUE_CHARACTERS
+    )
 
 
 class AppEnvironment(StrEnum):
@@ -238,14 +274,33 @@ class Settings(BaseSettings):
             _origin(value)
         return value
 
+    @field_validator("cors_origins")
+    @classmethod
+    def validate_cors_origins(cls, value: list[AnyHttpUrl]) -> list[AnyHttpUrl]:
+        """CORS entries are origins, never credentialed URLs or path prefixes."""
+        for origin in value:
+            _origin(origin)
+        return value
+
+    @field_validator("github_oauth_callback_url")
+    @classmethod
+    def validate_github_callback_url(cls, value: AnyHttpUrl) -> AnyHttpUrl:
+        """Bind GitHub OAuth completion to the one application callback path."""
+        cls._validate_callback_url(value, "/api/v1/auth/github/callback")
+        return value
+
     @field_validator("google_oauth_callback_url")
     @classmethod
     def validate_google_callback_url(cls, value: AnyHttpUrl | None) -> AnyHttpUrl | None:
         """Accept a fixed HTTP(S) callback; production HTTPS is checked below."""
         if value is not None:
-            parsed = urlsplit(str(value))
-            if parsed.username or parsed.password or parsed.query or parsed.fragment:
-                raise ValueError("GOOGLE_OAUTH_CALLBACK_URL must not contain credentials or query")
+            cls._validate_callback_url(value, "/api/v1/auth/google/callback")
+        return value
+
+    @field_validator("embedding_service_url", "qdrant_url", "llm_api_url")
+    @classmethod
+    def validate_service_url(cls, value: AnyHttpUrl) -> AnyHttpUrl:
+        _normalized_service_url(value)
         return value
 
     @field_validator("log_level")
@@ -318,7 +373,14 @@ class Settings(BaseSettings):
         if _origin(self.frontend_url) not in {_origin(origin) for origin in self.cors_origins}:
             raise ValueError("FRONTEND_URL must be an allowed CORS origin")
 
+        callback_hosts = {self.github_oauth_callback_url.host}
+        if self.google_auth_enabled and self.google_oauth_callback_url is not None:
+            callback_hosts.add(self.google_oauth_callback_url.host)
+        if not callback_hosts.issubset(set(self.trusted_hosts)):
+            raise ValueError("OAuth callback hosts must be present in TRUSTED_HOSTS")
+
         self._validate_production_backing_services()
+        self._validate_production_credentials()
         return self
 
     @model_validator(mode="after")
@@ -339,16 +401,32 @@ class Settings(BaseSettings):
         if any(host.lower() in forbidden_hosts for host in self.trusted_hosts):
             raise ValueError("TRUSTED_HOSTS contains a development-only host")
 
+        self._validate_production_database(forbidden_hosts)
+        self._validate_production_redis(forbidden_hosts)
+        self._validate_production_ai_services()
+
+    def _validate_production_database(self, forbidden_hosts: set[str]) -> None:
         database_url = make_url(self.database_url.get_secret_value())
         if database_url.host in forbidden_hosts:
             raise ValueError("DATABASE_URL cannot target a local host in production")
         if database_url.password is None:
             raise ValueError("DATABASE_URL must contain managed credentials in production")
+        if _looks_like_placeholder(database_url.password):
+            raise ValueError("DATABASE_URL must not use placeholder credentials in production")
+        database_tls = database_url.query.get("ssl")
+        if database_tls not in {"require", "verify-ca", "verify-full"}:
+            raise ValueError("DATABASE_URL must require TLS in production")
+
+    def _validate_production_redis(self, forbidden_hosts: set[str]) -> None:
         redis_url = urlsplit(self.redis_url.get_secret_value())
         if redis_url.scheme != "rediss":
             raise ValueError("REDIS_URL must use TLS in production")
         if redis_url.hostname in forbidden_hosts or redis_url.password is None:
             raise ValueError("REDIS_URL must contain managed remote credentials in production")
+        if _looks_like_placeholder(redis_url.password):
+            raise ValueError("REDIS_URL must not use placeholder credentials in production")
+
+    def _validate_production_ai_services(self) -> None:
         if self.embedding_service_url.scheme != "https":
             raise ValueError("EMBEDDING_SERVICE_URL must use HTTPS in production")
         if self.qdrant_url.scheme != "https":
@@ -359,6 +437,50 @@ class Settings(BaseSettings):
             raise ValueError("LLM_PROVIDER must be openai in production")
         if self.llm_api_url.scheme != "https":
             raise ValueError("LLM_API_URL must use HTTPS in production")
+        if _normalized_service_url(self.llm_api_url) not in SUPPORTED_LLM_API_BASE_URLS:
+            raise ValueError("LLM_API_URL must use an approved provider endpoint in production")
+        if len(self.llm_api_key.get_secret_value()) < MINIMUM_SECRET_LENGTH:
+            raise ValueError("LLM_API_KEY must contain a production credential")
+
+    def _validate_production_credentials(self) -> None:
+        credentials = {
+            "GITHUB_CLIENT_ID": self.github_client_id,
+            "GITHUB_CLIENT_SECRET": self.github_client_secret.get_secret_value(),
+            "GITHUB_APP_PRIVATE_KEY": self.github_app_private_key.get_secret_value(),
+            "GITHUB_WEBHOOK_SECRET": self.github_webhook_secret.get_secret_value(),
+            "ACCESS_TOKEN_SECRET": self.access_token_secret.get_secret_value(),
+            "TOKEN_HASH_SECRET": self.token_hash_secret.get_secret_value(),
+            "EMBEDDING_SERVICE_TOKEN": self.embedding_service_token.get_secret_value(),
+            "QDRANT_API_KEY": self.qdrant_api_key.get_secret_value(),
+            "LLM_API_KEY": self.llm_api_key.get_secret_value(),
+        }
+        if self.google_auth_enabled:
+            credentials["GOOGLE_CLIENT_ID"] = self.google_client_id
+            credentials["GOOGLE_CLIENT_SECRET"] = self.google_client_secret.get_secret_value()
+        if self.github_public_api_token.get_secret_value():
+            credentials["GITHUB_PUBLIC_API_TOKEN"] = self.github_public_api_token.get_secret_value()
+        invalid = next(
+            (
+                name
+                for name, credential in credentials.items()
+                if _looks_like_placeholder(credential)
+            ),
+            None,
+        )
+        if invalid is not None:
+            raise ValueError(f"{invalid} must not use a placeholder value in production")
+
+    @staticmethod
+    def _validate_callback_url(value: AnyHttpUrl, expected_path: str) -> None:
+        parsed = urlsplit(str(value))
+        if (
+            parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.path.rstrip("/") != expected_path
+        ):
+            raise ValueError("OAuth callback URL must use the exact application callback path")
 
     @model_validator(mode="after")
     def validate_parser_limits(self) -> Self:

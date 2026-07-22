@@ -86,7 +86,10 @@ def test_readiness_reports_unavailable_without_details() -> None:
 def test_production_responses_include_hsts() -> None:
     settings = make_settings(
         app_env="production",
-        database_url="postgresql+asyncpg://service:secret@db.example.com/repolume",
+        database_url=(
+            "postgresql+asyncpg://service:DatabaseProductionFixtureCredential@"
+            "db.example.com/repolume?ssl=require"
+        ),
         log_json=True,
         docs_enabled=False,
         cors_origins=["https://app.repolume.example"],

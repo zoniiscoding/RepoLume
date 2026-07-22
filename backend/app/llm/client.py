@@ -4,7 +4,6 @@ import re
 import secrets
 from enum import StrEnum
 from typing import Protocol
-from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -15,7 +14,12 @@ from app.agent.models import (
     AgentToolArguments,
     AgentToolName,
 )
-from app.core.config import MINIMUM_SECRET_LENGTH, LLMProvider, Settings
+from app.core.config import (
+    GEMINI_API_BASE_URL,
+    MINIMUM_SECRET_LENGTH,
+    LLMProvider,
+    Settings,
+)
 from app.core.request_context import get_request_id
 from app.rag.models import Answerability, AnswerUncertainty
 
@@ -650,8 +654,7 @@ def create_llm_provider(settings: Settings) -> LLMProviderProtocol:
     if settings.llm_provider is LLMProvider.DETERMINISTIC:
         return DeterministicLLMProvider()
 
-    hostname = urlparse(str(settings.llm_api_url)).hostname or ""
-    if hostname.casefold().endswith("generativelanguage.googleapis.com"):
+    if str(settings.llm_api_url).rstrip("/") == GEMINI_API_BASE_URL:
         return GeminiChatCompletionsClient(settings)
 
     return OpenAIResponsesClient(settings)

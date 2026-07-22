@@ -2,14 +2,28 @@
 
 import uuid
 from collections.abc import Iterator
+from functools import lru_cache
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from app.application import create_app
 from app.core.config import AppEnvironment, Settings
 
 TEST_PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\ntest-only\n-----END PRIVATE KEY-----"
+
+
+@lru_cache(maxsize=1)
+def production_test_private_key() -> str:
+    """Create non-placeholder test key material without committing a credential fixture."""
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
 
 
 class FakeDatabase:
@@ -86,13 +100,27 @@ def make_settings(**overrides: object) -> Settings:
     if requested_environment in {AppEnvironment.DEVELOPMENT, "development"}:
         values["llm_provider"] = "openai"
     if requested_environment in {AppEnvironment.PRODUCTION, "production"}:
-        values["redis_url"] = "rediss://service:secret@redis.example.com/0"
+        values["database_url"] = (
+            "postgresql+asyncpg://service:Pr0ductionFixtureCredential@"
+            "db.example.com/repolume?ssl=require"
+        )
+        values["redis_url"] = (
+            "rediss://service:RedisProductionFixtureCredential@redis.example.com/0"
+        )
         values["embedding_service_url"] = "https://embeddings.example.com"
+        values["embedding_service_token"] = "Emb3ddingProductionFixtureCredential-001"
         values["qdrant_url"] = "https://qdrant.example.com"
-        values["qdrant_api_key"] = "qdrant-api-key-for-tests-only-000000000"
+        values["qdrant_api_key"] = "Qdr4ntProductionFixtureCredential-00001"
         values["llm_provider"] = "openai"
         values["llm_api_url"] = "https://api.openai.com/v1"
+        values["llm_api_key"] = "LlmProductionFixtureCredential-0000001"
         values["frontend_url"] = "https://app.repolume.example"
+        values["github_client_id"] = "Iv1.production-fixture-client"
+        values["github_client_secret"] = "G1thubProductionFixtureCredential-0001"
+        values["github_app_private_key"] = production_test_private_key()
+        values["github_webhook_secret"] = "Webh00kProductionFixtureCredential-001"
+        values["access_token_secret"] = "AccessProductionFixtureCredential-00001"
+        values["token_hash_secret"] = "HashProductionFixtureCredential-0000001"
     values.update(overrides)
     return Settings.model_validate(values)
 

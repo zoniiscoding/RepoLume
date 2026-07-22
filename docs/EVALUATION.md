@@ -1,6 +1,6 @@
 # RepoLume Evaluation
 
-**Status:** Milestone 6–8 baselines remain unchanged. Milestone 9 adds a separate 30-case freshness corpus and content-free metrics for changed-file classification, mode/delivery selection, activation/preservation, graph/citation freshness, retries, determinism, and leakage. Fixture-contract observations are structural expectations with `null` latency; they are not live GitHub reliability, hosted-LLM quality, or production performance evidence.
+**Status:** Milestone 6–9 quality baselines remain unchanged. Milestone 11 adds adversarial security regressions, not a new answer-quality score. Fixture-contract observations remain structural expectations with `null` latency; they are not live GitHub reliability, hosted-LLM quality, or production performance evidence.
 
 ## Controlled corpus
 
@@ -89,6 +89,8 @@ The 30 cases and 31 explicitly labelled `fixture_contract` observations produce 
 The controlled signed A-to-B integration independently indexes commit A, answers against A, applies a signed push that modifies/renames/adds/deletes files and changes callers, proves A remains queryable while B is queued, creates a complete inactive B, selectively reuses/re-embeds vectors, rebuilds/validates the graph, atomically activates B, verifies current citations/callers and old-path exclusion, and rejects replay. GitHub comparison/token responses and agent/embedding behavior are deterministic fixtures in that test; a separate integration still exercises the real private embedding service.
 
 ## Limits and next evaluation work
+
+Milestone 11 security evaluation exercises exact production endpoint/configuration rejection, Google audience/authorized-party ambiguity, OAuth/session regressions, cross-user public membership removal, immediate public-to-private denial without waiting for cache expiry, webhook HMAC/replay/action/field/media/list bounds, clone-cleanup failure before activation, active-version stability around tools/LLM disclosure, Qdrant malformed/scope rejection, prompt/tool/citation injection, canonical external browser URLs, and content-free error/log behavior. These are assertion-bearing local tests against mocked providers and disposable services; they do not create a new model accuracy claim.
 
 Milestone 8's 20 explicitly labelled `fixture_contract` observations exercise caller precision/recall, exact-edge precision, ambiguity/unresolved classifications, repository/active-version isolation, mixed tool selection, runtime refusal, loop bounds, injection resistance, and fabricated-citation rejection. All fixture metrics are deterministic structural labels; latency is intentionally `null`. Unit/integration tests independently exercise Tree-sitter extraction, conservative resolution, PostgreSQL graph lifecycle, authorization, active-version filtering, and API citations.
 

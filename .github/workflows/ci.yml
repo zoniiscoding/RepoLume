@@ -19,12 +19,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
@@ -127,12 +127,12 @@ jobs:
       CORS_ORIGINS: '["http://testserver"]'
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
           cache: pip
@@ -201,12 +201,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
           cache: pip
@@ -248,18 +248,20 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
       - name: Build backend image
-        run: docker build --tag repolume-api:ci backend
+        run: docker build --tag repolume-api:ci --tag repolume-worker:ci backend
 
       - name: Build embedding service image
         run: docker build --tag repolume-embedding-service:ci embedding_service
 
       - name: Verify non-root runtime user
-        run: docker inspect --format='{{.Config.User}}' repolume-api:ci | grep --fixed-strings --line-regexp '10001:10001'
+        run: |
+          docker inspect --format='{{.Config.User}}' repolume-api:ci | grep --fixed-strings --line-regexp '10001:10001'
+          docker inspect --format='{{.Config.User}}' repolume-worker:ci | grep --fixed-strings --line-regexp '10001:10001'
 
       - name: Verify API and worker entry points
         run: |
@@ -278,6 +280,14 @@ jobs:
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
           image: repolume-api:ci
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: true
+
+      - name: Scan worker image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: repolume-worker:ci
           fail-build: true
           severity-cutoff: high
           only-fixed: true

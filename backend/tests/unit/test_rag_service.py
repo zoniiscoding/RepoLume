@@ -37,9 +37,11 @@ class FakeInstallations:
         *,
         user_id: uuid.UUID,
         repository_id: uuid.UUID,
+        require_fresh_public_visibility: bool = False,
     ) -> Repository:
         del user_id
         assert repository_id == self.repository.id
+        assert require_fresh_public_visibility is True
         self.calls += 1
         return self.repository
 
@@ -261,7 +263,8 @@ async def test_access_or_active_index_change_after_generation_discards_answer(
 ) -> None:
     item = repository()
     service, installations, _, _, llm = question_service(item)
-    indexes = iter((active_index(item), None))
+    current = active_index(item)
+    indexes = iter((current, current, None))
 
     async def load_active(
         instance: QuestionService,
@@ -278,7 +281,7 @@ async def test_access_or_active_index_change_after_generation_discards_answer(
         question=service.prepare_question("How does validate work?"),
     )
 
-    assert installations.calls == 2
+    assert installations.calls == 3
     assert llm.calls == 1
     assert result.answerability is Answerability.TEMPORARILY_UNAVAILABLE
     assert result.citations == ()

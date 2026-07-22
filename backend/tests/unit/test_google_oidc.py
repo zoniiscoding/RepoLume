@@ -149,6 +149,11 @@ async def test_google_client_rejects_malformed_or_unmatched_jwks(jwks: object) -
     [
         {"iss": "https://evil.example"},
         {"aud": "another-client"},
+        {
+            "aud": ["google-client-id.apps.googleusercontent.com", "another-client"],
+            "azp": "google-client-id.apps.googleusercontent.com",
+        },
+        {"azp": "another-client"},
         {"exp": datetime.now(UTC) - timedelta(seconds=1)},
         {"nonce": "mismatched-nonce"},
         {"email_verified": False},

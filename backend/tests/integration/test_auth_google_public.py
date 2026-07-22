@@ -4,12 +4,11 @@ import asyncio
 import os
 import uuid
 from collections.abc import Iterator, Sequence
-from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.sql import Executable
 
@@ -330,6 +329,32 @@ def test_public_import_is_shared_but_membership_remains_user_scoped(
     assert asyncio.run(_scalar(select(func.count()).select_from(Repository))) == 1
     assert asyncio.run(_scalar(select(func.count()).select_from(UserRepository))) == 2
 
+    async def remove_second_membership() -> None:
+        engine = create_async_engine(_database_url())
+        try:
+            async with AsyncSession(engine) as session:
+                await session.execute(
+                    delete(UserRepository).where(
+                        UserRepository.user_id == second_user_id,
+                        UserRepository.repository_id == uuid.UUID(repository_id),
+                    )
+                )
+                await session.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(remove_second_membership())
+    removed_member = client.get(
+        f"/api/v1/repositories/{repository_id}",
+        headers=_authorization(second_token),
+    )
+    assert removed_member.status_code == 404
+    retained_member = client.get(
+        f"/api/v1/repositories/{repository_id}",
+        headers=_authorization(first_token),
+    )
+    assert retained_member.status_code == 200
+
     google.identity = GoogleIdentity(
         subject="google-subject-3",
         email="third@example.test",
@@ -412,20 +437,7 @@ def test_public_refresh_reuses_current_commit_and_revokes_private_transition(
     assert len(queue.enqueued) == 2
 
     github.public_private = True
-    asyncio.run(_expire_visibility(repository_id))
     denied = client.get(f"/api/v1/repositories/{repository_id}", headers=_authorization(token))
     assert denied.status_code == 404
     revoked_at = asyncio.run(_scalar(select(Repository.access_revoked_at)))
     assert revoked_at is not None
-
-
-async def _expire_visibility(repository_id: uuid.UUID) -> None:
-    engine = create_async_engine(_database_url())
-    async with AsyncSession(engine) as session:
-        await session.execute(
-            update(Repository)
-            .where(Repository.id == repository_id)
-            .values(visibility_checked_at=datetime.now(UTC) - timedelta(days=1))
-        )
-        await session.commit()
-    await engine.dispose()

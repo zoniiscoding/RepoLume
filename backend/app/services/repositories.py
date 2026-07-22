@@ -140,6 +140,7 @@ class RepositoryService:
             return await self._installations.get_authorized_repository(
                 user_id=user_id,
                 repository_id=repository_id,
+                require_fresh_public_visibility=True,
             )
         except InstallationAccessError as error:
             raise RepositoryAccessError from error

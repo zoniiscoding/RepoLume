@@ -1,6 +1,6 @@
 # RepoLume Operations
 
-**Status:** Milestone 10 adds a locally buildable/tested browser client and an API-to-browser OAuth completion redirect. No live GitHub/hosted-LLM acceptance, hosted frontend environment, dashboard, alert, backup, or production runbook has been verified.
+**Status:** Milestone 11 adds locally verified fail-closed configuration, current-public disclosure checks, semantic webhook validation, clone-cleanup enforcement, URL hardening, and supply-chain controls. No live GitHub/hosted-LLM acceptance, hosted frontend environment, dashboard, alert, backup, final deletion drill, or production runbook has been verified.
 
 ## Service inventory
 
@@ -10,7 +10,7 @@
 | FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status/questions/manual refresh, bounded three-tool agent, health | Milestone 9 signed freshness and active-version questions verified locally; not deployed |
 | Indexing worker | Railway private service | Durable jobs, safe static ingestion, embedding/vector validation, atomic activation, cleanup | Implemented and locally verified; not deployed |
 | Embedding service | Railway private service | Authenticated bounded fixed-model embeddings | Implemented, real pinned model verified, UID 10002 image built; not deployed |
-| PostgreSQL | Neon private credentials | Durable identity, access, delivery/generation, job/build/count/activation/cleanup truth, symbols and call edges | Seven-revision schema through `4cafdf2faa66` verified on disposable PostgreSQL 18; managed production instance not provisioned |
+| PostgreSQL | Neon private credentials | Durable identity, access, delivery/generation, job/build/count/activation/cleanup truth, symbols and call edges | Eight-revision schema through `da6b47f8cd61` verified on disposable PostgreSQL 18; managed production instance not provisioned |
 | Redis | Private managed service | Opaque job-ID Stream delivery; later cache/rate-limit support | Redis 8.8 locally verified; managed authenticated TLS service not provisioned |
 | Qdrant | Qdrant Cloud authenticated | Installation/repository/version-scoped vectors and private citation chunks | Qdrant 1.18.2 locally verified; managed authenticated service not provisioned |
 | Hosted LLM | Server-side provider API | Strict structured tool/final decisions | OpenAI adapter/pinned model configured in code; no real credential or hosted acceptance run |
@@ -36,6 +36,16 @@ npm run dev
 ```
 
 `VITE_API_BASE_URL` defaults to `http://127.0.0.1:8000/api/v1`. The browser client must use an API whose `FRONTEND_URL` is its exact origin and whose `CORS_ORIGINS` includes that origin. In production both must be HTTPS. The API callback, not the frontend, receives GitHub's OAuth query; after server-side exchange it writes the HTTP-only refresh cookie and redirects only to `<FRONTEND_URL>/auth/callback`. Never add OAuth codes, access tokens, refresh tokens, or private keys to Vite variables: only public API base configuration belongs there.
+
+Before a production process is allowed to start, verify these configuration invariants:
+
+- PostgreSQL uses `postgresql+asyncpg`, managed credentials, a non-local host, and `ssl=require`, `ssl=verify-ca`, or `ssl=verify-full`; Redis uses authenticated `rediss://`.
+- CORS and `FRONTEND_URL` are credential-free HTTPS origins. GitHub and enabled Google callbacks use their exact `/api/v1/auth/.../callback` paths and their hosts appear in `TRUSTED_HOSTS`.
+- The LLM base is exactly `https://api.openai.com/v1` or `https://generativelanguage.googleapis.com/v1beta/openai`; do not route private evidence through a generic proxy without a code/security review.
+- GitHub, enabled Google, RepoLume token, embedding, Qdrant, and LLM credentials come from the platform secret store, meet minimum length, and are not documentation/test placeholders.
+- Qdrant and the embedding service use authenticated HTTPS private endpoints. The embedding image has the pinned model preloaded at an absolute cache path and `EMBEDDING_MODEL_LOCAL_FILES_ONLY=true`.
+
+The process refuses unsafe critical settings with a generic configuration error. Do not bypass this validation to recover a deployment.
 
 The frontend build is static output from `npm run build`; deployment/hosting configuration is intentionally not implemented in this milestone. CI runs locked install, `npm ls`, formatting, lint, TypeScript build, Vitest, Chromium-only Playwright, and a high-severity npm audit. Run `npx playwright install chromium` once locally, then `npm run test:e2e`; screenshots/traces/reports remain ignored. Live GitHub and deployed-browser acceptance remain required.
 
@@ -72,6 +82,7 @@ Implemented state behavior:
 - Only one job per repository may be `running`; newer queued jobs are reconciled after the running job exits. PostgreSQL uniqueness and row locks, not process-local locks, are the concurrency boundary.
 - `comparison_unavailable`, `non_fast_forward`, `comparison_file_limit`, `changed_bytes_limit`, `unsafe_comparison`, `missing_active_index`, `requested_full_rebuild`, `default_branch_changed`, and `previous_artifact_missing` are visible full-fallback categories, not reasons to guess a delta.
 - Access-revoked work becomes `cancelled` before token minting or clone.
+- `clone_cleanup_failed` is security-relevant: the job cannot activate or become successfully terminal. Keep the worker volume isolated, verify/destroy the residual workspace through host controls, and retry only after cleanup is trustworthy. Logs intentionally omit the clone path and repository content; do not manually activate the prepared build.
 - Static processing exposes `parsing`, `chunking`, and `building_graph` durable stages. File-local malformed/oversized/unsupported cases increment safe categories; repository chunk/call-site overflow and unsafe paths fail closed.
 - `parser_timeout` and `internal_parser_failure` are nonretryable for the same immutable commit/config. Operators must inspect capacity/configuration without collecting source or raw parser exceptions before submitting fresh work.
 - M5 additionally exposes `embedding`, `storing_vectors`, `validating_index`, and `activating_index`. Do not mark a build ready/active unless expected, embedded, and vector counts match exactly with zero failed/skipped chunks.
@@ -106,6 +117,8 @@ Migration upgrade, current-revision, consistency, and downgrade commands are ava
 3. Never bypass signature validation to replay production payloads.
 4. Redeliver through GitHub only after idempotency is confirmed.
 5. Verify revocation events have blocked access even if downstream purge is pending.
+
+Replay tooling must preserve `Content-Type: application/json`, the original raw body, delivery ID, event name, and exact lowercase `sha256=<64 hex>` signature. Supported event families accept only reviewed actions and field combinations; a 400 for an unexpected signed combination is intentional and must be investigated rather than bypassed.
 
 The delivery table stores the safe delivery ID, event/action, optional external installation/repository IDs, status, safe error code, and processing time. It deliberately does not store webhook bodies. Webhook-triggered reindex wiring is still deferred; do not mark queued webhook records processed manually.
 

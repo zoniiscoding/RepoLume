@@ -9,6 +9,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.indexing.clone import (
+    ClonedRepository,
     CloneRequest,
     GitHubRepositoryCloner,
     _apply_resource_limits,
@@ -207,6 +208,41 @@ def test_resource_limits_are_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     assert (10, 10) in {limits for _, limits in applied}
     assert (20, 20) in {limits for _, limits in applied}
     assert (30, 30) in {limits for _, limits in applied}
+
+
+def test_clone_cleanup_failure_is_explicit_and_never_reported_as_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "clone"
+    workspace.mkdir()
+    cloned = ClonedRepository(workspace, workspace, "a" * 40)
+    monkeypatch.setattr("app.indexing.clone.shutil.rmtree", lambda _: None)
+
+    with pytest.raises(IndexingError, match="clone_cleanup_failed") as captured:
+        GitHubRepositoryCloner.cleanup(cloned)
+
+    assert captured.value.retryable is True
+    assert workspace.exists()
+
+
+def test_clone_cleanup_wraps_filesystem_errors_without_path_disclosure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "private-repository-name"
+    workspace.mkdir()
+    cloned = ClonedRepository(workspace, workspace, "a" * 40)
+
+    def fail_cleanup(_: Path) -> None:
+        raise PermissionError("private filesystem detail")
+
+    monkeypatch.setattr("app.indexing.clone.shutil.rmtree", fail_cleanup)
+    with pytest.raises(IndexingError) as captured:
+        GitHubRepositoryCloner.cleanup(cloned)
+
+    assert captured.value.code == "clone_cleanup_failed"
+    assert "private" not in captured.value.safe_message.casefold()
 
 
 def test_discovery_filters_without_reading_or_executing_repository(tmp_path: Path) -> None:

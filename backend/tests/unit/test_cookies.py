@@ -10,7 +10,10 @@ from tests.conftest import make_settings
 def test_production_refresh_cookie_is_secure_http_only_and_cross_site() -> None:
     settings = make_settings(
         app_env=AppEnvironment.PRODUCTION,
-        database_url="postgresql+asyncpg://service:secret@db.example.com/repolume",
+        database_url=(
+            "postgresql+asyncpg://service:DatabaseProductionFixtureCredential@"
+            "db.example.com/repolume?ssl=require"
+        ),
         log_json=True,
         docs_enabled=False,
         cors_origins=["https://app.repolume.example"],

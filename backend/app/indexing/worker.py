@@ -217,6 +217,8 @@ class IndexingWorker:
                 and context.indexed_branch == context.default_branch
                 and context.requested_mode is IndexingMode.INCREMENTAL
             ):
+                self._cloner.cleanup(cloned)
+                cloned = None
                 await self._store.mark_stale(
                     claimed,
                     self._worker_id,
@@ -280,7 +282,10 @@ class IndexingWorker:
             )
             state.build_prepared = True
             vector_count = await self._embed_and_store(claimed, context, cloned, processing, plan)
-            if await self._validate_and_activate(claimed, context, cloned, vector_count):
+            commit_sha = cloned.commit_sha
+            self._cloner.cleanup(cloned)
+            cloned = None
+            if await self._validate_and_activate(claimed, context, commit_sha, vector_count):
                 self._log_completion(claimed, context, discovery, processing, vector_count)
         finally:
             if cloned is not None:
@@ -494,7 +499,7 @@ class IndexingWorker:
         self,
         claimed: ClaimedJob,
         context: JobContext,
-        cloned: ClonedRepository,
+        commit_sha: str,
         vector_count: int,
     ) -> bool:
         await self._store.stage(
@@ -503,12 +508,12 @@ class IndexingWorker:
             status=RepositoryIndexingStatus.FINALIZING,
             stage="validating_index",
             progress=96,
-            commit_sha=cloned.commit_sha,
+            commit_sha=commit_sha,
         )
         await self._vectors.validate_scope(
             self._scope(context),
             expected_count=vector_count,
-            commit_sha=cloned.commit_sha,
+            commit_sha=commit_sha,
             model_fingerprint=embedding_model_fingerprint(
                 self._settings, self._preprocessor.policy_fingerprint
             ),
@@ -541,10 +546,10 @@ class IndexingWorker:
             status=RepositoryIndexingStatus.FINALIZING,
             stage="activating_index",
             progress=99,
-            commit_sha=cloned.commit_sha,
+            commit_sha=commit_sha,
         )
         previous_version = await self._store.activate(
-            claimed, self._worker_id, commit_sha=cloned.commit_sha
+            claimed, self._worker_id, commit_sha=commit_sha
         )
         if previous_version > 0:
             await self._cleanup_superseded(context, previous_version)

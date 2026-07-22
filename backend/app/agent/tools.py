@@ -289,6 +289,7 @@ class FindCallersTool:
             repository = await self._installations.get_authorized_repository(
                 user_id=context.user_id,
                 repository_id=context.repository.id,
+                require_fresh_public_visibility=True,
             )
         except InstallationAccessError as error:
             raise AgentToolError("caller_scope_revoked") from error

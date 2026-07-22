@@ -56,6 +56,7 @@ class FakeInstallations:
         if self.revoke_after is not None and self.calls > self.revoke_after:
             raise InstallationAccessError
         assert kwargs["repository_id"] == self.current.id
+        assert kwargs["require_fresh_public_visibility"] is True
         return self.current
 
 
@@ -229,7 +230,7 @@ async def test_agent_runs_code_then_history_and_orders_mixed_citations(
         AgentToolName.GET_HISTORY,
     ]
     assert all(step.status is AgentStepStatus.COMPLETED for step in result.trace)
-    assert installations.calls == 2
+    assert installations.calls == 6
 
 
 @pytest.mark.asyncio

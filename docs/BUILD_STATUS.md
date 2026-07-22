@@ -1,12 +1,12 @@
 # RepoLume Build Status
 
-**Last updated:** 2026-07-19
+**Last updated:** 2026-07-22
 
-**Authorized milestone:** Milestone 10 — frontend application and browser-safe API handoff
+**Authorized milestone:** Milestone 11 — security and privacy audit
 
-**Overall status:** Milestone 10 correction verification is complete on top of the hosted-green Milestone 9 baseline. The full local backend suite, frontend unit/component suite, Chromium browser suite, and production build pass against isolated test services. Milestone 11 has not started.
+**Overall status:** Milestone 11 code review and local remediation are complete on audited commit `d2ba86bd2f30d587028d40d4ee2c54466474b1c5`. The complete local backend, embedding, frontend, browser, migration, type, and dependency gates pass. Hosted CI and its container scans have not run for the uncommitted audit changes, so the milestone is not yet declared complete.
 
-**Production readiness:** Not production-ready. The browser client is implemented, but live GitHub App acceptance, deployed private infrastructure, representative reliability/load measurement, monitoring, backup/restore, final deletion operations, and later launch work remain absent or unverified.
+**Production readiness:** Not production-ready. The audit closed the confirmed High findings, but live GitHub/hosted-model acceptance, deployed private infrastructure, hosted CI for these changes, representative reliability/load measurement, monitoring, backup/restore, durable final deletion, retention, and later launch work remain absent or unverified.
 
 ## Implemented through Milestone 9
 
@@ -121,6 +121,42 @@ Milestone 9 is a dependency-backed local freshness foundation, not a production 
 - Configure the GitHub App callback at the public API URL and configure production `FRONTEND_URL`/`CORS_ORIGINS` to the exact deployed HTTPS browser origin. Then exercise the real browser OAuth flow; automated tests use mocked GitHub behavior and do not claim live provider verification.
 - Run the amended frontend CI job after the local commit is manually pushed. Do not claim hosted verification before that run exists.
 
+## Milestone 11 security/privacy audit
+
+- Audited commit `d2ba86bd2f30d587028d40d4ee2c54466474b1c5` across API/auth, GitHub App/Google/public repositories, webhook/job/freshness state, PostgreSQL/Redis/Qdrant, clone/static analysis/private embeddings, RAG/agent/LLM, frontend, logs/errors, dependencies, workflows, images, and documentation.
+- Confirmed no Critical issue. Remediated both High findings: arbitrary production LLM evidence destinations and stale cached-public authorization at new disclosure boundaries.
+- Fixed Medium webhook semantics, clone cleanup, production validation, Google audience/authorized-party handling, frontend URL trust, CI action pinning, dependency update coverage, and the incorrect webhook-stage state transition.
+- Explicitly deferred durable account unlink/deletion and automated retention to Milestone 13 because safe completion requires an idempotent PostgreSQL/Qdrant purge coordinator. Immediate denial, membership removal, installation/repository revocation, and scoped inactive cleanup remain active.
+- No schema change was required. The existing eight-revision chain ends at `da6b47f8cd61`.
+
+### Milestone 11 local verification
+
+| Gate | Actual result |
+| --- | --- |
+| Audited runtime | Python 3.13.14 on macOS; Node 26.0.0 for local frontend verification |
+| Focused security regression | 139 tests passed initially across GitHub/Google/public authorization, config, OIDC, clone, worker, agent, and RAG; the final GitHub webhook integration rerun passed 20 tests |
+| Complete backend | 433 passed, 0 failed, 0 skipped in 42.66 seconds against disposable PostgreSQL 18, Redis 8.8, standalone Qdrant 1.18.2, and the real pinned private embedding service |
+| Branch-aware coverage | 92.91%; the configured 90% threshold and branch coverage remained enabled |
+| Migration | Clean PostgreSQL upgraded through all eight revisions to `da6b47f8cd61`; `alembic check` reported no new upgrade operations |
+| API runtime | Uvicorn started successfully. Versioned liveness returned 200 `ok`; readiness returned 200 with PostgreSQL/Redis/Qdrant ready; unauthenticated `/auth/me` returned the safe 401 envelope and security headers |
+| Embedding service | 15 passed with the real immutable offline model; 92.53% coverage |
+| Frontend | Clean `npm ci`; 16 Vitest tests across 7 files passed; production TypeScript/Vite build passed; 8 Chromium Playwright tests passed |
+| Dependencies | `pip check` found no broken requirements; both production Python lock audits and both full/production npm audits found no known vulnerabilities |
+| Supply chain | Official action tags were resolved read-only and checkout/setup actions pinned to those commits; Dependabot covers backend/embedding pip, frontend npm, both Dockerfiles, and actions |
+| Hosted CI/container scans | Local `podman info` failed because the configured AppleHV socket at `127.0.0.1:54657` refused connections; the VM was not restarted or repaired. Hosted CI has not run for these uncommitted changes. The workflow now separately names/scans API, worker, and embedding images, but green image evidence cannot be claimed yet |
+
+### Failures encountered during Milestone 11 verification
+
+1. The surviving disposable PostgreSQL directory was corrupt and its old process repeatedly logged missing catalog files. The process was stopped; a clean PostgreSQL 18 cluster/database was initialized and all migration/test evidence uses that replacement.
+2. The first local `initdb` and loopback service commands were blocked by sandbox shared-memory/network policy. The exact commands were rerun with approval and succeeded.
+3. The first frontend test command supplied Jest's unsupported `--runInBand` flag to Vitest. The documented `npm test` command then passed all tests.
+4. The first parallel frontend build encountered duplicate ignored `node_modules/@types/* 3` directories from a contaminated local installation. CI's actual `npm ci` clean install removed them; the production build then passed. No source or lock change was used to hide the failure.
+5. Initial health probes omitted the versioned `/api/v1` prefix and correctly returned safe 404 envelopes. The corrected liveness/readiness paths both returned 200.
+6. The first post-remediation backend coverage run passed 420 tests at 90.40%. Focused assertion-bearing configuration, cleanup, and adversarial webhook cases raised the final suite to 433 tests and 92.91%, providing a safer platform margin without weakening exclusions or the threshold.
+7. A final full-suite command set `QDRANT_URL` but omitted the integration guard `TEST_QDRANT_URL`; 419 tests passed and 13 Qdrant-dependent fixtures stopped at setup, so the partial 88.41% coverage result was correctly rejected. The CI-equivalent rerun supplied both runtime and test service variables and passed all then-current tests. Final diff review then rejected unsupported asyncpg `sslmode` configuration, and the post-fix suite passed all 433 tests at 92.91%.
+8. The first final Python vulnerability-audit attempt was blocked by the local network sandbox after `pip check` passed. The exact two audit commands were rerun with network approval and both reported no known vulnerabilities.
+9. Reusing one local incremental mypy cache across the backend and embedding service's same-named `app` namespace triggered a mypy 2.3.0 internal cache-fixup assertion. Fresh per-service cache directories, matching separate clean CI jobs, passed strict checking for all 137 backend and 13 embedding source/test files; no type error was reported.
+
 ## Next milestone gate
 
-Milestone 10 only is authorized. Milestone 11 must not begin until explicitly authorized.
+Milestone 11 only is authorized. Milestone 12 has not started. Hosted CI for the current audit work must be green before Milestone 11 can be declared fully complete.
