@@ -5,7 +5,15 @@ from pathlib import Path
 from typing import Any, Self
 from urllib.parse import urlsplit
 
-from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    AnyHttpUrl,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
@@ -50,6 +58,29 @@ def _normalized_service_url(url: AnyHttpUrl) -> str:
     return str(url).rstrip("/")
 
 
+def _is_railway_private_host(hostname: str | None) -> bool:
+    """Match only a named Railway private-DNS service, never a suffix lookalike."""
+    if hostname is None:
+        return False
+    normalized = hostname.rstrip(".").lower()
+    service, separator, suffix = normalized.partition(".")
+    return bool(service and separator and suffix == "railway.internal")
+
+
+def _validated_database_url(value: SecretStr, *, variable_name: str) -> SecretStr:
+    """Validate one async PostgreSQL URL without including it in an error."""
+    raw_url = value.get_secret_value()
+    try:
+        parsed = make_url(raw_url)
+    except ArgumentError as error:
+        raise ValueError(f"{variable_name} must be a valid SQLAlchemy URL") from error
+    if parsed.drivername != "postgresql+asyncpg":
+        raise ValueError(f"{variable_name} must use the postgresql+asyncpg driver")
+    if not parsed.host or not parsed.database:
+        raise ValueError(f"{variable_name} must include a host and database name")
+    return value
+
+
 def _looks_like_placeholder(value: str) -> bool:
     normalized = value.strip().casefold()
     return (
@@ -74,6 +105,13 @@ class LLMProvider(StrEnum):
     DETERMINISTIC = "deterministic"
 
 
+class ServiceRole(StrEnum):
+    """Executable roles with intentionally different production secret sets."""
+
+    API = "api"
+    WORKER = "worker"
+
+
 class Settings(BaseSettings):
     """Application settings loaded exclusively from environment or local `.env`."""
 
@@ -87,6 +125,7 @@ class Settings(BaseSettings):
 
     app_name: str = "RepoLume API"
     app_env: AppEnvironment = AppEnvironment.DEVELOPMENT
+    service_role: ServiceRole = ServiceRole.API
     database_url: SecretStr
     redis_url: SecretStr
     log_level: str = "INFO"
@@ -99,11 +138,13 @@ class Settings(BaseSettings):
     database_ready_timeout_seconds: float = Field(default=2.0, gt=0, le=10)
 
     github_app_id: int = Field(gt=0)
-    github_client_id: str = Field(min_length=1, max_length=255)
-    github_client_secret: SecretStr
+    github_client_id: str = Field(default="", max_length=255)
+    github_client_secret: SecretStr = SecretStr("")
     github_app_private_key: SecretStr
-    github_webhook_secret: SecretStr
-    github_oauth_callback_url: AnyHttpUrl
+    github_webhook_secret: SecretStr = SecretStr("")
+    github_oauth_callback_url: AnyHttpUrl = AnyHttpUrl(
+        "http://127.0.0.1:8000/api/v1/auth/github/callback"
+    )
     github_public_api_token: SecretStr = SecretStr("")
     frontend_url: AnyHttpUrl | None = None
 
@@ -112,8 +153,8 @@ class Settings(BaseSettings):
     google_client_secret: SecretStr = SecretStr("")
     google_oauth_callback_url: AnyHttpUrl | None = None
 
-    access_token_secret: SecretStr
-    token_hash_secret: SecretStr
+    access_token_secret: SecretStr = SecretStr("")
+    token_hash_secret: SecretStr = SecretStr("")
     access_token_ttl_seconds: int = Field(default=900, ge=300, le=1800)
     refresh_token_ttl_seconds: int = Field(default=2_592_000, ge=3600, le=7_776_000)
     oauth_state_ttl_seconds: int = Field(default=600, ge=120, le=900)
@@ -238,16 +279,7 @@ class Settings(BaseSettings):
     @classmethod
     def validate_database_url(cls, value: SecretStr) -> SecretStr:
         """Require the async PostgreSQL SQLAlchemy driver and a named database."""
-        raw_url = value.get_secret_value()
-        try:
-            parsed = make_url(raw_url)
-        except ArgumentError as error:
-            raise ValueError("DATABASE_URL must be a valid SQLAlchemy URL") from error
-        if parsed.drivername != "postgresql+asyncpg":
-            raise ValueError("DATABASE_URL must use the postgresql+asyncpg driver")
-        if not parsed.host or not parsed.database:
-            raise ValueError("DATABASE_URL must include a host and database name")
-        return value
+        return _validated_database_url(value, variable_name="DATABASE_URL")
 
     @field_validator("redis_url")
     @classmethod
@@ -312,13 +344,7 @@ class Settings(BaseSettings):
             raise ValueError("LOG_LEVEL is not supported")
         return normalized
 
-    @field_validator(
-        "github_client_secret",
-        "github_webhook_secret",
-        "access_token_secret",
-        "token_hash_secret",
-        "embedding_service_token",
-    )
+    @field_validator("embedding_service_token")
     @classmethod
     def validate_secret_length(cls, value: SecretStr) -> SecretStr:
         """Reject secrets that do not provide a minimally useful entropy budget."""
@@ -355,6 +381,14 @@ class Settings(BaseSettings):
             raise ValueError("LOG_JSON must be true in production")
         if self.docs_enabled:
             raise ValueError("DOCS_ENABLED must be false in production")
+        if self.service_role is ServiceRole.API:
+            self._validate_production_api_surface()
+
+        self._validate_production_backing_services()
+        self._validate_production_credentials()
+        return self
+
+    def _validate_production_api_surface(self) -> None:
         if not self.cors_origins:
             raise ValueError("CORS_ORIGINS must be explicit in production")
         if any(origin.scheme != "https" for origin in self.cors_origins):
@@ -379,10 +413,6 @@ class Settings(BaseSettings):
         if not callback_hosts.issubset(set(self.trusted_hosts)):
             raise ValueError("OAuth callback hosts must be present in TRUSTED_HOSTS")
 
-        self._validate_production_backing_services()
-        self._validate_production_credentials()
-        return self
-
     @model_validator(mode="after")
     def validate_google_authentication(self) -> Self:
         """Require a complete Google OIDC configuration only when enabled."""
@@ -394,11 +424,38 @@ class Settings(BaseSettings):
             raise ValueError("GOOGLE_CLIENT_SECRET must contain at least 32 characters")
         return self
 
+    @model_validator(mode="after")
+    def validate_role_credentials(self) -> Self:
+        """Require API-only credentials only in the public API process."""
+        if self.service_role is ServiceRole.WORKER:
+            return self
+        credentials = {
+            "GITHUB_CLIENT_SECRET": self.github_client_secret.get_secret_value(),
+            "GITHUB_WEBHOOK_SECRET": self.github_webhook_secret.get_secret_value(),
+            "ACCESS_TOKEN_SECRET": self.access_token_secret.get_secret_value(),
+            "TOKEN_HASH_SECRET": self.token_hash_secret.get_secret_value(),
+        }
+        invalid = next(
+            (
+                name
+                for name, credential in credentials.items()
+                if len(credential) < MINIMUM_SECRET_LENGTH
+            ),
+            None,
+        )
+        if not self.github_client_id.strip():
+            raise ValueError("GITHUB_CLIENT_ID must be configured for the API service")
+        if invalid is not None:
+            raise ValueError(f"{invalid} must contain at least 32 characters")
+        return self
+
     def _validate_production_backing_services(self) -> None:
         """Require authenticated remote infrastructure over encrypted transports."""
 
         forbidden_hosts = {"*", "localhost", "127.0.0.1", "0.0.0.0"}
-        if any(host.lower() in forbidden_hosts for host in self.trusted_hosts):
+        if self.service_role is ServiceRole.API and any(
+            host.lower() in forbidden_hosts for host in self.trusted_hosts
+        ):
             raise ValueError("TRUSTED_HOSTS contains a development-only host")
 
         self._validate_production_database(forbidden_hosts)
@@ -419,20 +476,35 @@ class Settings(BaseSettings):
 
     def _validate_production_redis(self, forbidden_hosts: set[str]) -> None:
         redis_url = urlsplit(self.redis_url.get_secret_value())
-        if redis_url.scheme != "rediss":
-            raise ValueError("REDIS_URL must use TLS in production")
+        railway_private = (
+            redis_url.scheme == "redis"
+            and _is_railway_private_host(redis_url.hostname)
+            and redis_url.port is not None
+        )
+        if redis_url.scheme != "rediss" and not railway_private:
+            raise ValueError("REDIS_URL must use TLS or Railway private networking in production")
         if redis_url.hostname in forbidden_hosts or redis_url.password is None:
             raise ValueError("REDIS_URL must contain managed remote credentials in production")
         if _looks_like_placeholder(redis_url.password):
             raise ValueError("REDIS_URL must not use placeholder credentials in production")
 
     def _validate_production_ai_services(self) -> None:
-        if self.embedding_service_url.scheme != "https":
-            raise ValueError("EMBEDDING_SERVICE_URL must use HTTPS in production")
+        embedding_url = urlsplit(str(self.embedding_service_url))
+        railway_private = (
+            embedding_url.scheme == "http"
+            and _is_railway_private_host(embedding_url.hostname)
+            and embedding_url.port is not None
+        )
+        if self.embedding_service_url.scheme != "https" and not railway_private:
+            raise ValueError(
+                "EMBEDDING_SERVICE_URL must use HTTPS or Railway private networking in production"
+            )
         if self.qdrant_url.scheme != "https":
             raise ValueError("QDRANT_URL must use HTTPS in production")
         if len(self.qdrant_api_key.get_secret_value()) < MINIMUM_SECRET_LENGTH:
             raise ValueError("QDRANT_API_KEY must contain a production credential")
+        if self.service_role is ServiceRole.WORKER:
+            return
         if self.llm_provider is not LLMProvider.OPENAI:
             raise ValueError("LLM_PROVIDER must be openai in production")
         if self.llm_api_url.scheme != "https":
@@ -444,17 +516,22 @@ class Settings(BaseSettings):
 
     def _validate_production_credentials(self) -> None:
         credentials = {
-            "GITHUB_CLIENT_ID": self.github_client_id,
-            "GITHUB_CLIENT_SECRET": self.github_client_secret.get_secret_value(),
             "GITHUB_APP_PRIVATE_KEY": self.github_app_private_key.get_secret_value(),
-            "GITHUB_WEBHOOK_SECRET": self.github_webhook_secret.get_secret_value(),
-            "ACCESS_TOKEN_SECRET": self.access_token_secret.get_secret_value(),
-            "TOKEN_HASH_SECRET": self.token_hash_secret.get_secret_value(),
             "EMBEDDING_SERVICE_TOKEN": self.embedding_service_token.get_secret_value(),
             "QDRANT_API_KEY": self.qdrant_api_key.get_secret_value(),
-            "LLM_API_KEY": self.llm_api_key.get_secret_value(),
         }
-        if self.google_auth_enabled:
+        if self.service_role is ServiceRole.API:
+            credentials.update(
+                {
+                    "GITHUB_CLIENT_ID": self.github_client_id,
+                    "GITHUB_CLIENT_SECRET": self.github_client_secret.get_secret_value(),
+                    "GITHUB_WEBHOOK_SECRET": self.github_webhook_secret.get_secret_value(),
+                    "ACCESS_TOKEN_SECRET": self.access_token_secret.get_secret_value(),
+                    "TOKEN_HASH_SECRET": self.token_hash_secret.get_secret_value(),
+                    "LLM_API_KEY": self.llm_api_key.get_secret_value(),
+                }
+            )
+        if self.service_role is ServiceRole.API and self.google_auth_enabled:
             credentials["GOOGLE_CLIENT_ID"] = self.google_client_id
             credentials["GOOGLE_CLIENT_SECRET"] = self.google_client_secret.get_secret_value()
         if self.github_public_api_token.get_secret_value():
@@ -536,6 +613,7 @@ class Settings(BaseSettings):
         """Return the only configuration fields allowed in startup logs."""
         return {
             "app_env": self.app_env.value,
+            "service_role": self.service_role.value,
             "log_level": self.log_level,
             "log_json": self.log_json,
             "docs_enabled": self.docs_enabled,
@@ -574,3 +652,46 @@ def load_settings() -> Settings:
         return Settings()
     except ValidationError:
         raise RuntimeError("Application configuration is invalid") from None
+
+
+class MigrationSettings(BaseSettings):
+    """Minimal release-command settings that never require application secrets."""
+
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        validate_default=True,
+    )
+
+    app_env: AppEnvironment = AppEnvironment.DEVELOPMENT
+    database_url: SecretStr = Field(
+        validation_alias=AliasChoices("MIGRATION_DATABASE_URL", "DATABASE_URL")
+    )
+
+    @field_validator("database_url")
+    @classmethod
+    def validate_database_url(cls, value: SecretStr) -> SecretStr:
+        return _validated_database_url(value, variable_name="MIGRATION_DATABASE_URL")
+
+    @model_validator(mode="after")
+    def validate_production_database(self) -> Self:
+        if self.app_env is not AppEnvironment.PRODUCTION:
+            return self
+        parsed = make_url(self.database_url.get_secret_value())
+        if parsed.host in {"localhost", "127.0.0.1", "0.0.0.0"} or parsed.password is None:
+            raise ValueError("MIGRATION_DATABASE_URL must use managed remote credentials")
+        if _looks_like_placeholder(parsed.password):
+            raise ValueError("MIGRATION_DATABASE_URL must not use placeholder credentials")
+        if parsed.query.get("ssl") not in {"require", "verify-ca", "verify-full"}:
+            raise ValueError("MIGRATION_DATABASE_URL must require TLS in production")
+        return self
+
+
+def load_migration_database_url() -> str:
+    """Load only the release database URL and never expose a rejected value."""
+    try:
+        return MigrationSettings().database_url.get_secret_value()
+    except ValidationError:
+        raise RuntimeError("Migration configuration is invalid") from None

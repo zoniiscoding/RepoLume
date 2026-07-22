@@ -1,15 +1,15 @@
 # RepoLume Operations
 
-**Status:** Milestone 11 adds locally verified fail-closed configuration, current-public disclosure checks, semantic webhook validation, clone-cleanup enforcement, URL hardening, and supply-chain controls. No live GitHub/hosted-LLM acceptance, hosted frontend environment, dashboard, alert, backup, final deletion drill, or production runbook has been verified.
+**Status:** Milestone 12 repository deployment configuration and runbooks are locally verified. No live GitHub/hosted-LLM acceptance, hosted frontend/API/private service, dashboard, alert, managed backup, restore, rollback, or final deletion drill has been verified because provider access is unavailable.
 
 ## Service inventory
 
 | Service | Exposure | Planned owner responsibility | Current state |
 | --- | --- | --- | --- |
-| React frontend | Public via Vercel | Authenticated UI, safe rendering, repository questions and status | Implemented locally; not deployed |
-| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status/questions/manual refresh, bounded three-tool agent, health | Milestone 9 signed freshness and active-version questions verified locally; not deployed |
-| Indexing worker | Railway private service | Durable jobs, safe static ingestion, embedding/vector validation, atomic activation, cleanup | Implemented and locally verified; not deployed |
-| Embedding service | Railway private service | Authenticated bounded fixed-model embeddings | Implemented, real pinned model verified, UID 10002 image built; not deployed |
+| React frontend | Public via Vercel | Authenticated UI, safe rendering, repository questions and status | Vercel config/CSP implemented locally; not deployed |
+| FastAPI API | Public via Railway | Authenticated API, GitHub webhooks, repository selection/status/questions/manual refresh, bounded three-tool agent, health | Railway manifest/release migration implemented locally; not deployed |
+| Indexing worker | Railway private service | Durable jobs, safe static ingestion, embedding/vector validation, atomic activation, cleanup | Role-scoped secrets and graceful drain implemented locally; not deployed |
+| Embedding service | Railway private service | Authenticated bounded fixed-model embeddings | Private manifest and digest-pinned non-root image source verified; not deployed |
 | PostgreSQL | Neon private credentials | Durable identity, access, delivery/generation, job/build/count/activation/cleanup truth, symbols and call edges | Eight-revision schema through `da6b47f8cd61` verified on disposable PostgreSQL 18; managed production instance not provisioned |
 | Redis | Private managed service | Opaque job-ID Stream delivery; later cache/rate-limit support | Redis 8.8 locally verified; managed authenticated TLS service not provisioned |
 | Qdrant | Qdrant Cloud authenticated | Installation/repository/version-scoped vectors and private citation chunks | Qdrant 1.18.2 locally verified; managed authenticated service not provisioned |
@@ -62,6 +62,8 @@ Metrics remain planned: request and tool latency/error rates, job queue age/dura
 ## Runbooks
 
 The job/Redis procedures below reflect implemented local behavior but have not been exercised on a managed production platform. Exact dashboard links, escalation contacts, recovery objectives, and evidence fields remain deployment work.
+
+Milestone 12 now defines those required production fields and procedures in `docs/DEPLOYMENT_M12.md`, but no dashboard, alert destination, managed backup, provider project, or domain exists from this workspace. Operators must not substitute this source runbook for actual provider evidence.
 
 ### Failed or stuck indexing
 
@@ -202,6 +204,10 @@ The API never runs Alembic during application startup. From the repository root,
 ```
 
 Review generated SQL and backup/restore compatibility before any future production migration. The initial migration downgrade was exercised by the integration suite against a disposable database; that does not make production downgrades universally safe.
+
+Production Alembic commands use `MIGRATION_DATABASE_URL`, a direct least-privilege connection separate from the pooled API/worker `DATABASE_URL`. The Railway API pre-deploy command runs the migration before health-gated rollout. A failed release command must block deployment; do not inject OAuth, GitHub, model, or browser secrets into the migration process.
+
+The worker registers SIGTERM/SIGINT handlers. A termination request sets the worker stop event, preventing the next delivery loop while the currently claimed durable job continues. Railway's configured drain window is 900 seconds; if the platform kills a longer job, PostgreSQL heartbeat/lease recovery and Redis reconciliation remain authoritative. Start with one worker replica until a managed restart/recovery drill proves the intended semantics.
 
 ## Local Milestone 9 procedure
 
@@ -344,3 +350,5 @@ The actual Milestone 9 results, including migration downgrade/re-upgrade, depend
 ## Incident evidence policy
 
 Incident notes may reference opaque identifiers, timestamps, status transitions, versions, counts, and safe error categories. They must not paste secrets, private repository content, complete chat messages, full prompts, or full provider responses.
+
+The provider-oriented API, worker, dependency, auth, deployment, migration, backup, restore, and secret-rotation procedures required for Milestone 12 are in `docs/RUNBOOKS_M12.md`. They are source-complete but unexercised until production infrastructure and alert ownership exist.

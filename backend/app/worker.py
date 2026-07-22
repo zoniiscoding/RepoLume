@@ -1,6 +1,7 @@
 """Executable entry point for the private indexing worker process."""
 
 import asyncio
+import signal
 from contextlib import suppress
 
 import structlog
@@ -19,6 +20,29 @@ from app.services.indexing_jobs import IndexingJobStore
 from app.vector.qdrant import QdrantVectorStore
 
 logger = structlog.get_logger(__name__)
+
+
+def _install_shutdown_handlers(
+    loop: asyncio.AbstractEventLoop,
+    worker: IndexingWorker,
+) -> tuple[signal.Signals, ...]:
+    """Stop new deliveries on process termination while the active job drains."""
+    installed: list[signal.Signals] = []
+    for shutdown_signal in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(shutdown_signal, worker.stop)
+        except (NotImplementedError, RuntimeError):
+            continue
+        installed.append(shutdown_signal)
+    return tuple(installed)
+
+
+def _remove_shutdown_handlers(
+    loop: asyncio.AbstractEventLoop,
+    installed: tuple[signal.Signals, ...],
+) -> None:
+    for shutdown_signal in installed:
+        loop.remove_signal_handler(shutdown_signal)
 
 
 async def run_worker() -> None:
@@ -40,10 +64,13 @@ async def run_worker() -> None:
         embeddings=embeddings,
         vectors=vectors,
     )
+    loop = asyncio.get_running_loop()
+    installed_handlers = _install_shutdown_handlers(loop, worker)
     logger.info("worker_configuration_loaded", **settings.safe_summary())
     try:
         await worker.run()
     finally:
+        _remove_shutdown_handlers(loop, installed_handlers)
         await queue.close()
         await embeddings.close()
         await vectors.close()

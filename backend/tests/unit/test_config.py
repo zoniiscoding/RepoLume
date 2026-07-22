@@ -3,7 +3,14 @@
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import AppEnvironment, Settings, load_settings
+from app.core.config import (
+    AppEnvironment,
+    MigrationSettings,
+    ServiceRole,
+    Settings,
+    load_migration_database_url,
+    load_settings,
+)
 from tests.conftest import make_settings, production_test_private_key
 
 SECRET = "configuration-secret-sentinel"
@@ -270,3 +277,128 @@ def test_production_accepts_complete_google_configuration_with_exact_callback() 
     )
 
     assert settings.google_auth_enabled is True
+
+
+def test_production_worker_accepts_only_exact_authenticated_railway_private_services() -> None:
+    settings = make_settings(
+        app_env=AppEnvironment.PRODUCTION,
+        service_role=ServiceRole.WORKER,
+        redis_url=(
+            "redis://default:RedisProductionFixtureCredential@redis.railway.internal:6379/0"
+        ),
+        embedding_service_url="http://embeddings.railway.internal:8100",
+        github_client_id="",
+        github_client_secret="",
+        github_webhook_secret="",
+        access_token_secret="",
+        token_hash_secret="",
+        llm_api_key="",
+        frontend_url=None,
+        cors_origins=[],
+        trusted_hosts=["localhost"],
+    )
+
+    assert settings.service_role is ServiceRole.WORKER
+
+
+@pytest.mark.parametrize(
+    ("override", "value"),
+    [
+        (
+            "redis_url",
+            "redis://default:RedisProductionFixtureCredential@redis.railway.internal.attacker.test:6379/0",
+        ),
+        (
+            "redis_url",
+            "redis://default:RedisProductionFixtureCredential@railway.internal:6379/0",
+        ),
+        (
+            "embedding_service_url",
+            "http://embeddings.railway.internal.attacker.test:8100",
+        ),
+        ("embedding_service_url", "http://embeddings.railway.internal"),
+    ],
+)
+def test_production_worker_rejects_railway_private_network_lookalikes(
+    override: str,
+    value: object,
+) -> None:
+    values: dict[str, object] = {
+        "app_env": AppEnvironment.PRODUCTION,
+        "service_role": ServiceRole.WORKER,
+        "redis_url": (
+            "redis://default:RedisProductionFixtureCredential@redis.railway.internal:6379/0"
+        ),
+        "embedding_service_url": "http://embeddings.railway.internal:8100",
+        "github_client_id": "",
+        "github_client_secret": "",
+        "github_webhook_secret": "",
+        "access_token_secret": "",
+        "token_hash_secret": "",
+        "llm_api_key": "",
+        "frontend_url": None,
+        "cors_origins": [],
+        "trusted_hosts": ["localhost"],
+    }
+    values[override] = value
+
+    with pytest.raises(ValidationError):
+        make_settings(**values)
+
+
+def test_migration_settings_use_dedicated_url_without_application_secrets() -> None:
+    settings = MigrationSettings.model_validate(
+        {
+            "app_env": "production",
+            "MIGRATION_DATABASE_URL": (
+                "postgresql+asyncpg://migration:StrongMigrationCredential@"
+                "db.example.com/repolume?ssl=require"
+            ),
+        }
+    )
+
+    assert settings.app_env is AppEnvironment.PRODUCTION
+    assert settings.database_url.get_secret_value().startswith("postgresql+asyncpg://migration:")
+
+
+def test_load_migration_url_fails_without_leaking_rejected_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("MIGRATION_DATABASE_URL", f"invalid://user:{SECRET}@example.invalid/db")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    with pytest.raises(RuntimeError) as captured:
+        load_migration_database_url()
+
+    assert str(captured.value) == "Migration configuration is invalid"
+    assert SECRET not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "postgresql+asyncpg://migration:StrongMigrationCredential@127.0.0.1/repolume?ssl=require",
+        "postgresql+asyncpg://migration@db.example.com/repolume?ssl=require",
+        "postgresql+asyncpg://migration:placeholder@db.example.com/repolume?ssl=require",
+        "postgresql+asyncpg://migration:StrongMigrationCredential@db.example.com/repolume",
+    ],
+)
+def test_production_migration_settings_reject_unsafe_database_authority(
+    database_url: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        MigrationSettings.model_validate(
+            {"app_env": "production", "MIGRATION_DATABASE_URL": database_url}
+        )
+
+
+def test_migration_settings_fall_back_to_application_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url = "postgresql+asyncpg://migration:fixture@db.example.com/repolume"
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("MIGRATION_DATABASE_URL", raising=False)
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    assert load_migration_database_url() == database_url

@@ -2,11 +2,39 @@
 
 **Last updated:** 2026-07-22
 
-**Authorized milestone:** Milestone 11 — security and privacy audit
+**Authorized milestone:** Milestone 12 — production deployment
 
-**Overall status:** Milestone 11 code review and local remediation are complete on audited commit `d2ba86bd2f30d587028d40d4ee2c54466474b1c5`. The complete local backend, embedding, frontend, browser, migration, type, and dependency gates pass. Hosted CI and its container scans have not run for the uncommitted audit changes, so the milestone is not yet declared complete.
+**Overall status:** Milestone 11 is complete at `246455ca22f2a995c4047a05a84ac91c74db7d5f`, whose hosted CI run `29939543437` and all four required jobs passed. Milestone 12 repository-side deployment hardening is implemented and locally verified; hosted CI for these changes is pending. External infrastructure and live acceptance are blocked because this workspace has no Vercel/Railway linkage, no Neon/Qdrant/managed-Redis credentials, no production domains, and no hosted-model credential. Milestone 12 is not complete.
 
-**Production readiness:** Not production-ready. The audit closed the confirmed High findings, but live GitHub/hosted-model acceptance, deployed private infrastructure, hosted CI for these changes, representative reliability/load measurement, monitoring, backup/restore, durable final deletion, retention, and later launch work remain absent or unverified.
+**Production readiness:** Not production-ready. Production manifests, release automation, browser CSP, digest-pinned base images, secret-role separation, deliberate migrations, and smoke checks now exist in source. No public frontend/API or private worker/embedding service is deployed; no managed data store, alert, backup/restore drill, worker-restart drill, live authorized indexing, live deletion, GitHub/Google callback, webhook, or Gemini request has been verified.
+
+## Milestone 12 repository deployment baseline
+
+- Added three Railway config-as-code manifests. The API performs the Alembic release command before rollout and has readiness, restart, overlap, and drain controls. The worker is a single-replica private process with a 900-second drain and SIGTERM/SIGINT handling that stops new deliveries while the active durable job finishes. The embedding service is private, dual-stack bound, authenticated, health checked, and starts from an image with the pinned model.
+- Added typed Vercel configuration with an exact HTTPS `/api/v1` build-time API URL, API-origin-bound CSP, HSTS, nosniff, frame denial, no-referrer, permissions policy, and SPA rewrites.
+- Pinned both production Dockerfiles to Python 3.13.14 slim-trixie multi-platform index digest `sha256:eb43ff125d8d58d7449dcba7d336c23bcac412f526d861db493b9994d8010280` while retaining non-root UIDs and hashed locks.
+- Added `SERVICE_ROLE=api|worker`. The worker can omit GitHub OAuth client secret, webhook secret, access-token secret, refresh-token hash secret, Google secret, and LLM key. It still requires the GitHub App private key, embedding bearer, database/Redis, and authenticated Qdrant configuration needed for indexing.
+- Added `MIGRATION_DATABASE_URL`, validated independently from the application settings, so the release command receives a direct least-privilege Neon URL without application/provider secrets. Application `DATABASE_URL` may use the pooled endpoint.
+- Production accepts plain HTTP/Redis only for authenticated, explicit-port `*.railway.internal` addresses on Railway's encrypted private network. Suffix lookalikes, missing ports, public HTTP embeddings, and public `redis://` remain rejected. Qdrant and LLM endpoints still require authenticated reviewed HTTPS destinations.
+- Added a manual `production` GitHub Environment workflow pinned to Railway CLI 5.27.2 and Vercel CLI 56.4.1. It requires the current full `main` SHA and a successful CI run before any rollout. It contains no credential values and cannot run until environment protection, IDs, variables, and secrets are configured.
+- Added a content-free smoke script for frontend/API HTTPS, liveness/readiness, CSP/HSTS, invalid webhook rejection, and untrusted-origin CORS denial.
+
+### Local verification on 2026-07-22
+
+| Gate | Actual result |
+| --- | --- |
+| Backend format/lint/mypy | Passed; 137 typed source/test files reported no mypy issues |
+| Backend full suite | 447 passed in 40.95 seconds; branch-aware coverage 90.74% |
+| Clean PostgreSQL migration | All eight revisions through `da6b47f8cd61` applied on disposable PostgreSQL 18; `alembic check` reported no new operations |
+| Embedding format/lint/mypy | Passed; 13 files formatted/linted and 13 typed files had no issues |
+| Embedding full suite | 15 passed in 2.20 seconds against the pinned real model; 92.53% coverage |
+| Frontend | Clean `npm ci`; formatting/lint/build passed; 22 Vitest tests and 8 Chromium tests passed |
+| Dependency integrity/audits | `pip check` passed; both Python production lock audits and npm audit reported no known vulnerabilities |
+| Railway manifests | All three parsed and validated against Railway's live official JSON schema |
+| Production deployment/live smoke | Blocked: provider accounts, resources, secrets, IDs, domains, and billing authorization are unavailable |
+| Container build/scan for these changes | Pending hosted CI; local container runtime was not repaired or retried |
+
+The first frontend build used a contaminated pre-existing `node_modules` containing duplicate suffixed type directories and failed. A clean locked `npm ci` removed that local contamination; the exact build then passed without source or lockfile changes. The first embedding test command used service-runtime variables rather than the test suite's `REPOLUME_TEST_MODEL_CACHE`; the exact CI environment passed. Sandbox DNS initially blocked npm/Python advisory queries; approved network reruns passed.
 
 ## Implemented through Milestone 9
 

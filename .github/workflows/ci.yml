@@ -48,6 +48,8 @@ jobs:
 
       - name: Build
         working-directory: frontend
+        env:
+          VITE_API_BASE_URL: https://api.example.invalid/api/v1
         run: npm run build
 
       - name: Run frontend tests

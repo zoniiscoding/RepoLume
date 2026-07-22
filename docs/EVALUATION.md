@@ -102,3 +102,9 @@ Milestone 8's 20 explicitly labelled `fixture_contract` observations exercise ca
 - A controlled live GitHub App plus hosted-model run must produce content-free Milestone 7 observations before launch; do not synthesize or hand-author performance observations.
 - Live GitHub App delivery/ordering/rate-limit behavior, representative large-repository change sets, and failure-recovery latency require external acceptance before launch.
 - Milestone 10 adds client unit coverage for memory-only bearer attachment, safe error/protocol handling, sign-in, index status/failure presentation, question validation/error preservation, inert Markdown, and server-returned evidence inspection. These tests validate browser control flow and rendering contracts, not live OAuth, browser-cookie policy on a deployed origin, hosted GitHub, model quality, or end-user usefulness.
+
+## Milestone 12 deployment evaluation status
+
+The repository-side deployment contracts add assertion-backed coverage for exact Railway private-host validation and lookalike rejection, API/worker secret-role separation, migration-only configuration redaction, graceful worker termination registration, exact HTTPS frontend API build configuration, CSP origin binding, and SPA routing. The complete local regression passed 447 backend tests at 90.74% branch-aware coverage, 15 embedding tests against the real pinned model at 92.53%, 22 frontend unit tests, and 8 Chromium flows.
+
+These results are not production measurements. No Vercel/Railway/Neon/Redis/Qdrant Cloud environment exists from this workspace, so there is no real cold start, p95/p99 latency, capacity, cost, alert, backup/restore, worker-restart, OAuth/webhook, live GitHub repository, Gemini, deletion, or rollback observation. Do not add synthetic numbers. Record those results only after executing `DEPLOYMENT_M12.md` against authorized production resources.

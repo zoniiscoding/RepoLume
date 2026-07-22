@@ -2,9 +2,9 @@
 
 RepoLume is a multi-tenant, read-only developer SaaS for understanding authorized GitHub repositories through evidence-backed answers.
 
-This repository is at **Milestone 11: security and privacy audit**. It implements the FastAPI/PostgreSQL foundation, GitHub and Google authentication, GitHub App private access, shared-but-membership-gated public imports, durable indexing, private ONNX embeddings, atomically activated Qdrant indexes, a three-tool read-only agent, default-branch push refreshes, and a React/TypeScript/Vite browser client. Milestone 11 adds exact provider/configuration trust boundaries, current-public revalidation, semantic webhook validation, verified pre-activation clone cleanup, canonical browser URLs, and pinned CI actions. Chat persistence, deployment, final deletion orchestration, and later launch work are not implemented.
+This repository is at **Milestone 12: production deployment (in progress)**. It implements the FastAPI/PostgreSQL foundation, GitHub and Google authentication, GitHub App private access, shared-but-membership-gated public imports, durable indexing, private ONNX embeddings, atomically activated Qdrant indexes, a three-tool read-only agent, default-branch push refreshes, and a React/TypeScript/Vite browser client. The repository now contains digest-pinned images, Vercel/Railway configuration, CI-gated release automation, separate API/worker secret roles, a least-privilege migration configuration, production browser headers, and an unauthenticated smoke script. No Vercel, Railway, Neon, Redis, Qdrant Cloud, OAuth, model-provider, domain, monitoring, or backup resource has been provisioned from this workspace because no scoped provider access is available. Milestone 12 is therefore not complete and the product is not deployed.
 
-Read [the product specification](docs/PRODUCT_SPEC.md), [current build status](docs/BUILD_STATUS.md), [security posture](docs/SECURITY.md), [Milestone 11 audit](docs/SECURITY_AUDIT_M11.md), and [engineering rules](AGENTS.md) before changing code.
+Read [the product specification](docs/PRODUCT_SPEC.md), [current build status](docs/BUILD_STATUS.md), [production deployment runbook](docs/DEPLOYMENT_M12.md), [security posture](docs/SECURITY.md), [Milestone 11 audit](docs/SECURITY_AUDIT_M11.md), and [engineering rules](AGENTS.md) before changing code.
 
 ## Requirements
 
@@ -61,6 +61,8 @@ npm run test:e2e
 npm audit --audit-level=high
 ```
 
+Production builds require an explicit HTTPS `VITE_API_BASE_URL` ending exactly in `/api/v1`. `frontend/vercel.ts` derives the browser `connect-src` CSP from that exact origin, adds HSTS and restrictive browser headers, and preserves SPA deep links. Vercel production and preview environments must use different API origins; production secrets never belong in Vite variables.
+
 ## GitHub App configuration
 
 For live use, create a GitHub App with:
@@ -86,7 +88,7 @@ docker compose up -d postgres redis qdrant embedding-service
 Apply migrations deliberately, then start the API:
 
 ```sh
-.venv/bin/alembic -c backend/alembic.ini upgrade head
+MIGRATION_DATABASE_URL="$DATABASE_URL" .venv/bin/alembic -c backend/alembic.ini upgrade head
 cd backend
 ../.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
 ```
@@ -102,6 +104,7 @@ Start the private worker in a separate process after migrations:
 
 ```sh
 cd backend
+export SERVICE_ROLE=worker
 ../.venv/bin/python -m app.worker
 ```
 
@@ -167,4 +170,6 @@ Integration tests truncate PostgreSQL, flush Redis, and delete the configured Qd
 
 Connected repositories, webhook payloads, GitHub history, user questions, and model output are untrusted data. RepoLume never executes, imports, installs, builds, tests, or invokes connected code. The immutable registry contains only `search_code`, `get_history`, and `find_callers`; none exposes shell, arbitrary network, secrets, writes, refresh controls, raw filters, repository/installation/version/commit selectors, URLs, or limits. GitHub comparison/history calls use fixed paths and ephemeral repository-restricted tokens. Every vector reuse/read/write/delete retains server-derived installation/repository/version/commit/model/policy scope. Public visibility and membership are rechecked around evidence disclosure. Clone removal is verified before activation. Activation rechecks durable authorization, branch, generation, build, vector, and graph state; stale workers clean only their inactive scope. Static caller results can miss dynamic dispatch, monkey patching, reflection, generated code, decorators, and unresolved polymorphism; they are evidence, not runtime truth.
 
-The audit found no confirmed Critical issue, remediated both High issues, and fixed or explicitly justified every Medium issue. Final account/identity unlink and cross-store deletion, automated retention, broad launch quotas, deployment CSP, and image-digest policy remain explicit later-milestone blockers. Local fixture verification is not live GitHub, hosted-model, or deployment evidence.
+The audit found no confirmed Critical issue, remediated both High issues, and fixed or explicitly justified every Medium issue. Final account/identity unlink and cross-store deletion, automated retention, and broad launch quotas remain explicit later-milestone blockers. Local fixture verification is not live GitHub, hosted-model, or deployment evidence.
+
+Milestone 12 closes the source-side deployment CSP and base-image digest deferrals. It does not claim provider deployment evidence. The controlled production workflow is manual, accepts only the current full `main` SHA with a successful CI run, deploys the private embedding service and single worker before the API/migration release, deploys a prebuilt Vercel frontend last, and then runs `scripts/smoke-production.sh`. See `docs/DEPLOYMENT_M12.md` for the exact provider variables, secret partition, rollout, rollback, backup, and acceptance gates.

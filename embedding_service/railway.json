@@ -1,0 +1,16 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile",
+    "watchPatterns": ["app/**", "requirements.lock", "Dockerfile"]
+  },
+  "deploy": {
+    "startCommand": "uvicorn app.main:app --host :: --port $PORT --no-access-log --timeout-graceful-shutdown 60",
+    "healthcheckPath": "/health/live",
+    "healthcheckTimeout": 600,
+    "restartPolicyType": "ALWAYS",
+    "overlapSeconds": 30,
+    "drainingSeconds": 60
+  }
+}

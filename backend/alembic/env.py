@@ -7,7 +7,7 @@ from sqlalchemy import Connection, pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-from app.core.config import load_settings
+from app.core.config import load_migration_database_url
 from app.db import models  # noqa: F401
 from app.db.base import Base
 
@@ -21,7 +21,7 @@ target_metadata = Base.metadata
 
 def database_url() -> str:
     """Return the validated URL without logging it."""
-    return load_settings().database_url.get_secret_value()
+    return load_migration_database_url()
 
 
 def run_migrations_offline() -> None:

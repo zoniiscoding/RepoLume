@@ -477,3 +477,35 @@ Decisions are append-only. If a decision changes, add a superseding entry instea
 - **Decision:** Pin checkout and language-setup actions to verified immutable commits, retain the already pinned image scanner, and configure Dependabot for backend/embedding Python, frontend npm, both Dockerfiles, and GitHub Actions. Treat the API and worker as separately named/scanned artifacts even though they share one backend image.
 - **Rationale:** Floating action majors are privileged supply-chain inputs, and partial update coverage silently ages packages outside the backend.
 - **Consequence:** Dependency updates remain reviewable pull requests; production image digest pinning is deferred to the Milestone 12 deployment artifact where the target architecture and registry are known.
+
+## D-062 — Use provider-native builds from one CI-approved immutable source revision
+
+- **Date:** 2026-07-22
+- **Status:** Accepted and implemented in Milestone 12 source; live rollout pending
+- **Decision:** A manually approved GitHub `production` environment deploys only the current full `main` SHA after the `CI` workflow has a successful completed run. Railway receives that checked-out source through pinned CLI 5.27.2, Vercel receives a prebuilt artifact through pinned CLI 56.4.1, and both runtime images pin the reviewed Python base by multi-platform digest.
+- **Rationale:** Provider-native builders retain platform health/rollback integration while the SHA gate, hashed locks, CLI pins, action pins, and base digest make the release input auditable.
+- **Consequence:** The provider deployment ID and resulting image identity must be recorded during the first live rollout. No production artifact exists until provider access is supplied and the workflow actually succeeds.
+
+## D-063 — Trust Railway private transport only by exact internal DNS identity
+
+- **Date:** 2026-07-22
+- **Status:** Accepted and implemented in Milestone 12
+- **Decision:** Continue requiring HTTPS/TLS for public and third-party services. Permit `http://<service>.railway.internal:<port>` embeddings and authenticated `redis://<service>.railway.internal:<port>` only because Railway private networking is an encrypted WireGuard mesh. Require a named subdomain, exact suffix, and explicit port; reject root domains and suffix lookalikes.
+- **Rationale:** Forcing public endpoints would expose private services unnecessarily, while accepting arbitrary plaintext production URLs would weaken the trust boundary.
+- **Consequence:** Moving either service outside Railway requires TLS and a reviewed configuration change. Qdrant Cloud, Neon, OAuth, and LLM traffic remain encrypted public/provider connections.
+
+## D-064 — Separate executable roles and migration authority
+
+- **Date:** 2026-07-22
+- **Status:** Accepted and implemented in Milestone 12
+- **Decision:** Use `SERVICE_ROLE=api` for the public API and `SERVICE_ROLE=worker` for indexing. The worker does not require or receive OAuth client, webhook, session-token, Google, or hosted-LLM secrets. Alembic reads only `MIGRATION_DATABASE_URL` (falling back to `DATABASE_URL` locally) through a minimal fail-closed settings model.
+- **Rationale:** Sharing the API's entire secret set with a repository-processing worker or a release command violates least privilege and increases blast radius.
+- **Consequence:** Railway must configure the role exactly and inject per-service variables from the matrix in `docs/DEPLOYMENT_M12.md`. The worker still has narrowly necessary GitHub App, data-store, and embedding credentials.
+
+## D-065 — Bind browser policy to the configured production API origin
+
+- **Date:** 2026-07-22
+- **Status:** Accepted and implemented in Milestone 12 source; deployed-header verification pending
+- **Decision:** Fail production frontend builds unless `VITE_API_BASE_URL` is credential-free HTTPS with the exact `/api/v1` path. Generate Vercel CSP `connect-src` from that origin and add HSTS, nosniff, frame denial, no-referrer, permissions restrictions, and SPA rewrites.
+- **Rationale:** A broad `connect-src https:` or hard-coded unapproved domain would permit browser data egress or create hidden environment drift.
+- **Consequence:** Every preview environment needs an explicit non-production API base. The production smoke script must verify actual edge headers before launch.

@@ -174,6 +174,10 @@ No confirmed Critical finding was identified in the initial code review.
 - exact provider avatar and canonical GitHub commit/pull-request URL handling; and
 - production embedding placeholder/cache/offline-model invariants.
 
+### Milestone 12 post-audit disposition
+
+M11-L04's source-side browser CSP and production base-image digest items are implemented in Milestone 12: Vercel derives an exact API-origin `connect-src` policy, and both Python images pin the reviewed Python 3.13.14 multi-platform digest. This does not close live deployment verification. Actual edge headers, provider-built image identity/scans, private-service exposure, secret partition, monitoring, and recovery remain unverified until the blocked production rollout runs.
+
 Existing regressions were rerun for OAuth state expiry/replay, PKCE/nonce, identity-conflict
 linking, refresh rotation/reuse/family invalidation, cookie/Origin policy, cross-user and
 cross-installation denial, installation suspension/removal, repository scope, opaque Redis,

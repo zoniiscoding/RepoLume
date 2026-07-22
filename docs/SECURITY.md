@@ -171,6 +171,14 @@ Remediated controls include:
 
 No Critical finding was confirmed. Both High findings were remediated. Medium deletion/retention work is explicitly deferred because the safe design requires a durable, idempotent PostgreSQL/Qdrant purge coordinator; immediate access denial remains enforced. Broad launch quotas are Milestone 13 work, and deployment CSP/container-digest decisions remain Milestone 12 work. Those deferrals are production-readiness blockers, not claims of completion.
 
+## Milestone 12 deployment-security update
+
+The source-side deployment deferrals are closed: both production images pin the reviewed Python base by multi-platform registry digest; Vercel config binds `connect-src` to the validated exact API origin and adds HSTS/frame/nosniff/referrer/permissions headers; Railway manifests keep worker/embeddings private; and the manual release workflow requires the current full green-CI `main` SHA.
+
+Least privilege is narrower than Milestone 11. `SERVICE_ROLE=worker` omits GitHub OAuth/webhook, RepoLume session/hash, Google, and hosted-LLM secrets. Alembic loads only the direct migration database URL. Production plaintext service URLs are not generally allowed: the sole exception is an authenticated explicit-port exact Railway private hostname on its encrypted mesh. Suffix-lookalike tests fail closed. Public Qdrant/Neon/OAuth/LLM traffic retains TLS and exact-destination validation.
+
+No production secret, provider resource, public domain, edge header, private-network exposure, image scan for these changes, backup, alert, live OAuth, webhook, GitHub repository, or hosted-model flow has been verified. The M11 deletion/retention limitation remains. Production launch is blocked until `DEPLOYMENT_M12.md` acceptance and recovery evidence exists.
+
 ## Milestone 8/9 call-graph controls and limits
 
 - Call extraction runs inside the existing resource-limited child and uses Tree-sitter only. It never imports, evaluates, tests, builds, or invokes connected code.

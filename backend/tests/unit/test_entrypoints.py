@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import signal
 import sys
 from collections.abc import Coroutine
 from types import ModuleType, SimpleNamespace
@@ -42,8 +43,11 @@ async def test_worker_startup_wires_dependencies_and_always_closes_them(
     github = SimpleNamespace(close=AsyncMock())
     store = object()
     indexing_worker = SimpleNamespace(run=AsyncMock(side_effect=RuntimeError("worker stopped")))
+    indexing_worker.stop = Mock()
     configure_logging = Mock()
     captured: dict[str, object] = {}
+    install_shutdown_handlers = Mock(return_value=())
+    remove_shutdown_handlers = Mock()
 
     monkeypatch.setattr(worker_module, "load_settings", lambda: settings)
     monkeypatch.setattr(worker_module, "configure_logging", configure_logging)
@@ -74,6 +78,8 @@ async def test_worker_startup_wires_dependencies_and_always_closes_them(
         return indexing_worker
 
     monkeypatch.setattr(worker_module, "IndexingWorker", build_worker)
+    monkeypatch.setattr(worker_module, "_install_shutdown_handlers", install_shutdown_handlers)
+    monkeypatch.setattr(worker_module, "_remove_shutdown_handlers", remove_shutdown_handlers)
 
     with pytest.raises(RuntimeError, match="worker stopped"):
         await worker_module.run_worker()
@@ -88,6 +94,8 @@ async def test_worker_startup_wires_dependencies_and_always_closes_them(
     assert captured["embeddings"] is embeddings
     assert captured["vectors"] is vectors
     indexing_worker.run.assert_awaited_once_with()
+    install_shutdown_handlers.assert_called_once()
+    remove_shutdown_handlers.assert_called_once()
     queue.close.assert_awaited_once_with()
     embeddings.close.assert_awaited_once_with()
     vectors.close.assert_awaited_once_with()
@@ -111,3 +119,33 @@ def test_worker_cli_treats_keyboard_interrupt_as_clean_shutdown(
     worker_module.main()
 
     assert invoked is True
+
+
+def test_worker_shutdown_handlers_stop_new_deliveries_and_are_removed() -> None:
+    callbacks: dict[signal.Signals, object] = {}
+    loop = Mock()
+    worker = Mock()
+
+    def add_handler(shutdown_signal: signal.Signals, callback: object) -> None:
+        callbacks[shutdown_signal] = callback
+
+    loop.add_signal_handler.side_effect = add_handler
+    installed = worker_module._install_shutdown_handlers(loop, worker)
+
+    assert installed == (signal.SIGTERM, signal.SIGINT)
+    assert callbacks[signal.SIGTERM] == worker.stop
+    assert callbacks[signal.SIGINT] == worker.stop
+
+    worker_module._remove_shutdown_handlers(loop, installed)
+
+    assert loop.remove_signal_handler.call_args_list == [
+        ((signal.SIGTERM,),),
+        ((signal.SIGINT,),),
+    ]
+
+
+def test_worker_shutdown_handlers_degrade_safely_when_loop_has_no_signal_support() -> None:
+    loop = Mock()
+    loop.add_signal_handler.side_effect = NotImplementedError
+
+    assert worker_module._install_shutdown_handlers(loop, Mock()) == ()

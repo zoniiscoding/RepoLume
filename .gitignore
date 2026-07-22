@@ -25,6 +25,8 @@ build/
 .idea/
 .vscode/
 *.swp
+.railway/
+.vercel/
 
 # Runtime artifacts
 *.log

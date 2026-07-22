@@ -1,0 +1,74 @@
+name: Deploy production
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full main-branch commit SHA that already passed CI
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: CI-gated production rollout
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    env:
+      EXPECTED_SHA: ${{ inputs.commit_sha }}
+      GH_TOKEN: ${{ github.token }}
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      PRODUCTION_API_ORIGIN: ${{ vars.PRODUCTION_API_ORIGIN }}
+      PRODUCTION_FRONTEND_ORIGIN: ${{ vars.PRODUCTION_FRONTEND_ORIGIN }}
+    steps:
+      - name: Validate requested release SHA
+        run: |
+          case "$EXPECTED_SHA" in
+            *[!0-9a-f]*|'') exit 1 ;;
+          esac
+          test "${#EXPECTED_SHA}" -eq 40
+
+      - name: Check out the requested immutable source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.commit_sha }}
+          persist-credentials: false
+
+      - name: Require the current main commit and successful CI
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$EXPECTED_SHA"
+          test "$(gh run list --workflow ci.yml --commit "$EXPECTED_SHA" --status completed --json conclusion --jq 'map(select(.conclusion == "success")) | length')" -ge 1
+
+      - name: Deploy private embedding service
+        run: npx --yes @railway/cli@5.27.2 up embedding_service --path-as-root --project "${{ vars.RAILWAY_PROJECT_ID }}" --environment production --service "${{ vars.RAILWAY_EMBEDDING_SERVICE }}" --ci
+
+      - name: Deploy single-replica private worker
+        run: npx --yes @railway/cli@5.27.2 up backend --path-as-root --project "${{ vars.RAILWAY_PROJECT_ID }}" --environment production --service "${{ vars.RAILWAY_WORKER_SERVICE }}" --ci
+
+      - name: Run migrations and deploy public API
+        run: npx --yes @railway/cli@5.27.2 up backend --path-as-root --project "${{ vars.RAILWAY_PROJECT_ID }}" --environment production --service "${{ vars.RAILWAY_API_SERVICE }}" --ci
+
+      - name: Build immutable Vercel frontend
+        working-directory: frontend
+        run: |
+          npx --yes vercel@56.4.1 pull --yes --environment production --token "$VERCEL_TOKEN"
+          npx --yes vercel@56.4.1 build --prod --token "$VERCEL_TOKEN"
+
+      - name: Deploy prebuilt Vercel frontend
+        working-directory: frontend
+        run: npx --yes vercel@56.4.1 deploy --prebuilt --prod --token "$VERCEL_TOKEN"
+
+      - name: Verify public production boundaries
+        run: ./scripts/smoke-production.sh
