@@ -16,7 +16,7 @@ dependencies = [
   "pydantic==2.13.4",
   "pydantic-settings==2.14.2",
   "structlog==26.1.0",
-  "tokenizers==0.22.2",
+  "tokenizers==0.23.1",
   "uvicorn[standard]==0.51.0",
 ]
 
