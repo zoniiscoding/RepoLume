@@ -4,6 +4,7 @@ import type {
   IndexingStatus,
   Installation,
   QuestionResponse,
+  PublicRepositoryImportResponse,
   Repository,
   RepositoryJobResponse,
   User,
@@ -88,6 +89,9 @@ export const api = {
   startGitHubAuthorization(): void {
     window.location.assign(`${API_BASE_URL}/auth/github/start`);
   },
+  startGoogleAuthorization(): void {
+    window.location.assign(`${API_BASE_URL}/auth/google/start`);
+  },
   refresh(signal?: AbortSignal): Promise<AccessTokenResponse> {
     return request<AccessTokenResponse>("/auth/refresh", {
       method: "POST",
@@ -132,6 +136,25 @@ export const api = {
       accessToken,
       body: { installation_id: installationId, github_repository_id: githubRepositoryId },
     });
+  },
+  importPublicRepository(
+    accessToken: string,
+    repositoryUrl: string,
+  ): Promise<PublicRepositoryImportResponse> {
+    return request<PublicRepositoryImportResponse>("/public-repositories/import", {
+      method: "POST",
+      accessToken,
+      body: { repository_url: repositoryUrl },
+    });
+  },
+  refreshPublicRepository(
+    accessToken: string,
+    repositoryId: string,
+  ): Promise<PublicRepositoryImportResponse> {
+    return request<PublicRepositoryImportResponse>(
+      `/public-repositories/${encodeURIComponent(repositoryId)}/refresh`,
+      { method: "POST", accessToken },
+    );
   },
   getRepository(
     accessToken: string,

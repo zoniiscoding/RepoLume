@@ -207,3 +207,25 @@ def test_not_found_ignores_framework_detail(client: TestClient) -> None:
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
     assert response.json()["error"]["message"] == "Not Found"
+
+
+def test_github_session_and_webhook_routes_exist_when_google_is_disabled() -> None:
+    app = create_app(
+        settings=make_settings(google_auth_enabled=False),
+        database=FakeDatabase(),
+        job_queue=FakeJobQueue(),
+        vector_store=FakeVectorReadiness(),
+    )
+
+    operations = {
+        (method.upper(), path)
+        for path, path_item in app.openapi()["paths"].items()
+        for method in path_item
+    }
+    assert {
+        ("GET", "/api/v1/auth/github/start"),
+        ("GET", "/api/v1/auth/github/callback"),
+        ("POST", "/api/v1/auth/refresh"),
+        ("POST", "/api/v1/auth/logout"),
+        ("POST", "/api/v1/webhooks/github"),
+    } <= operations

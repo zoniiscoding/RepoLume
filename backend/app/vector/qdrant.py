@@ -15,6 +15,8 @@ from qdrant_client.conversions.common_types import PointId
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 from app.core.config import Settings
+from app.db.models.enums import RepositoryAccessMode
+from app.db.models.repository import Repository
 from app.embeddings.preprocessing import PreparedEmbedding
 from app.indexing.failures import IndexingError
 
@@ -28,13 +30,26 @@ PayloadValue: TypeAlias = str | int | None
 class VectorScope:
     """Server-derived ownership and inactive/active version filter."""
 
-    installation_id: uuid.UUID
+    installation_id: uuid.UUID | None
     repository_id: uuid.UUID
     index_version: int
+    access_mode: RepositoryAccessMode = RepositoryAccessMode.GITHUB_INSTALLATION
+    github_repository_id: int | None = None
 
     def __post_init__(self) -> None:
         if self.index_version < 1:
             raise ValueError("invalid_index_version")
+        if self.access_mode is RepositoryAccessMode.PUBLIC:
+            if self.installation_id is not None or not self.github_repository_id:
+                raise ValueError("invalid_public_vector_scope")
+        elif self.installation_id is None:
+            raise ValueError("invalid_installation_vector_scope")
+
+    @property
+    def source_scope_id(self) -> str:
+        if self.access_mode is RepositoryAccessMode.PUBLIC:
+            return str(self.github_repository_id)
+        return str(self.installation_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +57,20 @@ class VectorRecord:
     point_id: uuid.UUID
     vector: tuple[float, ...]
     payload: dict[str, PayloadValue]
+
+
+def vector_scope_for_repository(repository: Repository, index_version: int) -> VectorScope:
+    """Build a trusted vector scope from one server-loaded repository row."""
+    access_mode = repository.access_mode or RepositoryAccessMode.GITHUB_INSTALLATION
+    return VectorScope(
+        installation_id=repository.installation_id,
+        repository_id=repository.id,
+        index_version=index_version,
+        access_mode=access_mode,
+        github_repository_id=(
+            repository.github_repository_id if access_mode is RepositoryAccessMode.PUBLIC else None
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +147,8 @@ def deterministic_point_id(scope: VectorScope, prepared: PreparedEmbedding) -> u
         raise ValueError("missing_chunk_metadata")
     identity = "\x1f".join(
         (
-            str(scope.installation_id),
+            scope.access_mode.value,
+            scope.source_scope_id,
             str(scope.repository_id),
             str(scope.index_version),
             chunk.file_path,
@@ -158,8 +188,13 @@ def build_vector_record(
         point_id=deterministic_point_id(scope, prepared),
         vector=vector,
         payload={
-            "tenant_id": str(scope.installation_id),
-            "installation_id": str(scope.installation_id),
+            "tenant_id": scope.source_scope_id,
+            "installation_id": (
+                str(scope.installation_id) if scope.installation_id is not None else None
+            ),
+            "source_scope_type": scope.access_mode.value,
+            "source_scope_id": scope.source_scope_id,
+            "github_repository_id": scope.github_repository_id,
             "repository_id": str(scope.repository_id),
             "index_version": scope.index_version,
             "commit_sha": chunk.commit_sha,
@@ -186,12 +221,32 @@ def build_vector_record(
 
 def scope_filter(scope: VectorScope) -> models.Filter:
     """Construct the only supported repository-version selector from typed values."""
-    return models.Filter(
-        must=[
+    source_conditions = (
+        [
+            models.FieldCondition(
+                key="source_scope_type",
+                match=models.MatchValue(value=RepositoryAccessMode.PUBLIC.value),
+            ),
+            models.FieldCondition(
+                key="source_scope_id",
+                match=models.MatchValue(value=scope.source_scope_id),
+            ),
+            models.FieldCondition(
+                key="github_repository_id",
+                match=models.MatchValue(value=scope.github_repository_id),
+            ),
+        ]
+        if scope.access_mode is RepositoryAccessMode.PUBLIC
+        else [
             models.FieldCondition(
                 key="installation_id",
                 match=models.MatchValue(value=str(scope.installation_id)),
-            ),
+            )
+        ]
+    )
+    return models.Filter(
+        must=[
+            *source_conditions,
             models.FieldCondition(
                 key="repository_id",
                 match=models.MatchValue(value=str(scope.repository_id)),
@@ -202,6 +257,17 @@ def scope_filter(scope: VectorScope) -> models.Filter:
             ),
         ]
     )
+
+
+def _payload_matches_scope(scope: VectorScope, payload: Mapping[str, object]) -> bool:
+    if scope.access_mode is RepositoryAccessMode.PUBLIC:
+        return (
+            payload.get("installation_id") is None
+            and payload.get("source_scope_type") == RepositoryAccessMode.PUBLIC.value
+            and payload.get("source_scope_id") == scope.source_scope_id
+            and payload.get("github_repository_id") == scope.github_repository_id
+        )
+    return payload.get("installation_id") == str(scope.installation_id)
 
 
 def retrieval_filter(
@@ -238,6 +304,9 @@ class QdrantVectorStore:
     _PAYLOAD_SCHEMA: ClassVar[dict[str, models.PayloadSchemaType]] = {
         "tenant_id": models.PayloadSchemaType.KEYWORD,
         "installation_id": models.PayloadSchemaType.KEYWORD,
+        "source_scope_type": models.PayloadSchemaType.KEYWORD,
+        "source_scope_id": models.PayloadSchemaType.KEYWORD,
+        "github_repository_id": models.PayloadSchemaType.INTEGER,
         "repository_id": models.PayloadSchemaType.KEYWORD,
         "index_version": models.PayloadSchemaType.INTEGER,
         "commit_sha": models.PayloadSchemaType.KEYWORD,
@@ -561,7 +630,7 @@ class QdrantVectorStore:
             for record in records:
                 payload = record.payload or {}
                 if (
-                    payload.get("installation_id") != str(scope.installation_id)
+                    not _payload_matches_scope(scope, payload)
                     or payload.get("repository_id") != str(scope.repository_id)
                     or payload.get("index_version") != scope.index_version
                     or payload.get("commit_sha") != commit_sha
@@ -631,7 +700,7 @@ class QdrantVectorStore:
     @staticmethod
     def _validate_record_scope(scope: VectorScope, record: VectorRecord) -> None:
         if (
-            record.payload.get("installation_id") != str(scope.installation_id)
+            not _payload_matches_scope(scope, record.payload)
             or record.payload.get("repository_id") != str(scope.repository_id)
             or record.payload.get("index_version") != scope.index_version
         ):
@@ -661,7 +730,7 @@ class QdrantVectorStore:
         )
         if (
             not math.isfinite(score)
-            or payload.get("installation_id") != str(scope.installation_id)
+            or not _payload_matches_scope(scope, payload)
             or payload.get("repository_id") != str(scope.repository_id)
             or payload.get("index_version") != scope.index_version
             or payload.get("commit_sha") != commit_sha

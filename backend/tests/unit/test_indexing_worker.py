@@ -10,10 +10,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import SecretStr
 
-from app.db.models.enums import IndexingMode
+from app.db.models.enums import IndexingMode, RepositoryAccessMode
 from app.embeddings.client import EmbeddingProviderProtocol
-from app.github.client import GitHubAPIError, GitHubClientProtocol
-from app.github.schemas import GitHubCommitComparison
+from app.github.client import (
+    GitHubAPIError,
+    GitHubClientProtocol,
+    GitHubRepositoryPrivateError,
+    PublicGitHubRepository,
+)
+from app.github.schemas import GitHubCommitComparison, GitHubRepository
 from app.indexing.analyzer import RepositoryAnalyzerProtocol
 from app.indexing.clone import ClonedRepository, RepositoryClonerProtocol
 from app.indexing.discovery import DiscoveredFile, DiscoveryResult, FileDiscovery
@@ -76,6 +81,7 @@ def worker_dependencies(  # noqa: PLR0915 -- explicit protocol doubles document 
     store.record_failed_build_cleanup = AsyncMock()
     store.complete_superseded_cleanup = AsyncMock()
     store.cancel_revoked = AsyncMock()
+    store.revoke_public_access = AsyncMock()
     store.fail = AsyncMock(return_value=False)
     store.recover_abandoned = AsyncMock(return_value=0)
     store.due_jobs = AsyncMock(return_value=())
@@ -83,6 +89,8 @@ def worker_dependencies(  # noqa: PLR0915 -- explicit protocol doubles document 
     github = MagicMock()
     github.create_repository_installation_token = AsyncMock(return_value=SecretStr("token"))
     github.compare_repository_commits = AsyncMock()
+    github.get_public_repository = AsyncMock()
+    github.compare_public_repository_commits = AsyncMock()
     cloner = MagicMock()
     cloned = ClonedRepository(
         workspace=tmp_path,
@@ -147,6 +155,38 @@ def job_context(claimed: ClaimedJob) -> JobContext:
     )
 
 
+def public_job_context(claimed: ClaimedJob) -> JobContext:
+    return JobContext(
+        job_id=claimed.id,
+        repository_id=claimed.repository_id,
+        installation_id=None,
+        github_installation_id=None,
+        owner="octo-org",
+        name="repo",
+        default_branch="main",
+        index_version=1,
+        github_repository_id=9001,
+        access_mode=RepositoryAccessMode.PUBLIC,
+    )
+
+
+def public_metadata() -> PublicGitHubRepository:
+    return PublicGitHubRepository(
+        repository=GitHubRepository.model_validate(
+            {
+                "id": 9001,
+                "owner": {"login": "octo-org"},
+                "name": "repo",
+                "full_name": "octo-org/repo",
+                "html_url": "https://github.com/octo-org/repo",
+                "private": False,
+                "default_branch": "main",
+            }
+        ),
+        default_branch_sha="a" * 40,
+    )
+
+
 @pytest.mark.asyncio
 async def test_worker_completes_discovery_and_cleans_clone(tmp_path: Path) -> None:
     worker, queue, store, github, cloner, discovery = worker_dependencies(tmp_path)
@@ -185,6 +225,46 @@ async def test_worker_completes_discovery_and_cleans_clone(tmp_path: Path) -> No
     discovery.discover.assert_called_once_with(tmp_path)
     cloner.cleanup.assert_called_once()
     queue.acknowledge.assert_awaited_once_with("1-0")
+
+
+@pytest.mark.asyncio
+async def test_public_worker_revalidates_identity_and_clones_without_installation_token(
+    tmp_path: Path,
+) -> None:
+    worker, queue, store, github, cloner, _ = worker_dependencies(tmp_path)
+    claimed = claimed_job()
+    store.claim.return_value = claimed
+    store.authorized_context.return_value = public_job_context(claimed)
+    github.get_public_repository.return_value = public_metadata()
+
+    await worker.process_delivery(QueueDelivery(delivery_id="public", job_id=claimed.id))
+
+    github.get_public_repository.assert_awaited_once_with(owner="octo-org", repository="repo")
+    github.create_repository_installation_token.assert_not_awaited()
+    assert cloner.clone.await_args.args[0].installation_token is None
+    store.activate.assert_awaited_once()
+    queue.acknowledge.assert_awaited_once_with("public")
+
+
+@pytest.mark.asyncio
+async def test_public_worker_revokes_repository_that_is_no_longer_public(tmp_path: Path) -> None:
+    worker, queue, store, github, cloner, _ = worker_dependencies(tmp_path)
+    claimed = claimed_job()
+    store.claim.return_value = claimed
+    store.authorized_context.return_value = public_job_context(claimed)
+    github.get_public_repository.side_effect = GitHubRepositoryPrivateError
+
+    await worker.process_delivery(QueueDelivery(delivery_id="public-private", job_id=claimed.id))
+
+    store.revoke_public_access.assert_awaited_once_with(claimed.repository_id)
+    store.fail.assert_awaited_once()
+    assert store.fail.await_args.kwargs == {
+        "code": "public_repository_unavailable",
+        "safe_message": "The public repository is no longer available",
+        "retryable": False,
+    }
+    cloner.clone.assert_not_awaited()
+    queue.acknowledge.assert_awaited_once_with("public-private")
 
 
 @pytest.mark.parametrize("complete_previous_artifacts", [True, False])

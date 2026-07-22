@@ -59,6 +59,8 @@ def _repository_response(repository: Repository) -> RepositoryDetailResponse:
     return RepositoryDetailResponse(
         id=repository.id,
         installation_id=repository.installation_id,
+        access_mode=repository.access_mode,
+        access_source=("Public URL" if repository.installation_id is None else "GitHub App"),
         github_repository_id=repository.github_repository_id,
         github_owner=repository.github_owner,
         github_name=repository.github_name,

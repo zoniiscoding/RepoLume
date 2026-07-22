@@ -17,11 +17,12 @@ class UserResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: uuid.UUID
-    github_user_id: int
-    github_login: str
+    github_user_id: int | None
+    github_login: str | None
     display_name: str | None
     avatar_url: str | None
     email: str | None
+    linked_providers: list[str]
 
 
 class AuthenticationResponse(AccessTokenResponse):

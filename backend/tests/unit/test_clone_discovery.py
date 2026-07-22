@@ -117,6 +117,38 @@ async def test_clone_uses_secret_environment_and_always_cleans_workspace(
 
 
 @pytest.mark.asyncio
+async def test_public_clone_uses_no_credential_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_subprocess(*args: str, **kwargs: Any) -> FakeProcess:
+        captured["args"] = args
+        captured["env"] = kwargs["env"]
+        return FakeProcess()
+
+    request = clone_request()
+    public_request = CloneRequest(
+        owner=request.owner,
+        name=request.name,
+        default_branch=request.default_branch,
+        installation_token=None,
+    )
+    cloner = GitHubRepositoryCloner(make_settings(), temp_root=tmp_path)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    monkeypatch.setattr(cloner, "_read_commit", AsyncMock(return_value="a" * 40))
+
+    cloned = await cloner.clone(public_request)
+
+    assert captured["env"]["GIT_ASKPASS"] == "/bin/false"
+    assert "REPOLU_GIT_TOKEN" not in captured["env"]
+    assert TOKEN not in " ".join(captured["args"])
+    cloner.cleanup(cloned)
+    assert_directory_empty(tmp_path)
+
+
+@pytest.mark.asyncio
 async def test_clone_failure_and_timeout_remove_temporary_files(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

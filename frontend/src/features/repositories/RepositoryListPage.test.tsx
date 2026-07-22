@@ -30,6 +30,8 @@ const connected: Repository = {
   ...available,
   id: "repository-id",
   installation_id: installation.id,
+  access_mode: "github_installation",
+  access_source: "GitHub App",
   indexing_status: "queued",
   indexing_progress: 0,
   indexing_stage: "queued",
@@ -60,7 +62,7 @@ describe("RepositoryListPage", () => {
     await waitFor(() =>
       expect(connect).toHaveBeenCalledWith("test-access-token", installation.id, 9),
     );
-    expect(await screen.findByRole("link", { name: "Open" })).toHaveAttribute(
+    expect((await screen.findAllByRole("link", { name: "Open" }))[0]).toHaveAttribute(
       "href",
       "/repositories/repository-id",
     );
@@ -71,6 +73,43 @@ describe("RepositoryListPage", () => {
     vi.spyOn(api, "listRepositories").mockResolvedValue([]);
     renderWithApp(<RepositoryListPage />);
 
-    expect(await screen.findByText(/no github app installation/i)).toBeInTheDocument();
+    expect(await screen.findByText(/connect private repositories/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /import public repository/i })).toBeDisabled();
+  });
+
+  it("imports a public URL and exposes shared-index refresh controls", async () => {
+    vi.spyOn(api, "listInstallations").mockResolvedValue([]);
+    vi.spyOn(api, "listRepositories").mockResolvedValue([]);
+    const publicRepository: Repository = {
+      ...connected,
+      id: "public-repository-id",
+      installation_id: null,
+      access_mode: "public",
+      access_source: "Public URL",
+      github_full_name: "octocat/public-repo",
+      github_name: "public-repo",
+      github_url: "https://github.com/octocat/public-repo",
+      is_private: false,
+    };
+    const importRepository = vi.spyOn(api, "importPublicRepository").mockResolvedValue({
+      repository: publicRepository,
+      job: {} as never,
+      already_current: false,
+      reused_index: false,
+    });
+    renderWithApp(<RepositoryListPage />);
+
+    const input = await screen.findByLabelText(/github repository url/i);
+    fireEvent.change(input, { target: { value: "https://github.com/octocat/public-repo" } });
+    fireEvent.click(screen.getByRole("button", { name: /import public repository/i }));
+
+    await waitFor(() =>
+      expect(importRepository).toHaveBeenCalledWith(
+        "test-access-token",
+        "https://github.com/octocat/public-repo",
+      ),
+    );
+    expect(await screen.findByText("Public URL")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /refresh/i })).toBeInTheDocument();
   });
 });

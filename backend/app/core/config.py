@@ -68,7 +68,13 @@ class Settings(BaseSettings):
     github_app_private_key: SecretStr
     github_webhook_secret: SecretStr
     github_oauth_callback_url: AnyHttpUrl
+    github_public_api_token: SecretStr = SecretStr("")
     frontend_url: AnyHttpUrl | None = None
+
+    google_auth_enabled: bool = False
+    google_client_id: str = Field(default="", max_length=255)
+    google_client_secret: SecretStr = SecretStr("")
+    google_oauth_callback_url: AnyHttpUrl | None = None
 
     access_token_secret: SecretStr
     token_hash_secret: SecretStr
@@ -76,6 +82,10 @@ class Settings(BaseSettings):
     refresh_token_ttl_seconds: int = Field(default=2_592_000, ge=3600, le=7_776_000)
     oauth_state_ttl_seconds: int = Field(default=600, ge=120, le=900)
     installation_membership_ttl_seconds: int = Field(default=28_800, ge=900, le=86_400)
+    public_repository_visibility_ttl_seconds: int = Field(default=900, ge=60, le=86_400)
+    public_repository_limit_per_user: int = Field(default=20, ge=1, le=500)
+    public_import_active_limit_per_user: int = Field(default=2, ge=1, le=20)
+    public_github_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     refresh_cookie_name: str = Field(default="repolume_refresh_token", pattern=r"^[a-z0-9_]+$")
 
     worker_stream_name: str = Field(default="repolume:indexing", pattern=r"^[a-z0-9:_-]+$")
@@ -228,6 +238,16 @@ class Settings(BaseSettings):
             _origin(value)
         return value
 
+    @field_validator("google_oauth_callback_url")
+    @classmethod
+    def validate_google_callback_url(cls, value: AnyHttpUrl | None) -> AnyHttpUrl | None:
+        """Accept a fixed HTTP(S) callback; production HTTPS is checked below."""
+        if value is not None:
+            parsed = urlsplit(str(value))
+            if parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError("GOOGLE_OAUTH_CALLBACK_URL must not contain credentials or query")
+        return value
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, value: str) -> str:
@@ -286,6 +306,11 @@ class Settings(BaseSettings):
             raise ValueError("CORS_ORIGINS must use HTTPS in production")
         if self.github_oauth_callback_url.scheme != "https":
             raise ValueError("GITHUB_OAUTH_CALLBACK_URL must use HTTPS in production")
+        if self.google_auth_enabled and (
+            self.google_oauth_callback_url is None
+            or self.google_oauth_callback_url.scheme != "https"
+        ):
+            raise ValueError("GOOGLE_OAUTH_CALLBACK_URL must use HTTPS in production")
         if self.frontend_url is None:
             raise ValueError("FRONTEND_URL must be explicit in production")
         if self.frontend_url.scheme != "https":
@@ -294,6 +319,17 @@ class Settings(BaseSettings):
             raise ValueError("FRONTEND_URL must be an allowed CORS origin")
 
         self._validate_production_backing_services()
+        return self
+
+    @model_validator(mode="after")
+    def validate_google_authentication(self) -> Self:
+        """Require a complete Google OIDC configuration only when enabled."""
+        if not self.google_auth_enabled:
+            return self
+        if not self.google_client_id.strip() or self.google_oauth_callback_url is None:
+            raise ValueError("Google authentication is enabled but configuration is incomplete")
+        if len(self.google_client_secret.get_secret_value()) < MINIMUM_SECRET_LENGTH:
+            raise ValueError("GOOGLE_CLIENT_SECRET must contain at least 32 characters")
         return self
 
     def _validate_production_backing_services(self) -> None:
@@ -385,6 +421,9 @@ class Settings(BaseSettings):
             "trusted_host_count": len(self.trusted_hosts),
             "access_token_ttl_seconds": self.access_token_ttl_seconds,
             "membership_ttl_seconds": self.installation_membership_ttl_seconds,
+            "google_auth_enabled": self.google_auth_enabled,
+            "public_visibility_ttl_seconds": self.public_repository_visibility_ttl_seconds,
+            "public_repository_limit_per_user": self.public_repository_limit_per_user,
             "worker_max_attempts": self.worker_max_attempts,
             "clone_timeout_seconds": self.clone_timeout_seconds,
             "parser_max_input_bytes": self.parser_max_input_bytes,

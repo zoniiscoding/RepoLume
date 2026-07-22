@@ -18,6 +18,7 @@ from app.db.models.enums import (
     IndexingJobStatus,
     IndexingMode,
     InstallationStatus,
+    RepositoryAccessMode,
     RepositoryIndexingStatus,
     ResolutionType,
     WebhookDeliveryStatus,
@@ -27,6 +28,7 @@ from app.db.models.indexing_job import IndexingJob
 from app.db.models.repository import Repository
 from app.db.models.repository_index_build import RepositoryIndexBuild
 from app.db.models.symbol_definition import SymbolDefinition
+from app.db.models.user_repository import UserRepository
 from app.db.models.webhook_delivery import WebhookDelivery
 from app.db.session import Database
 from app.indexing.call_graph import deterministic_symbol_id
@@ -46,8 +48,8 @@ class ClaimedJob:
 class JobContext:
     job_id: uuid.UUID
     repository_id: uuid.UUID
-    installation_id: uuid.UUID
-    github_installation_id: int
+    installation_id: uuid.UUID | None
+    github_installation_id: int | None
     owner: str
     name: str
     default_branch: str
@@ -58,6 +60,7 @@ class JobContext:
     active_commit_sha: str | None = None
     indexed_branch: str | None = None
     requested_mode: IndexingMode = IndexingMode.FULL
+    access_mode: RepositoryAccessMode = RepositoryAccessMode.GITHUB_INSTALLATION
 
 
 class IndexingJobStore:
@@ -135,7 +138,7 @@ class IndexingJobStore:
                 await session.execute(
                     select(IndexingJob, Repository, GitHubInstallation)
                     .join(Repository, Repository.id == IndexingJob.repository_id)
-                    .join(
+                    .outerjoin(
                         GitHubInstallation,
                         GitHubInstallation.id == Repository.installation_id,
                     )
@@ -144,17 +147,36 @@ class IndexingJobStore:
                         IndexingJob.status == IndexingJobStatus.RUNNING,
                         Repository.access_revoked_at.is_(None),
                         Repository.deleted_at.is_(None),
-                        GitHubInstallation.status == InstallationStatus.ACTIVE,
-                        GitHubInstallation.deleted_at.is_(None),
-                        exists(
-                            select(InstallationMember.id).where(
-                                InstallationMember.installation_id == GitHubInstallation.id,
-                                InstallationMember.verified_at >= cutoff,
-                                or_(
-                                    IndexingJob.requested_by_user_id.is_(None),
-                                    InstallationMember.user_id == IndexingJob.requested_by_user_id,
-                                ),
-                            )
+                        or_(
+                            (
+                                (Repository.access_mode == RepositoryAccessMode.PUBLIC)
+                                & exists(
+                                    select(UserRepository.id).where(
+                                        UserRepository.repository_id == Repository.id,
+                                        or_(
+                                            IndexingJob.requested_by_user_id.is_(None),
+                                            UserRepository.user_id
+                                            == IndexingJob.requested_by_user_id,
+                                        ),
+                                    )
+                                )
+                            ),
+                            (
+                                (Repository.access_mode == RepositoryAccessMode.GITHUB_INSTALLATION)
+                                & (GitHubInstallation.status == InstallationStatus.ACTIVE)
+                                & GitHubInstallation.deleted_at.is_(None)
+                                & exists(
+                                    select(InstallationMember.id).where(
+                                        InstallationMember.installation_id == GitHubInstallation.id,
+                                        InstallationMember.verified_at >= cutoff,
+                                        or_(
+                                            IndexingJob.requested_by_user_id.is_(None),
+                                            InstallationMember.user_id
+                                            == IndexingJob.requested_by_user_id,
+                                        ),
+                                    )
+                                )
+                            ),
                         ),
                     )
                     .with_for_update(of=IndexingJob)
@@ -169,8 +191,10 @@ class IndexingJobStore:
             context = JobContext(
                 job_id=claimed.id,
                 repository_id=repository.id,
-                installation_id=installation.id,
-                github_installation_id=installation.github_installation_id,
+                installation_id=None if installation is None else installation.id,
+                github_installation_id=(
+                    None if installation is None else installation.github_installation_id
+                ),
                 github_repository_id=repository.github_repository_id,
                 owner=repository.github_owner,
                 name=repository.github_name,
@@ -181,9 +205,26 @@ class IndexingJobStore:
                 active_commit_sha=repository.last_indexed_commit_sha,
                 indexed_branch=repository.indexed_branch,
                 requested_mode=job.requested_mode or IndexingMode.FULL,
+                access_mode=repository.access_mode,
             )
             await session.commit()
             return context
+
+    async def revoke_public_access(self, repository_id: uuid.UUID) -> None:
+        async with self._database.session() as session:
+            await session.execute(
+                update(Repository)
+                .where(
+                    Repository.id == repository_id,
+                    Repository.access_mode == RepositoryAccessMode.PUBLIC,
+                )
+                .values(
+                    access_revoked_at=datetime.now(UTC),
+                    indexing_status=RepositoryIndexingStatus.ACCESS_REVOKED,
+                    indexing_stage="public_access_unavailable",
+                )
+            )
+            await session.commit()
 
     async def heartbeat(self, claimed: ClaimedJob, worker_id: str) -> None:
         async with self._database.session() as session:

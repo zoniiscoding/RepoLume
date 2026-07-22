@@ -5,7 +5,18 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.db.models.enums import IndexingJobStatus, IndexingMode, RepositoryIndexingStatus
+from app.db.models.enums import (
+    IndexingJobStatus,
+    IndexingMode,
+    RepositoryAccessMode,
+    RepositoryIndexingStatus,
+)
+
+
+class PublicRepositoryImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repository_url: str = Field(min_length=1, max_length=2048)
 
 
 class RepositoryCreateRequest(BaseModel):
@@ -19,7 +30,9 @@ class RepositoryDetailResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: uuid.UUID
-    installation_id: uuid.UUID
+    installation_id: uuid.UUID | None
+    access_mode: RepositoryAccessMode
+    access_source: str
     github_repository_id: int
     github_owner: str
     github_name: str
@@ -97,3 +110,12 @@ class RepositoryCreateResponse(BaseModel):
 
     repository: RepositoryDetailResponse
     job: IndexingStatusResponse
+
+
+class PublicRepositoryImportResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repository: RepositoryDetailResponse
+    job: IndexingStatusResponse | None
+    already_current: bool
+    reused_index: bool

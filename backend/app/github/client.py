@@ -3,9 +3,10 @@
 import asyncio
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 import jwt
@@ -13,6 +14,7 @@ from pydantic import SecretStr, ValidationError
 
 from app.core.config import Settings
 from app.github.schemas import (
+    GitHubBranch,
     GitHubCommit,
     GitHubCommitComparison,
     GitHubHistoryBundle,
@@ -32,11 +34,32 @@ MAX_PAGES = 10
 PAGE_SIZE = 100
 MAX_INSTALLATION_TOKEN_REPOSITORIES = 500
 MAX_HISTORY_LIMIT = 10
+HTTP_NOT_FOUND = 404
+HTTP_FORBIDDEN = 403
+HTTP_TOO_MANY_REQUESTS = 429
 _REPOSITORY_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
 
 
 class GitHubAPIError(RuntimeError):
     """Safe GitHub dependency failure without response bodies or credentials."""
+
+
+class GitHubRepositoryNotFoundError(GitHubAPIError):
+    """The public repository does not exist or is not visible."""
+
+
+class GitHubRepositoryPrivateError(GitHubAPIError):
+    """The requested repository is not publicly accessible."""
+
+
+class GitHubRateLimitError(GitHubAPIError):
+    """GitHub refused the request due to a provider rate limit."""
+
+
+@dataclass(frozen=True, slots=True)
+class PublicGitHubRepository:
+    repository: GitHubRepository
+    default_branch_sha: str
 
 
 class GitHubClientProtocol(Protocol):
@@ -72,6 +95,18 @@ class GitHubClientProtocol(Protocol):
         installation_token: SecretStr,
     ) -> Sequence[GitHubRepository]: ...
 
+    async def get_public_repository(
+        self, *, owner: str, repository: str
+    ) -> PublicGitHubRepository: ...
+
+    async def compare_public_repository_commits(
+        self, *, owner: str, repository: str, base: str, head: str
+    ) -> GitHubCommitComparison: ...
+
+    async def get_public_repository_history(
+        self, *, owner: str, repository: str, revision: str, limit: int
+    ) -> Sequence[GitHubHistoryBundle]: ...
+
     async def close(self) -> None: ...
 
 
@@ -88,6 +123,10 @@ class GitHubHistoryClientProtocol(Protocol):
         repository: str,
         revision: str,
         limit: int,
+    ) -> Sequence[GitHubHistoryBundle]: ...
+
+    async def get_public_repository_history(
+        self, *, owner: str, repository: str, revision: str, limit: int
     ) -> Sequence[GitHubHistoryBundle]: ...
 
 
@@ -233,6 +272,51 @@ class GitHubClient:
                 break
         return items
 
+    async def get_public_repository(self, *, owner: str, repository: str) -> PublicGitHubRepository:
+        """Resolve trusted public identity and default-branch SHA through fixed API paths."""
+        if (
+            _REPOSITORY_SEGMENT.fullmatch(owner) is None
+            or _REPOSITORY_SEGMENT.fullmatch(repository) is None
+        ):
+            raise GitHubRepositoryNotFoundError
+        response = await self._public_request(f"{GITHUB_API_ROOT}/repos/{owner}/{repository}")
+        try:
+            metadata = GitHubRepository.model_validate(response.json())
+        except (TypeError, ValueError, ValidationError) as error:
+            raise GitHubAPIError from error
+        if metadata.private:
+            raise GitHubRepositoryPrivateError
+        branch = quote(metadata.default_branch, safe="")
+        branch_response = await self._public_request(
+            f"{GITHUB_API_ROOT}/repos/{metadata.owner.login}/{metadata.name}/branches/{branch}"
+        )
+        try:
+            branch_data = GitHubBranch.model_validate(branch_response.json())
+        except (TypeError, ValueError, ValidationError) as error:
+            raise GitHubAPIError from error
+        if branch_data.name != metadata.default_branch:
+            raise GitHubAPIError
+        return PublicGitHubRepository(metadata, branch_data.commit.sha)
+
+    async def compare_public_repository_commits(
+        self, *, owner: str, repository: str, base: str, head: str
+    ) -> GitHubCommitComparison:
+        token = self._public_token()
+        return await self._compare_repository_commits(
+            token, owner=owner, repository=repository, base=base, head=head
+        )
+
+    async def get_public_repository_history(
+        self, *, owner: str, repository: str, revision: str, limit: int
+    ) -> Sequence[GitHubHistoryBundle]:
+        return await self._get_repository_history(
+            self._public_token(),
+            owner=owner,
+            repository=repository,
+            revision=revision,
+            limit=limit,
+        )
+
     async def get_repository_history(
         self,
         installation_token: SecretStr,
@@ -243,6 +327,23 @@ class GitHubClient:
         limit: int,
     ) -> Sequence[GitHubHistoryBundle]:
         """Read bounded history through fixed repository-scoped GitHub API paths."""
+        return await self._get_repository_history(
+            installation_token,
+            owner=owner,
+            repository=repository,
+            revision=revision,
+            limit=limit,
+        )
+
+    async def _get_repository_history(
+        self,
+        token: SecretStr | None,
+        *,
+        owner: str,
+        repository: str,
+        revision: str,
+        limit: int,
+    ) -> Sequence[GitHubHistoryBundle]:
         if (
             _REPOSITORY_SEGMENT.fullmatch(owner) is None
             or _REPOSITORY_SEGMENT.fullmatch(repository) is None
@@ -254,7 +355,7 @@ class GitHubClient:
         response = await self._request(
             "GET",
             f"{base}/commits",
-            token=installation_token,
+            token=token,
             params={"sha": revision, "per_page": limit, "page": 1},
             retry_attempts=2,
         )
@@ -267,13 +368,13 @@ class GitHubClient:
             detail_response = await self._request(
                 "GET",
                 f"{base}/commits/{summary.sha}",
-                token=installation_token,
+                token=token,
                 retry_attempts=2,
             )
             pulls_response = await self._request(
                 "GET",
                 f"{base}/commits/{summary.sha}/pulls",
-                token=installation_token,
+                token=token,
                 params={"per_page": 3, "page": 1},
                 retry_attempts=2,
             )
@@ -304,6 +405,23 @@ class GitHubClient:
         head: str,
     ) -> GitHubCommitComparison:
         """Compare server-selected SHAs through one fixed repository API path."""
+        return await self._compare_repository_commits(
+            installation_token,
+            owner=owner,
+            repository=repository,
+            base=base,
+            head=head,
+        )
+
+    async def _compare_repository_commits(
+        self,
+        token: SecretStr | None,
+        *,
+        owner: str,
+        repository: str,
+        base: str,
+        head: str,
+    ) -> GitHubCommitComparison:
         if (
             _REPOSITORY_SEGMENT.fullmatch(owner) is None
             or _REPOSITORY_SEGMENT.fullmatch(repository) is None
@@ -314,7 +432,7 @@ class GitHubClient:
         response = await self._request(
             "GET",
             f"{GITHUB_API_ROOT}/repos/{owner}/{repository}/compare/{base}...{head}",
-            token=installation_token,
+            token=token,
             params={"per_page": 100, "page": 1},
             retry_attempts=2,
         )
@@ -322,6 +440,36 @@ class GitHubClient:
             return GitHubCommitComparison.model_validate(response.json())
         except (TypeError, ValueError, ValidationError) as error:
             raise GitHubAPIError from error
+
+    def _public_token(self) -> SecretStr | None:
+        value = self._settings.github_public_api_token.get_secret_value()
+        return SecretStr(value) if value else None
+
+    async def _public_request(self, url: str) -> httpx.Response:
+        """Map public metadata failures and follow at most one verified GitHub identity redirect."""
+        token = self._public_token()
+        response = await self._request("GET", url, token=token, allow_error_status=True)
+        if response.status_code in {301, 307, 308}:
+            location = response.headers.get("location", "")
+            parsed = urlsplit(location)
+            if (
+                parsed.scheme != "https"
+                or parsed.netloc != "api.github.com"
+                or parsed.query
+                or parsed.fragment
+                or re.fullmatch(r"/repositories/[1-9][0-9]*", parsed.path) is None
+            ):
+                raise GitHubAPIError
+            response = await self._request("GET", location, token=token, allow_error_status=True)
+        if response.status_code == HTTP_NOT_FOUND:
+            raise GitHubRepositoryNotFoundError
+        if response.status_code in {HTTP_FORBIDDEN, HTTP_TOO_MANY_REQUESTS}:
+            raise GitHubRateLimitError
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            raise GitHubAPIError from error
+        return response
 
     @staticmethod
     def _validate_history_identity(
@@ -361,6 +509,7 @@ class GitHubClient:
         *,
         token: SecretStr | None = None,
         retry_attempts: int = 1,
+        allow_error_status: bool = False,
         **kwargs: Any,
     ) -> httpx.Response:
         headers = {
@@ -373,7 +522,8 @@ class GitHubClient:
         for attempt in range(1, retry_attempts + 1):
             try:
                 response = await self._http.request(method, url, headers=headers, **kwargs)
-                response.raise_for_status()
+                if not allow_error_status:
+                    response.raise_for_status()
             except (httpx.ConnectError, httpx.TimeoutException) as error:
                 if attempt == retry_attempts:
                     raise GitHubAPIError from error

@@ -34,8 +34,9 @@ export function AuthProvider({ children }: PropsWithChildren): React.JSX.Element
     void refreshSession();
   }, [refreshSession]);
 
-  const signIn = useCallback((): void => {
-    api.startGitHubAuthorization();
+  const signIn = useCallback((provider: "google" | "github"): void => {
+    if (provider === "google") api.startGoogleAuthorization();
+    else api.startGitHubAuthorization();
   }, []);
 
   const signOut = useCallback(async (): Promise<void> => {

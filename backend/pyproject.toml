@@ -81,6 +81,7 @@ ignore = [
 "alembic/**/*.py" = ["ANN", "INP001"]
 "app/core/config.py" = ["S104", "TRY003"]
 "app/auth/tokens.py" = ["S105"]
+"app/auth/google.py" = ["S105"]
 "app/github/client.py" = ["S105"]
 "app/github/schemas.py" = ["S105"]
 "app/schemas/auth.py" = ["S105"]

@@ -10,6 +10,7 @@ from app.db.models.call_edge import CallEdge
 from app.db.models.enums import RepositoryIndexingStatus
 
 EXPECTED_TABLES = {
+    "auth_identities",
     "alembic_version",
     "call_edges",
     "chat_messages",
@@ -24,6 +25,7 @@ EXPECTED_TABLES = {
     "symbol_definitions",
     "usage_records",
     "users",
+    "user_repositories",
     "webhook_deliveries",
 }
 

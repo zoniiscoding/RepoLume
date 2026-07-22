@@ -47,7 +47,13 @@ from app.db.models.webhook_delivery import WebhookDelivery
 from app.db.session import Database
 from app.embeddings.client import EmbeddingProviderProtocol, EmbeddingServiceClient
 from app.embeddings.preprocessing import PreparedEmbedding
-from app.github.schemas import GitHubCommitComparison, GitHubRepository, GitHubUser
+from app.github.client import PublicGitHubRepository
+from app.github.schemas import (
+    GitHubCommitComparison,
+    GitHubHistoryBundle,
+    GitHubRepository,
+    GitHubUser,
+)
 from app.github.schemas import GitHubInstallation as GitHubInstallationData
 from app.indexing.analyzer import ProcessIsolatedAnalyzer
 from app.indexing.clone import ClonedRepository, CloneRequest
@@ -191,6 +197,22 @@ class FakeGitHub:
     ) -> Sequence[GitHubRepository]:
         assert installation_token.get_secret_value() == "installation-token-sensitive-sentinel"
         return self.repositories
+
+    async def get_public_repository(self, *, owner: str, repository: str) -> PublicGitHubRepository:
+        del owner, repository
+        raise AssertionError("public repository access is outside this fixture")
+
+    async def compare_public_repository_commits(
+        self, *, owner: str, repository: str, base: str, head: str
+    ) -> GitHubCommitComparison:
+        del owner, repository, base, head
+        raise AssertionError("public repository access is outside this fixture")
+
+    async def get_public_repository_history(
+        self, *, owner: str, repository: str, revision: str, limit: int
+    ) -> Sequence[GitHubHistoryBundle]:
+        del owner, repository, revision, limit
+        raise AssertionError("public repository access is outside this fixture")
 
     async def close(self) -> None:
         return None

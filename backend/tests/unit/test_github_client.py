@@ -9,7 +9,14 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import SecretStr, ValidationError
 
-from app.github.client import GITHUB_API_VERSION, GitHubAPIError, GitHubClient
+from app.github.client import (
+    GITHUB_API_VERSION,
+    GitHubAPIError,
+    GitHubClient,
+    GitHubRateLimitError,
+    GitHubRepositoryNotFoundError,
+    GitHubRepositoryPrivateError,
+)
 from app.github.schemas import GitHubRepository
 from tests.conftest import make_settings
 
@@ -362,4 +369,148 @@ async def test_repository_compare_uses_fixed_scope_and_rejects_unsafe_paths() ->
             base=base,
             head=head,
         )
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_public_repository_metadata_uses_canonical_identity_and_optional_server_token() -> (
+    None
+):
+    requests: list[httpx.Request] = []
+    sha = "a" * 40
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/repos/old-owner/old-repo":
+            return httpx.Response(
+                301,
+                headers={"Location": "https://api.github.com/repositories/100"},
+            )
+        if request.url.path == "/repositories/100":
+            return httpx.Response(
+                200,
+                json={
+                    "id": 100,
+                    "owner": {"login": "new-owner"},
+                    "name": "new-repo",
+                    "full_name": "new-owner/new-repo",
+                    "html_url": "https://github.com/new-owner/new-repo",
+                    "private": False,
+                    "default_branch": "main",
+                    "size": 42,
+                },
+            )
+        if request.url.path == "/repos/new-owner/new-repo/branches/main":
+            return httpx.Response(200, json={"name": "main", "commit": {"sha": sha}})
+        return httpx.Response(500)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = GitHubClient(
+        make_settings(
+            github_public_api_token="server-owned-public-token"  # noqa: S106
+        ),
+        http_client,
+    )
+
+    result = await client.get_public_repository(owner="old-owner", repository="old-repo")
+
+    assert result.repository.id == 100
+    assert result.repository.full_name == "new-owner/new-repo"
+    assert result.default_branch_sha == sha
+    assert [request.url.path for request in requests] == [
+        "/repos/old-owner/old-repo",
+        "/repositories/100",
+        "/repos/new-owner/new-repo/branches/main",
+    ]
+    assert all(
+        request.headers["Authorization"] == "Bearer server-owned-public-token"
+        for request in requests
+    )
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "error_type"),
+    [
+        (404, GitHubRepositoryNotFoundError),
+        (403, GitHubRateLimitError),
+        (429, GitHubRateLimitError),
+        (503, GitHubAPIError),
+    ],
+)
+async def test_public_repository_metadata_maps_provider_failures_safely(
+    status_code: int, error_type: type[Exception]
+) -> None:
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(status_code, request=request))
+    )
+    client = GitHubClient(make_settings(github_public_api_token=""), http_client)
+
+    with pytest.raises(error_type):
+        await client.get_public_repository(owner="owner", repository="repo")
+
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_public_repository_metadata_rejects_private_malformed_and_unsafe_redirects() -> None:
+    responses = iter(
+        [
+            httpx.Response(
+                200,
+                json={
+                    "id": 100,
+                    "owner": {"login": "owner"},
+                    "name": "repo",
+                    "full_name": "owner/repo",
+                    "html_url": "https://github.com/owner/repo",
+                    "private": True,
+                    "default_branch": "main",
+                },
+            ),
+            httpx.Response(200, json={}),
+            httpx.Response(301, headers={"Location": "https://evil.example/repositories/100"}),
+        ]
+    )
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: next(responses)))
+    client = GitHubClient(make_settings(), http_client)
+
+    with pytest.raises(GitHubRepositoryPrivateError):
+        await client.get_public_repository(owner="owner", repository="repo")
+    with pytest.raises(GitHubAPIError):
+        await client.get_public_repository(owner="owner", repository="repo")
+    with pytest.raises(GitHubAPIError):
+        await client.get_public_repository(owner="owner", repository="repo")
+    with pytest.raises(GitHubRepositoryNotFoundError):
+        await client.get_public_repository(owner="../owner", repository="repo")
+
+    await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_public_compare_omits_authorization_when_server_token_is_unset() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "status": "identical",
+                "ahead_by": 0,
+                "behind_by": 0,
+                "total_commits": 0,
+                "files": [],
+            },
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = GitHubClient(make_settings(github_public_api_token=""), http_client)
+    result = await client.compare_public_repository_commits(
+        owner="owner", repository="repo", base="a" * 40, head="b" * 40
+    )
+
+    assert result.status == "identical"
+    assert "Authorization" not in requests[0].headers
     await http_client.aclose()

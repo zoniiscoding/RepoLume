@@ -55,6 +55,7 @@ class GitHubRepository(BaseModel):
     private: bool
     default_branch: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
     language: str | None = Field(default=None, max_length=64)
+    size: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def validate_repository_identity(self) -> "GitHubRepository":
@@ -69,6 +70,19 @@ class GitHubRepository(BaseModel):
         if self.default_branch.endswith(("/", ".", ".lock")):
             raise ValueError
         return self
+
+
+class GitHubBranchCommit(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
+class GitHubBranch(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(min_length=1, max_length=255)
+    commit: GitHubBranchCommit
 
 
 class GitHubOAuthToken(BaseModel):

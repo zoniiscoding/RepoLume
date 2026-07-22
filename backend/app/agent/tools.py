@@ -24,7 +24,7 @@ from app.agent.models import (
 )
 from app.core.config import Settings
 from app.db.models.call_edge import CallEdge
-from app.db.models.enums import IndexBuildState
+from app.db.models.enums import IndexBuildState, RepositoryAccessMode
 from app.db.models.repository import Repository
 from app.db.models.repository_index_build import RepositoryIndexBuild
 from app.db.models.symbol_definition import SymbolDefinition
@@ -35,7 +35,11 @@ from app.github.client import GitHubAPIError, GitHubHistoryClientProtocol
 from app.github.schemas import GitHubHistoryBundle
 from app.rag.evidence import EvidenceSelector
 from app.services.installations import InstallationAccessError, InstallationService
-from app.vector.qdrant import VectorScope, VectorStoreProtocol, embedding_model_fingerprint
+from app.vector.qdrant import (
+    VectorStoreProtocol,
+    embedding_model_fingerprint,
+    vector_scope_for_repository,
+)
 
 _WORD_PATTERN = re.compile(r"[A-Za-z0-9_./-]+")
 _COMMIT_SHA_PATTERN = re.compile(r"(?<![0-9a-f])([0-9a-f]{7,40})(?![0-9a-f])", re.I)
@@ -99,11 +103,7 @@ class SearchCodeTool:
             prepared = self._preprocessor.prepare_query(query)
             query_vector = await self._embeddings.embed_query(prepared)
             hits = await self._vectors.search(
-                VectorScope(
-                    context.repository.installation_id,
-                    context.repository.id,
-                    context.index_version,
-                ),
+                vector_scope_for_repository(context.repository, context.index_version),
                 query_vector=query_vector,
                 commit_sha=context.commit_sha,
                 model_fingerprint=embedding_model_fingerprint(
@@ -150,23 +150,35 @@ class GetHistoryTool:
             GetHistoryArguments.model_validate(arguments)
         except ValidationError as error:
             raise AgentToolError("invalid_get_history_arguments") from error
-        installation = await self._installations.get_authorized_installation(
-            user_id=context.user_id,
-            installation_id=context.repository.installation_id,
-        )
         try:
-            token = await self._github.create_repository_installation_token(
-                installation.github_installation_id,
-                repository_id=context.repository.github_repository_id,
-            )
             requested_sha = _COMMIT_SHA_PATTERN.search(context.original_question)
-            bundles = await self._github.get_repository_history(
-                token,
-                owner=context.repository.github_owner,
-                repository=context.repository.github_name,
-                revision=requested_sha.group(1).casefold() if requested_sha else context.commit_sha,
-                limit=self._limit,
-            )
+            revision = requested_sha.group(1).casefold() if requested_sha else context.commit_sha
+            if context.repository.access_mode is RepositoryAccessMode.PUBLIC:
+                bundles = await self._github.get_public_repository_history(
+                    owner=context.repository.github_owner,
+                    repository=context.repository.github_name,
+                    revision=revision,
+                    limit=self._limit,
+                )
+            else:
+                installation_id = context.repository.installation_id
+                if installation_id is None:
+                    raise AgentToolError("github_history_unavailable")
+                installation = await self._installations.get_authorized_installation(
+                    user_id=context.user_id,
+                    installation_id=installation_id,
+                )
+                token = await self._github.create_repository_installation_token(
+                    installation.github_installation_id,
+                    repository_id=context.repository.github_repository_id,
+                )
+                bundles = await self._github.get_repository_history(
+                    token,
+                    owner=context.repository.github_owner,
+                    repository=context.repository.github_name,
+                    revision=revision,
+                    limit=self._limit,
+                )
         except GitHubAPIError as error:
             raise AgentToolError("github_history_unavailable") from error
         ranked = self._rank(context.original_question, bundles)

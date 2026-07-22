@@ -8,11 +8,21 @@ from sqlalchemy import Select, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.db.models.enums import InstallationStatus, RepositoryIndexingStatus
+from app.db.models.enums import (
+    InstallationStatus,
+    RepositoryAccessMode,
+    RepositoryIndexingStatus,
+)
 from app.db.models.github_installation import GitHubInstallation, InstallationMember
 from app.db.models.repository import Repository
+from app.db.models.user_repository import UserRepository
 from app.db.session import Database
-from app.github.client import GitHubClientProtocol
+from app.github.client import (
+    GitHubAPIError,
+    GitHubClientProtocol,
+    GitHubRepositoryNotFoundError,
+    GitHubRepositoryPrivateError,
+)
 from app.github.schemas import GitHubRepository
 
 
@@ -32,6 +42,9 @@ class InstallationService:
         self._database = database
         self._github = github
         self._membership_ttl = timedelta(seconds=settings.installation_membership_ttl_seconds)
+        self._public_visibility_ttl = timedelta(
+            seconds=settings.public_repository_visibility_ttl_seconds
+        )
 
     def _authorized_installation_query(
         self,
@@ -67,7 +80,7 @@ class InstallationService:
     async def list_authorized_repositories(self, user_id: uuid.UUID) -> Sequence[Repository]:
         cutoff = datetime.now(UTC) - self._membership_ttl
         async with self._database.session() as session:
-            result = await session.scalars(
+            private_result = await session.scalars(
                 select(Repository)
                 .join(GitHubInstallation, GitHubInstallation.id == Repository.installation_id)
                 .join(
@@ -81,10 +94,22 @@ class InstallationService:
                     GitHubInstallation.deleted_at.is_(None),
                     Repository.access_revoked_at.is_(None),
                     Repository.deleted_at.is_(None),
+                    Repository.access_mode == RepositoryAccessMode.GITHUB_INSTALLATION,
                 )
-                .order_by(Repository.github_full_name)
             )
-            return tuple(result.all())
+            public_result = await session.scalars(
+                select(Repository)
+                .join(UserRepository, UserRepository.repository_id == Repository.id)
+                .where(
+                    UserRepository.user_id == user_id,
+                    Repository.access_mode == RepositoryAccessMode.PUBLIC,
+                    Repository.access_revoked_at.is_(None),
+                    Repository.deleted_at.is_(None),
+                )
+            )
+            repositories = {item.id: item for item in private_result.all()}
+            repositories.update({item.id: item for item in public_result.all()})
+            return tuple(sorted(repositories.values(), key=lambda item: item.github_full_name))
 
     async def get_authorized_installation(
         self,
@@ -194,6 +219,7 @@ class InstallationService:
         if repository is None:
             repository = Repository(
                 installation_id=installation_id,
+                access_mode=RepositoryAccessMode.GITHUB_INSTALLATION,
                 github_repository_id=external.id,
                 github_owner=external.owner.login,
                 github_name=external.name,
@@ -224,6 +250,14 @@ class InstallationService:
         user_id: uuid.UUID,
         repository_id: uuid.UUID,
     ) -> Repository:
+        async with self._database.session() as session:
+            access_mode = await session.scalar(
+                select(Repository.access_mode).where(Repository.id == repository_id)
+            )
+        if access_mode == RepositoryAccessMode.PUBLIC:
+            return await self._get_authorized_public_repository(
+                user_id=user_id, repository_id=repository_id
+            )
         cutoff = datetime.now(UTC) - self._membership_ttl
         async with self._database.session() as session:
             repository = await session.scalar(
@@ -249,3 +283,78 @@ class InstallationService:
         if repository is None:
             raise InstallationAccessError
         return repository
+
+    async def _get_authorized_public_repository(
+        self, *, user_id: uuid.UUID, repository_id: uuid.UUID
+    ) -> Repository:
+        async with self._database.session() as session:
+            repository = await session.scalar(
+                select(Repository)
+                .join(UserRepository, UserRepository.repository_id == Repository.id)
+                .where(
+                    Repository.id == repository_id,
+                    Repository.access_mode == RepositoryAccessMode.PUBLIC,
+                    Repository.access_revoked_at.is_(None),
+                    Repository.deleted_at.is_(None),
+                    UserRepository.user_id == user_id,
+                )
+            )
+        if repository is None:
+            raise InstallationAccessError
+        cutoff = datetime.now(UTC) - self._public_visibility_ttl
+        if (
+            repository.visibility_checked_at is not None
+            and repository.visibility_checked_at >= cutoff
+        ):
+            return repository
+        try:
+            metadata = await self._github.get_public_repository(
+                owner=repository.github_owner, repository=repository.github_name
+            )
+        except (GitHubRepositoryNotFoundError, GitHubRepositoryPrivateError) as error:
+            await self._revoke_public(repository.id)
+            raise InstallationAccessError from error
+        except GitHubAPIError as error:
+            raise InstallationAccessError from error
+        if metadata.repository.id != repository.github_repository_id:
+            await self._revoke_public(repository.id)
+            raise InstallationAccessError
+        async with self._database.session() as session:
+            current = await session.scalar(
+                select(Repository)
+                .join(UserRepository, UserRepository.repository_id == Repository.id)
+                .where(
+                    Repository.id == repository.id,
+                    Repository.access_mode == RepositoryAccessMode.PUBLIC,
+                    Repository.access_revoked_at.is_(None),
+                    UserRepository.user_id == user_id,
+                )
+                .with_for_update()
+            )
+            if current is None:
+                raise InstallationAccessError
+            current.github_owner = metadata.repository.owner.login
+            current.github_name = metadata.repository.name
+            current.github_full_name = metadata.repository.full_name
+            current.github_url = metadata.repository.html_url
+            current.default_branch = metadata.repository.default_branch
+            current.current_remote_sha = metadata.default_branch_sha
+            current.visibility_checked_at = datetime.now(UTC)
+            await session.commit()
+            return current
+
+    async def _revoke_public(self, repository_id: uuid.UUID) -> None:
+        async with self._database.session() as session:
+            await session.execute(
+                update(Repository)
+                .where(
+                    Repository.id == repository_id,
+                    Repository.access_mode == RepositoryAccessMode.PUBLIC,
+                )
+                .values(
+                    access_revoked_at=datetime.now(UTC),
+                    indexing_status=RepositoryIndexingStatus.ACCESS_REVOKED,
+                    indexing_stage="public_access_unavailable",
+                )
+            )
+            await session.commit()

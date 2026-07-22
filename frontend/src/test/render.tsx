@@ -13,6 +13,7 @@ export const testAuth: AuthContextValue = {
     display_name: "The Octocat",
     avatar_url: null,
     email: null,
+    linked_providers: ["github"],
   },
   accessToken: "test-access-token",
   signIn: () => undefined,

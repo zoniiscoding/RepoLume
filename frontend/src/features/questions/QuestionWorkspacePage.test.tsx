@@ -9,6 +9,8 @@ import { QuestionWorkspacePage } from "./QuestionWorkspacePage";
 const repository: Repository = {
   id: "repository-id",
   installation_id: "installation-id",
+  access_mode: "github_installation",
+  access_source: "GitHub App",
   github_repository_id: 4,
   github_owner: "repolume",
   github_name: "api",

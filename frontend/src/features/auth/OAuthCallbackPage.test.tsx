@@ -7,7 +7,7 @@ describe("OAuthCallbackPage", () => {
   it("does not expose OAuth values when browser-session recovery fails", async () => {
     renderWithApp(<OAuthCallbackPage />, { auth: { refreshSession: async () => false } });
 
-    expect(await screen.findByText(/could not finish your github session/i)).toBeInTheDocument();
+    expect(await screen.findByText(/could not finish your sign-in session/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /return to sign in/i })).toHaveAttribute(
       "href",
       "/signin",

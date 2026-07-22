@@ -8,7 +8,7 @@ import structlog
 from sqlalchemy import select
 
 from app.core.config import Settings
-from app.db.models.enums import IndexBuildState, RepositoryIndexingStatus
+from app.db.models.enums import IndexBuildState, RepositoryAccessMode, RepositoryIndexingStatus
 from app.db.models.repository import Repository
 from app.db.models.repository_index_build import RepositoryIndexBuild
 from app.db.session import Database
@@ -42,10 +42,12 @@ _UNAVAILABLE = "Grounded answering is temporarily unavailable. Please try again.
 @dataclass(frozen=True, slots=True)
 class ActiveIndex:
     repository_id: uuid.UUID
-    installation_id: uuid.UUID
+    installation_id: uuid.UUID | None
     index_version: int
     commit_sha: str
     preprocessing_fingerprint: str
+    access_mode: RepositoryAccessMode = RepositoryAccessMode.GITHUB_INSTALLATION
+    github_repository_id: int = 1
 
 
 class QuestionService:
@@ -126,7 +128,17 @@ class QuestionService:
             prepared = self._preprocessor.prepare_query(question.text)
             query_vector = await self._embeddings.embed_query(prepared)
             hits = await self._vectors.search(
-                VectorScope(active.installation_id, active.repository_id, active.index_version),
+                VectorScope(
+                    active.installation_id,
+                    active.repository_id,
+                    active.index_version,
+                    active.access_mode,
+                    (
+                        active.github_repository_id
+                        if active.access_mode is RepositoryAccessMode.PUBLIC
+                        else None
+                    ),
+                ),
                 query_vector=query_vector,
                 commit_sha=active.commit_sha,
                 model_fingerprint=embedding_model_fingerprint(
@@ -239,6 +251,8 @@ class QuestionService:
         return ActiveIndex(
             repository_id=repository.id,
             installation_id=repository.installation_id,
+            access_mode=repository.access_mode or RepositoryAccessMode.GITHUB_INSTALLATION,
+            github_repository_id=repository.github_repository_id,
             index_version=build.index_version,
             commit_sha=build.commit_sha,
             preprocessing_fingerprint=build.preprocessing_fingerprint,

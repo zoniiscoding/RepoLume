@@ -9,6 +9,8 @@ const LONG_PATH = `src/${"deeply-nested/".repeat(12)}authorization_boundary.py`;
 const repository = {
   id: REPOSITORY_ID,
   installation_id: INSTALLATION_ID,
+  access_mode: "github_installation",
+  access_source: "GitHub App",
   github_repository_id: 9001,
   github_owner: "octocat",
   github_name: LONG_REPOSITORY_NAME.split("/")[1],
@@ -196,6 +198,7 @@ async function installApiFixture(page: Page, expired = false): Promise<void> {
         display_name: "Octocat",
         avatar_url: null,
         email: null,
+        linked_providers: ["github"],
       });
       return;
     }
@@ -286,7 +289,7 @@ test("sign-in, failed OAuth callback, and expired protected session are understa
 
   await page.goto("/auth/callback");
   await expect(
-    page.getByRole("heading", { name: "We could not finish your GitHub session." }),
+    page.getByRole("heading", { name: "We could not finish your sign-in session." }),
   ).toBeVisible();
   await expect(page.getByText("No access token was saved in this browser.")).toBeVisible();
 
@@ -311,7 +314,7 @@ for (const [name, viewport] of Object.entries({
     await installApiFixture(page);
     await page.goto("/repositories");
     await expect(
-      page.getByRole("heading", { name: "Connect an authorized repository" }),
+      page.getByRole("heading", { name: "Choose a repository to understand" }),
     ).toBeVisible();
     await expect(
       page.getByRole("table", { name: "Authorized repositories" }).getByText(LONG_REPOSITORY_NAME),

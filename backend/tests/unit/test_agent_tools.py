@@ -13,7 +13,7 @@ from app.agent.tools import (
     GetHistoryTool,
     SearchCodeTool,
 )
-from app.db.models.enums import RepositoryIndexingStatus
+from app.db.models.enums import RepositoryAccessMode, RepositoryIndexingStatus
 from app.db.models.repository import Repository
 from app.embeddings.preprocessing import PreparedEmbedding
 from app.github.schemas import GitHubHistoryBundle
@@ -145,6 +145,12 @@ class FakeGitHub:
         self.history_kwargs = kwargs
         return (self.bundle,)
 
+    async def get_public_repository_history(
+        self, **kwargs: object
+    ) -> tuple[GitHubHistoryBundle, ...]:
+        self.history_kwargs = kwargs
+        return (self.bundle,)
+
 
 def history_bundle() -> GitHubHistoryBundle:
     return GitHubHistoryBundle.model_validate(
@@ -217,6 +223,33 @@ async def test_get_history_uses_exact_repository_token_scope_and_typed_evidence(
     assert isinstance(result[1], PullRequestEvidence)
     assert result[1].evidence_id == "T1-P1-1"
     assert result[1].changed_paths == ("app/service.py",)
+
+
+@pytest.mark.asyncio
+async def test_get_history_for_public_repository_uses_no_installation_credential() -> None:
+    settings = make_settings(agent_history_commit_limit=3)
+    installations = FakeInstallations()
+    github = FakeGitHub(history_bundle())
+    current = context(question=f"What changed in {'d' * 40}?")
+    current.repository.installation_id = None
+    current.repository.access_mode = RepositoryAccessMode.PUBLIC
+    current.repository.is_private = False
+    tool = GetHistoryTool(
+        installations=installations,  # type: ignore[arg-type]
+        github=github,  # type: ignore[arg-type]
+        settings=settings,
+    )
+
+    result = await tool.execute(current, {"query": "history"}, step=1)
+
+    assert github.token_request is None
+    assert github.history_kwargs == {
+        "owner": "owner",
+        "repository": "private-repo",
+        "revision": "d" * 40,
+        "limit": 3,
+    }
+    assert isinstance(result[0], CommitEvidence)
 
 
 def test_registry_requires_exactly_the_three_milestone_8_tools() -> None:

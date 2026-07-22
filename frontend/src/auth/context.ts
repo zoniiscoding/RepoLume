@@ -7,7 +7,7 @@ export interface AuthContextValue {
   state: AuthState;
   user: User | null;
   accessToken: string | null;
-  signIn(): void;
+  signIn(provider: "google" | "github"): void;
   signOut(): Promise<void>;
   refreshSession(): Promise<boolean>;
 }

@@ -39,11 +39,12 @@ export interface ApiErrorPayload {
 
 export interface User {
   id: string;
-  github_user_id: number;
-  github_login: string;
+  github_user_id: number | null;
+  github_login: string | null;
   display_name: string | null;
   avatar_url: string | null;
   email: string | null;
+  linked_providers: Array<"google" | "github">;
 }
 
 export interface AccessTokenResponse {
@@ -79,7 +80,9 @@ export interface AvailableRepository {
 
 export interface Repository {
   id: string;
-  installation_id: string;
+  installation_id: string | null;
+  access_mode: "public" | "github_installation";
+  access_source: "Public URL" | "GitHub App";
   github_repository_id: number;
   github_owner: string;
   github_name: string;
@@ -153,6 +156,13 @@ export interface IndexingStatus {
 export interface RepositoryJobResponse {
   repository: Repository;
   job: IndexingStatus;
+}
+
+export interface PublicRepositoryImportResponse {
+  repository: Repository;
+  job: IndexingStatus | null;
+  already_current: boolean;
+  reused_index: boolean;
 }
 
 export interface CodeCitation {

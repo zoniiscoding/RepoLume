@@ -10,6 +10,8 @@ import pytest
 from qdrant_client import AsyncQdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 
+from app.db.models.enums import RepositoryAccessMode
+from app.db.models.repository import Repository
 from app.embeddings.preprocessing import EmbeddingPreprocessor, PreparedEmbedding
 from app.indexing.failures import IndexingError
 from app.indexing.models import ChunkType, ContentChunk
@@ -22,6 +24,7 @@ from app.vector.qdrant import (
     embedding_model_fingerprint,
     retrieval_filter,
     scope_filter,
+    vector_scope_for_repository,
 )
 from tests.conftest import make_settings
 
@@ -77,6 +80,79 @@ def test_scope_filter_always_contains_installation_repository_and_version() -> N
         "repository_id": str(scope.repository_id),
         "index_version": 7,
     }
+
+
+def test_public_scope_uses_trusted_github_identity_without_installation_scope() -> None:
+    repository_id = uuid.uuid4()
+    scope = VectorScope(
+        installation_id=None,
+        repository_id=repository_id,
+        index_version=4,
+        access_mode=RepositoryAccessMode.PUBLIC,
+        github_repository_id=98765,
+    )
+    built = scope_filter(scope).model_dump(mode="json")
+    conditions = {item["key"]: item["match"]["value"] for item in built["must"]}
+    record = build_vector_record(
+        scope=scope,
+        prepared=prepared(repository_id),
+        vector=(1.0,) + (0.0,) * 767,
+        settings=make_settings(),
+        policy_fingerprint="f" * 64,
+    )
+
+    assert scope.source_scope_id == "98765"
+    assert conditions == {
+        "source_scope_type": "public",
+        "source_scope_id": "98765",
+        "github_repository_id": 98765,
+        "repository_id": str(repository_id),
+        "index_version": 4,
+    }
+    assert record.payload["installation_id"] is None
+    assert record.payload["source_scope_type"] == "public"
+    assert record.payload["github_repository_id"] == 98765
+
+
+def test_public_scope_rejects_missing_or_mixed_authorization_identity() -> None:
+    with pytest.raises(ValueError, match="invalid_public_vector_scope"):
+        VectorScope(
+            installation_id=uuid.uuid4(),
+            repository_id=uuid.uuid4(),
+            index_version=1,
+            access_mode=RepositoryAccessMode.PUBLIC,
+            github_repository_id=100,
+        )
+    with pytest.raises(ValueError, match="invalid_public_vector_scope"):
+        VectorScope(
+            installation_id=None,
+            repository_id=uuid.uuid4(),
+            index_version=1,
+            access_mode=RepositoryAccessMode.PUBLIC,
+        )
+    with pytest.raises(ValueError, match="invalid_installation_vector_scope"):
+        VectorScope(None, uuid.uuid4(), 1)
+
+
+def test_repository_rows_build_their_server_owned_vector_scope() -> None:
+    public = Repository(
+        installation_id=None,
+        access_mode=RepositoryAccessMode.PUBLIC,
+        github_repository_id=123,
+        github_owner="owner",
+        github_name="repo",
+        github_full_name="owner/repo",
+        github_url="https://github.com/owner/repo",
+        is_private=False,
+        default_branch="main",
+    )
+    public.id = uuid.uuid4()
+
+    scope = vector_scope_for_repository(public, 2)
+
+    assert scope.access_mode is RepositoryAccessMode.PUBLIC
+    assert scope.github_repository_id == 123
+    assert scope.installation_id is None
 
 
 def test_retrieval_filter_adds_commit_model_and_preprocessing_identity() -> None:

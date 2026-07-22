@@ -11,10 +11,15 @@ import structlog
 from pydantic import SecretStr
 
 from app.core.config import Settings
-from app.db.models.enums import IndexingMode, RepositoryIndexingStatus
+from app.db.models.enums import IndexingMode, RepositoryAccessMode, RepositoryIndexingStatus
 from app.embeddings.client import EmbeddingProviderProtocol
 from app.embeddings.preprocessing import EmbeddingPreprocessor
-from app.github.client import GitHubAPIError, GitHubClientProtocol
+from app.github.client import (
+    GitHubAPIError,
+    GitHubClientProtocol,
+    GitHubRepositoryNotFoundError,
+    GitHubRepositoryPrivateError,
+)
 from app.indexing.analyzer import RepositoryAnalyzerProtocol
 from app.indexing.clone import ClonedRepository, CloneRequest, RepositoryClonerProtocol
 from app.indexing.discovery import DiscoveryResult, FileDiscovery
@@ -196,7 +201,7 @@ class IndexingWorker:
         context = state.context
         if context is None:
             raise AssertionError("missing_context")
-        token = await self._installation_token(context)
+        token = await self._clone_token(context)
         cloned = None
         try:
             cloned = await self._cloner.clone(
@@ -221,13 +226,21 @@ class IndexingWorker:
             comparison = None
             if context.active_commit_sha is not None:
                 try:
-                    comparison = await self._github.compare_repository_commits(
-                        token,
-                        owner=context.owner,
-                        repository=context.name,
-                        base=context.active_commit_sha,
-                        head=cloned.commit_sha,
-                    )
+                    if context.access_mode is RepositoryAccessMode.PUBLIC:
+                        comparison = await self._github.compare_public_repository_commits(
+                            owner=context.owner,
+                            repository=context.name,
+                            base=context.active_commit_sha,
+                            head=cloned.commit_sha,
+                        )
+                    else:
+                        comparison = await self._github.compare_repository_commits(
+                            self._require_installation_token(token),
+                            owner=context.owner,
+                            repository=context.name,
+                            base=context.active_commit_sha,
+                            head=cloned.commit_sha,
+                        )
                 except GitHubAPIError:
                     comparison = None
             plan = plan_refresh(
@@ -273,7 +286,43 @@ class IndexingWorker:
             if cloned is not None:
                 self._cloner.cleanup(cloned)
 
-    async def _installation_token(self, context: JobContext) -> SecretStr:
+    async def _clone_token(self, context: JobContext) -> SecretStr | None:
+        if context.access_mode is RepositoryAccessMode.PUBLIC:
+            try:
+                metadata = await self._github.get_public_repository(
+                    owner=context.owner, repository=context.name
+                )
+            except (GitHubRepositoryNotFoundError, GitHubRepositoryPrivateError) as error:
+                await self._store.revoke_public_access(context.repository_id)
+                raise IndexingError(
+                    code="public_repository_unavailable",
+                    message="The public repository is no longer available",
+                    retryable=False,
+                ) from error
+            except GitHubAPIError as error:
+                raise IndexingError(
+                    code="github_metadata_unavailable",
+                    message="GitHub repository metadata is temporarily unavailable",
+                    retryable=True,
+                ) from error
+            if (
+                metadata.repository.id != context.github_repository_id
+                or metadata.repository.private
+                or metadata.repository.default_branch != context.default_branch
+            ):
+                await self._store.revoke_public_access(context.repository_id)
+                raise IndexingError(
+                    code="public_repository_identity_changed",
+                    message="The public repository identity changed",
+                    retryable=False,
+                )
+            return None
+        if context.github_installation_id is None:
+            raise IndexingError(
+                code="github_installation_missing",
+                message="GitHub repository authorization is unavailable",
+                retryable=False,
+            )
         try:
             return await self._github.create_repository_installation_token(
                 context.github_installation_id,
@@ -285,6 +334,16 @@ class IndexingWorker:
                 message="GitHub repository access is temporarily unavailable",
                 retryable=True,
             ) from error
+
+    @staticmethod
+    def _require_installation_token(token: SecretStr | None) -> SecretStr:
+        if token is None:
+            raise IndexingError(
+                code="github_installation_missing",
+                message="GitHub repository authorization is unavailable",
+                retryable=False,
+            )
+        return token
 
     async def _analyze(
         self,
@@ -524,6 +583,12 @@ class IndexingWorker:
             installation_id=context.installation_id,
             repository_id=context.repository_id,
             index_version=context.index_version if index_version is None else index_version,
+            access_mode=context.access_mode,
+            github_repository_id=(
+                context.github_repository_id
+                if context.access_mode is RepositoryAccessMode.PUBLIC
+                else None
+            ),
         )
 
     async def _cleanup_inactive(self, context: JobContext) -> bool:

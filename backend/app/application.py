@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.router import api_router
+from app.auth.google import GoogleOIDCClient, GoogleOIDCClientProtocol
 from app.auth.tokens import TokenService
 from app.core.config import Settings, load_settings
 from app.core.errors import install_exception_handlers
@@ -25,10 +26,11 @@ from app.vector.qdrant import QdrantVectorStore, VectorReadinessProtocol
 logger = structlog.get_logger(__name__)
 
 
-def create_app(
+def create_app(  # noqa: PLR0915 -- explicit dependency lifecycle is intentionally centralized
     settings: Settings | None = None,
     database: DatabaseProtocol | None = None,
     github_client: GitHubClientProtocol | None = None,
+    google_client: GoogleOIDCClientProtocol | None = None,
     job_queue: JobQueueProtocol | None = None,
     vector_store: VectorReadinessProtocol | None = None,
     embedding_provider: EmbeddingProviderProtocol | None = None,
@@ -42,6 +44,7 @@ def create_app(
     )
     resolved_database = database or Database.from_settings(resolved_settings)
     resolved_github_client = github_client or GitHubClient(resolved_settings)
+    resolved_google_client = google_client or GoogleOIDCClient(resolved_settings)
     resolved_job_queue = job_queue or RedisJobQueue.from_settings(resolved_settings)
     resolved_vector_store = vector_store or QdrantVectorStore(resolved_settings)
     resolved_embedding_provider = embedding_provider or EmbeddingServiceClient(resolved_settings)
@@ -53,6 +56,7 @@ def create_app(
         app.state.settings = resolved_settings
         app.state.database = resolved_database
         app.state.github_client = resolved_github_client
+        app.state.google_client = resolved_google_client
         app.state.token_service = token_service
         app.state.job_queue = resolved_job_queue
         app.state.vector_store = resolved_vector_store
@@ -64,6 +68,7 @@ def create_app(
         finally:
             await resolved_database.dispose()
             await resolved_github_client.close()
+            await resolved_google_client.close()
             await resolved_job_queue.close()
             await resolved_vector_store.close()
             await resolved_embedding_provider.close()
@@ -84,6 +89,7 @@ def create_app(
     app.state.settings = resolved_settings
     app.state.database = resolved_database
     app.state.github_client = resolved_github_client
+    app.state.google_client = resolved_google_client
     app.state.token_service = token_service
     app.state.job_queue = resolved_job_queue
     app.state.vector_store = resolved_vector_store

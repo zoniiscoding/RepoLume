@@ -26,7 +26,7 @@ class CloneRequest:
     owner: str
     name: str
     default_branch: str
-    installation_token: SecretStr
+    installation_token: SecretStr | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,10 +132,7 @@ class GitHubRepositoryCloner:
         try:
             self._write_askpass(askpass)
             command = self.command_for(request, checkout)
-            environment = self._environment(
-                askpass=askpass,
-                token=request.installation_token.get_secret_value(),
-            )
+            environment = self._environment(askpass=askpass, token=request.installation_token)
             process = await asyncio.create_subprocess_exec(
                 *command,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -189,8 +186,8 @@ class GitHubRepositoryCloner:
             os.close(descriptor)
 
     @staticmethod
-    def _environment(*, askpass: Path, token: str) -> dict[str, str]:
-        return {
+    def _environment(*, askpass: Path, token: SecretStr | None) -> dict[str, str]:
+        environment = {
             "HOME": str(askpass.parent),
             "PATH": "/usr/bin:/bin",
             "LANG": "C.UTF-8",
@@ -199,8 +196,12 @@ class GitHubRepositoryCloner:
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_LFS_SKIP_SMUDGE": "1",
-            "REPOLU_GIT_TOKEN": token,
         }
+        if token is None:
+            environment["GIT_ASKPASS"] = "/bin/false"
+        else:
+            environment["REPOLU_GIT_TOKEN"] = token.get_secret_value()
+        return environment
 
     async def _read_commit(self, checkout: Path) -> str:
         process = await asyncio.create_subprocess_exec(

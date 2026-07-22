@@ -67,6 +67,7 @@ def make_settings(**overrides: object) -> Settings:
         "log_level": "INFO",
         "log_json": True,
         "docs_enabled": False,
+        "frontend_url": None,
         "cors_origins": ["http://testserver"],
         "trusted_hosts": ["testserver", "localhost", "127.0.0.1"],
         "github_app_id": 12345,

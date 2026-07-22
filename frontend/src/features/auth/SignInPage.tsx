@@ -26,24 +26,30 @@ export function SignInPage(): React.JSX.Element {
           <p className="eyebrow">Repository intelligence</p>
           <h1>Understand the code you are authorized to see.</h1>
           <p>
-            RepoLume uses your GitHub App installation to read selected repositories and ground
-            every answer in current evidence.
+            Sign in with Google or GitHub. Import public repositories by URL, or connect the GitHub
+            App for private repositories.
           </p>
         </div>
         {state === "expired" ? (
           <InlineAlert tone="warning">
-            Your session ended. Continue with GitHub to start a new session.
+            Your session ended. Continue with Google or GitHub to start a new session.
           </InlineAlert>
         ) : null}
-        <Button className="sign-in__action" variant="primary" onClick={signIn}>
+        <Button className="sign-in__action" variant="primary" onClick={() => signIn("google")}>
+          <span aria-hidden="true" className="provider-mark">
+            G
+          </span>
+          Continue with Google
+        </Button>
+        <Button className="sign-in__action" onClick={() => signIn("github")}>
           <Github aria-hidden="true" size={18} />
           Continue with GitHub
         </Button>
         <div className="sign-in__trust">
           <ShieldCheck aria-hidden="true" size={17} />
           <span>
-            GitHub tokens stay server-side. RepoLume only accesses repositories approved for your
-            installation.
+            Provider tokens stay server-side. Private access still requires repositories approved
+            through your GitHub App installation.
           </span>
         </div>
       </Panel>

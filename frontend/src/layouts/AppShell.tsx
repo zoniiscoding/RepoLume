@@ -111,10 +111,10 @@ export function AppShell(): React.JSX.Element {
               <img alt="" src={user.avatar_url} />
             ) : (
               <span className="avatar-fallback">
-                {user?.github_login.slice(0, 1).toUpperCase()}
+                {(user?.github_login ?? user?.display_name ?? "R").slice(0, 1).toUpperCase()}
               </span>
             )}
-            <span>{user?.github_login}</span>
+            <span>{user?.github_login ?? user?.display_name ?? "RepoLume user"}</span>
             <ChevronDown aria-hidden="true" size={14} />
           </div>
           <Button className="sidebar__logout" variant="quiet" onClick={() => void handleSignOut()}>

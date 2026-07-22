@@ -14,11 +14,12 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
-from app.db.models.enums import RepositoryIndexingStatus, database_enum
+from app.db.models.enums import RepositoryAccessMode, RepositoryIndexingStatus, database_enum
 
 
 class Repository(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -30,6 +31,11 @@ class Repository(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "installation_id",
             "github_repository_id",
             name="uq_repositories_installation_github_repository",
+        ),
+        CheckConstraint(
+            "(access_mode = 'public' AND installation_id IS NULL AND is_private = false) OR "
+            "(access_mode = 'github_installation' AND installation_id IS NOT NULL)",
+            name="access_mode_installation_valid",
         ),
         UniqueConstraint(
             "installation_id",
@@ -51,11 +57,23 @@ class Repository(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "deleted_at",
         ),
         Index("ix_repositories_github_full_name", "github_full_name"),
+        Index("ix_repositories_access_mode", "access_mode", "deleted_at"),
+        Index(
+            "uq_repositories_public_github_repository",
+            "github_repository_id",
+            unique=True,
+            postgresql_where=text("access_mode = 'public'"),
+        ),
     )
 
-    installation_id: Mapped[uuid.UUID] = mapped_column(
+    installation_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("github_installations.id", ondelete="RESTRICT"),
+    )
+    access_mode: Mapped[RepositoryAccessMode] = mapped_column(
+        database_enum(RepositoryAccessMode, name="repository_access_mode"),
         nullable=False,
+        default=RepositoryAccessMode.GITHUB_INSTALLATION,
+        server_default=RepositoryAccessMode.GITHUB_INSTALLATION.value,
     )
     github_repository_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     github_owner: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -96,6 +114,7 @@ class Repository(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     indexing_error_message: Mapped[str | None] = mapped_column(String(512))
     size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     primary_language: Mapped[str | None] = mapped_column(String(64))
+    visibility_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     active_vector_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"

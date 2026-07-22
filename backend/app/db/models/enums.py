@@ -11,6 +11,21 @@ class GitHubAccountType(StrEnum):
     ORGANIZATION = "organization"
 
 
+class AuthProvider(StrEnum):
+    GOOGLE = "google"
+    GITHUB = "github"
+
+
+class OAuthFlow(StrEnum):
+    SIGN_IN = "sign_in"
+    LINK = "link"
+
+
+class RepositoryAccessMode(StrEnum):
+    PUBLIC = "public"
+    GITHUB_INSTALLATION = "github_installation"
+
+
 class InstallationStatus(StrEnum):
     ACTIVE = "active"
     SUSPENDED = "suspended"

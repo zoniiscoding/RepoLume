@@ -73,6 +73,11 @@ class TokenService:
         raw_token = secrets.token_urlsafe(48)
         return raw_token, self.hash_opaque_token(raw_token)
 
+    @staticmethod
+    def new_oidc_nonce() -> str:
+        """Create a high-entropy nonce for one OIDC authorization request."""
+        return secrets.token_urlsafe(32)
+
     def issue_access_token(
         self,
         user_id: uuid.UUID,

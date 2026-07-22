@@ -30,10 +30,10 @@ export function OAuthCallbackPage(): React.JSX.Element {
         {failed ? (
           <>
             <p className="eyebrow">Authorization was not completed</p>
-            <h1>We could not finish your GitHub session.</h1>
+            <h1>We could not finish your sign-in session.</h1>
             <InlineAlert tone="warning">
-              Your GitHub authorization may have been declined or expired. No access token was saved
-              in this browser.
+              Provider authorization may have been declined or expired. No access token was saved in
+              this browser.
             </InlineAlert>
             <div className="button-row">
               <Link className="button button--primary" to="/signin">
@@ -45,9 +45,9 @@ export function OAuthCallbackPage(): React.JSX.Element {
         ) : (
           <>
             <LoaderCircle aria-hidden="true" className="spinner" size={22} />
-            <p className="eyebrow">GitHub authorization</p>
+            <p className="eyebrow">Secure authorization</p>
             <h1>Finishing your secure session.</h1>
-            <p>RepoLume is confirming the browser session without exposing GitHub credentials.</p>
+            <p>RepoLume is confirming the browser session without exposing provider credentials.</p>
           </>
         )}
       </Panel>

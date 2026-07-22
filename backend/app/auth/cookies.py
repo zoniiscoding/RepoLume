@@ -5,6 +5,7 @@ from fastapi import Response
 from app.core.config import Settings
 
 PKCE_COOKIE_NAME = "repolume_oauth_pkce"
+OIDC_NONCE_COOKIE_NAME = "repolume_oidc_nonce"
 AUTH_COOKIE_PATH = "/api/v1/auth"
 
 
@@ -25,6 +26,29 @@ def clear_pkce_cookie(response: Response, settings: Settings) -> None:
     """Delete the PKCE verifier after any callback attempt."""
     response.delete_cookie(
         key=PKCE_COOKIE_NAME,
+        secure=settings.is_production,
+        httponly=True,
+        samesite="lax",
+        path=AUTH_COOKIE_PATH,
+    )
+
+
+def set_oidc_nonce_cookie(response: Response, nonce: str, settings: Settings) -> None:
+    """Bind the Google callback to a nonce unavailable to browser scripts."""
+    response.set_cookie(
+        key=OIDC_NONCE_COOKIE_NAME,
+        value=nonce,
+        max_age=settings.oauth_state_ttl_seconds,
+        httponly=True,
+        secure=settings.is_production,
+        samesite="lax",
+        path=AUTH_COOKIE_PATH,
+    )
+
+
+def clear_oidc_nonce_cookie(response: Response, settings: Settings) -> None:
+    response.delete_cookie(
+        key=OIDC_NONCE_COOKIE_NAME,
         secure=settings.is_production,
         httponly=True,
         samesite="lax",
