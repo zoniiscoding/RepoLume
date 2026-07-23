@@ -48,7 +48,8 @@ class PythonStaticParser:
     def parse(self, *, file_path: str, source_text: str, commit_sha: str) -> ParsedFile:
         normalized = source_text.replace("\r\n", "\n").replace("\r", "\n")
         source = normalized.encode("utf-8")
-        root = self._parser.parse(source).root_node
+        tree = self._parser.parse(source)
+        root = tree.root_node
         imports = tuple(self._extract_imports(root, source))
         module_name = self._module_name(file_path)
         symbols: list[ParsedSymbol] = []
