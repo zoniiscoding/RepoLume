@@ -3,7 +3,12 @@
   "build": {
     "builder": "DOCKERFILE",
     "dockerfilePath": "Dockerfile",
-    "watchPatterns": ["app/**", "requirements.lock", "Dockerfile"]
+    "watchPatterns": [
+  "/embedding_service/app/**",
+  "/embedding_service/requirements.lock",
+  "/embedding_service/Dockerfile",
+  "/embedding_service/railway.json"
+]
   },
   "deploy": {
     "startCommand": "uvicorn app.main:app --host :: --port $PORT --no-access-log --timeout-graceful-shutdown 60",
