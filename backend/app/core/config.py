@@ -647,11 +647,21 @@ class Settings(BaseSettings):
 
 
 def load_settings() -> Settings:
-    """Load settings without leaking rejected values through startup errors."""
+    """Load settings and report validation fields without exposing values."""
     try:
         return Settings()
-    except ValidationError:
-        raise RuntimeError("Application configuration is invalid") from None
+    except ValidationError as error:
+        details = "; ".join(
+            f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}"
+            for item in error.errors(
+                include_url=False,
+                include_context=False,
+                include_input=False,
+            )
+        )
+        raise RuntimeError(
+            f"Application configuration is invalid: {details}"
+        ) from None
 
 
 class MigrationSettings(BaseSettings):
