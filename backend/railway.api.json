@@ -3,7 +3,14 @@
   "build": {
     "builder": "DOCKERFILE",
     "dockerfilePath": "Dockerfile",
-    "watchPatterns": ["app/**", "alembic/**", "alembic.ini", "requirements.lock", "Dockerfile"]
+    "watchPatterns": [
+  "/backend/app/**",
+  "/backend/alembic/**",
+  "/backend/alembic.ini",
+  "/backend/requirements.lock",
+  "/backend/Dockerfile",
+  "/backend/railway.api.json"
+]
   },
   "deploy": {
     "preDeployCommand": "alembic -c alembic.ini upgrade head",
