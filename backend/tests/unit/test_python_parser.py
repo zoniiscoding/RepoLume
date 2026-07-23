@@ -80,6 +80,17 @@ def test_crlf_and_lf_produce_identical_structure_and_hashes() -> None:
     assert first == second
 
 
+def test_tree_lifetime_is_retained_while_traversing_large_call_graph() -> None:
+    source = "def example():\n" + "".join(
+        f"    call_{index}()\n" for index in range(400)
+    )
+
+    parsed = parser().parse(file_path="large.py", source_text=source, commit_sha=COMMIT)
+
+    assert len(parsed.call_sites) == 400
+    assert [item.start_line for item in parsed.call_sites] == list(range(2, 402))
+
+
 def test_partially_malformed_file_preserves_safe_symbols() -> None:
     parsed = parser().parse(
         file_path="partial.py",
