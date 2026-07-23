@@ -1,7 +1,7 @@
 const API_PATH = "/api/v1";
 
-export function validateProductionApiBaseUrl(value: string | undefined): URL {
-  if (!value) throw new Error("VITE_API_BASE_URL is required for a production build");
+function validateApiBaseUrl(value: string | undefined, variableName: string): URL {
+  if (!value) throw new Error(`${variableName} is required for a production build`);
   const url = new URL(value);
   if (
     url.protocol !== "https:" ||
@@ -11,14 +11,27 @@ export function validateProductionApiBaseUrl(value: string | undefined): URL {
     url.hash ||
     url.pathname.replace(/\/$/, "") !== API_PATH
   ) {
-    throw new Error("VITE_API_BASE_URL must be an HTTPS URL ending exactly in /api/v1");
+    throw new Error(`${variableName} must be an HTTPS URL ending exactly in /api/v1`);
   }
   return url;
 }
 
-export function createVercelConfig(apiBaseUrl: string | undefined) {
+export function validateProductionApiBaseUrl(value: string | undefined): URL {
+  return validateApiBaseUrl(value, "VITE_API_BASE_URL");
+}
+
+export function validateApiProxyTarget(value: string | undefined): URL {
+  return validateApiBaseUrl(value, "API_PROXY_TARGET");
+}
+
+export function createVercelConfig(
+  apiBaseUrl: string | undefined,
+  apiProxyTarget: string | undefined,
+) {
   const apiUrl = validateProductionApiBaseUrl(apiBaseUrl);
+  const proxyUrl = validateApiProxyTarget(apiProxyTarget);
   const apiOrigin = apiUrl.origin;
+  const proxyBaseUrl = proxyUrl.href.replace(/\/$/, "");
   const contentSecurityPolicy = [
     "default-src 'none'",
     "script-src 'self'",
@@ -59,6 +72,9 @@ export function createVercelConfig(apiBaseUrl: string | undefined) {
         ],
       },
     ],
-    rewrites: [{ source: "/(.*)", destination: "/index" }],
+    rewrites: [
+      { source: "/api/v1/:path*", destination: `${proxyBaseUrl}/:path*` },
+      { source: "/(.*)", destination: "/index" },
+    ],
   };
 }
