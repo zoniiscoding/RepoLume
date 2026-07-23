@@ -7,7 +7,7 @@
   },
   "deploy": {
     "preDeployCommand": "alembic -c alembic.ini upgrade head",
-    "startCommand": "uvicorn app.main:app --host 0.0.0.0 --port $PORT --no-access-log --timeout-graceful-shutdown 60",
+    "startCommand": "uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log --timeout-graceful-shutdown 60",
     "healthcheckPath": "/api/v1/health/ready",
     "healthcheckTimeout": 300,
     "restartPolicyType": "ALWAYS",
