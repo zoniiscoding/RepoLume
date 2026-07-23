@@ -10,7 +10,7 @@ describe("production deployment configuration", () => {
 
     expect(csp?.value).toContain("connect-src 'self' https://api.repolume.example");
     expect(csp?.value).toContain("frame-ancestors 'none'");
-    expect(configuration.rewrites).toEqual([{ source: "/(.*)", destination: "/index.html" }]);
+    expect(configuration.rewrites).toEqual([{ source: "/(.*)", destination: "/index" }]);
   });
 
   it.each([

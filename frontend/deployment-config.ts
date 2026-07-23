@@ -59,6 +59,6 @@ export function createVercelConfig(apiBaseUrl: string | undefined) {
         ],
       },
     ],
-    rewrites: [{ source: "/(.*)", destination: "/index.html" }],
+    rewrites: [{ source: "/(.*)", destination: "/index" }],
   };
 }
