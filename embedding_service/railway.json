@@ -11,7 +11,7 @@
 ]
   },
   "deploy": {
-    "startCommand": "uvicorn app.main:app --host :: --port 8000 --no-access-log --timeout-graceful-shutdown 60",
+    "startCommand": "uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log --timeout-graceful-shutdown 60",
     "healthcheckPath": "/health/live",
     "healthcheckTimeout": 600,
     "restartPolicyType": "ALWAYS",
