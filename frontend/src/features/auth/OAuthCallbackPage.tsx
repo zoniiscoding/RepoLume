@@ -5,24 +5,17 @@ import { useAuth } from "../../auth/useAuth";
 import { Button, InlineAlert, Panel } from "../../components/ui";
 
 export function OAuthCallbackPage(): React.JSX.Element {
-  const { refreshSession } = useAuth();
+  const { state } = useAuth();
   const navigate = useNavigate();
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    let active = true;
-    void refreshSession().then((authenticated) => {
-      if (!active) return;
-      if (authenticated) {
-        navigate("/repositories", { replace: true });
-      } else {
-        setFailed(true);
-      }
-    });
-    return () => {
-      active = false;
-    };
-  }, [navigate, refreshSession]);
+    if (state === "authenticated") {
+      navigate("/repositories", { replace: true });
+    } else if (state === "anonymous" || state === "expired") {
+      setFailed(true);
+    }
+  }, [navigate, state]);
 
   return (
     <main className="sign-in">
