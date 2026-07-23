@@ -20,7 +20,7 @@ dependencies = [
   "redis==8.0.1",
   "sqlalchemy[asyncio]==2.0.51",
   "structlog==26.1.0",
-  "tree-sitter==0.26.0",
+  "tree-sitter==0.25.2",
   "tree-sitter-python==0.25.0",
   "uvicorn[standard]==0.51.0",
 ]
