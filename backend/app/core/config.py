@@ -659,9 +659,7 @@ def load_settings() -> Settings:
                 include_input=False,
             )
         )
-        raise RuntimeError(
-            f"Application configuration is invalid: {details}"
-        ) from None
+        raise RuntimeError(f"Application configuration is invalid: {details}") from None
 
 
 class MigrationSettings(BaseSettings):
